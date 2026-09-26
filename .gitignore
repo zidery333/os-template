@@ -1,0 +1,26 @@
+# macOS clutter
+.DS_Store
+
+# Your own machine's Claude Code settings — permissions you granted locally.
+# Not shared, because they're about your machine, not this folder.
+.claude/settings.local.json
+
+# Subtitle and transcript scratch. Raw input, not something you keep — what
+# mattered in them is already in notes/. The guide pulls subtitles into /tmp,
+# outside this folder, so these should never fire. They're here for the day
+# somebody runs yt-dlp in the wrong directory.
+*.srt
+*.vtt
+
+# Never commit secrets. The daily commit script also refuses to, as a backstop.
+.env
+.env.*
+*.pem
+*.p12
+*_rsa
+
+# Hook scratch — session state, not worth keeping.
+.claude/.state/
+
+# What an upgrade leaves for you to look over. Gone once you have.
+.claude/.upgrade/

@@ -1,0 +1,39 @@
+# Words to swap for plainer ones. Checked after every reply.
+# Format: word<TAB>say this instead
+# Add your own. Delete any you actually want kept.
+# Turn the whole check off: set OS_PLAIN_CHECK=off in .claude/settings.json env.
+leverage	use
+utilise	use
+utilize	use
+orchestrate	run
+paradigm	way of doing it
+canonical	the official one
+idempotent	safe to run twice
+heuristic	rule of thumb
+holistic	whole
+synergy	(cut it)
+streamline	simplify
+granular	detailed
+seamless	smooth
+non-trivial	hard
+orthogonal	unrelated
+salient	important
+delta	difference
+taxonomy	a way of sorting things
+affordance	what it lets you do
+agnostic	works with any
+opinionated	makes the choices for you
+instantiate	create
+myriad	many
+requisite	needed
+facilitate	help
+endeavour	try
+endeavor	try
+commence	start
+terminate	stop
+subsequent	next
+prior to	before
+in order to	to
+utilization	use
+methodology	method
+functionality	what it does

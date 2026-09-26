@@ -1,0 +1,10 @@
+# Things Claude offered to save and you said no to. It reads this before
+# offering again, so you should not get asked the same thing twice.
+#
+# Format: date<TAB>what it was<TAB>where it would have gone<TAB>no or not-now
+#
+#   no       — never ask about this again
+#   not-now  — you were busy or still deciding. Fair to raise again later.
+#
+# Claude appends here when you decline. You can edit or empty it any time —
+# deleting a line just means you are willing to be asked again.
