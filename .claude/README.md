@@ -152,7 +152,8 @@ quietly following two different versions of it.
   you don't lose it, and pushes it too if you've set up a remote. With no
   remote it commits and says so, rather than failing quietly every night.
   Read it before turning it on. Setup is in the comment at the top.
-- `scripts/upgrade.sh` — takes a newer version of the template. `/update-os`
-  runs it for you and helps with the part a script can't do. Run it with
-  `--preview` first to see what it would change. It never overwrites a file
+- `scripts/upgrade.sh` — takes the newest version of the template, fetched
+  from its GitHub page. `/update-os` runs it for you and helps with the part
+  a script can't do. Run it with `--preview` first to see what it would
+  change. It never overwrites a file
   you changed and never brings back one you deleted.

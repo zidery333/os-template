@@ -2,11 +2,17 @@
 # Brings this folder up to a newer version of the template, without touching
 # anything you wrote or changed.
 #
-#   bash .claude/scripts/upgrade.sh --preview <new-copy>   see what would happen
-#   bash .claude/scripts/upgrade.sh <new-copy>             do it
+#   bash .claude/scripts/upgrade.sh --preview    see what the newest version would change
+#   bash .claude/scripts/upgrade.sh              take it
 #
-# <new-copy> is a fresh download of the template, unzipped anywhere. Easier
-# still: type /update-os and let Claude run this and walk you through the rest.
+# With no folder named, it downloads the newest version from the template's
+# GitHub page (TEMPLATE_HOME below) into a temporary folder, and deletes that
+# again afterwards. Or name a fresh download you unzipped yourself:
+#
+#   bash .claude/scripts/upgrade.sh [--preview] <new-copy>
+#
+# Easier still: type /update-os and let Claude run this and walk you through
+# the rest.
 #
 # How it tells your changes from the template's: .claude/shipped.tsv holds a
 # fingerprint of every file as the template handed it to you. For each file:
@@ -28,6 +34,10 @@
 # The whole script sits inside main() so that bash reads all of it before
 # running any of it. This file can replace itself halfway through.
 set -uo pipefail
+
+# Where new versions come from. If you made your own copy of the template on
+# GitHub and want updates from it instead, change this line.
+TEMPLATE_HOME="https://github.com/zidery333/os-template"
 
 # One fingerprint, used everywhere, so a record made on a Mac still matches
 # on Linux. cksum is on every system and needs nothing installed.
@@ -73,11 +83,22 @@ main() {
 
   local preview=0
   [ "${1:-}" = "--preview" ] && { preview=1; shift; }
-  [ -n "${1:-}" ] || die "say where the new copy is: upgrade.sh [--preview] <folder>"
 
-  local here new
+  local here new src="${1:-}"
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-  new="$(cd "$1" 2>/dev/null && pwd)" || die "can't open $1"
+  if [ -z "$src" ]; then
+    # No folder named: fetch the newest version. The ZIP from GitHub is a
+    # fresh copy by definition, so it passes the check below like any other.
+    local url="${OS_TEMPLATE_ZIP_URL:-$TEMPLATE_HOME/archive/refs/heads/main.zip}"
+    FETCHED="$(mktemp -d)" || die "couldn't make a temporary folder."
+    trap 'rm -rf "$FETCHED"' EXIT
+    curl -sfL -o "$FETCHED/new.zip" "$url" || die "couldn't download $url. Are you online?"
+    unzip -q "$FETCHED/new.zip" -d "$FETCHED/unzipped" 2>/dev/null || die "the download from $url isn't a ZIP file."
+    src="$(find "$FETCHED/unzipped" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [ -n "$src" ] || die "the download from $url was empty."
+    echo "Downloaded the newest version from $TEMPLATE_HOME"
+  fi
+  new="$(cd "$src" 2>/dev/null && pwd)" || die "can't open $src"
   [ "$new" != "$here" ] || die "that is this folder. Point at the new copy you downloaded."
   local newrec="$new/.claude/shipped.tsv" oldrec="$here/.claude/shipped.tsv"
   [ -f "$newrec" ] || die "$new has no .claude/shipped.tsv, so it isn't a copy of the template this script can read."

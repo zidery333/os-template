@@ -605,6 +605,16 @@ ok "an upgrade won't start over the top of an unfinished one" "$out" "the last u
 ok "and what it left is still there" "$(ls "$mine/.claude/.upgrade/new")" "CLAUDE.md.new"
 rm -rf "$mine/.claude/.upgrade"
 
+# With no folder named, it fetches the newest version itself. A local ZIP
+# stands in for GitHub here, so the checks never need the internet.
+later="$UP/later"; cp -R "$v2" "$later"
+(cd "$UP" && rm -f v3.zip && zip -qr v3.zip v3)
+out=$(OS_TEMPLATE_ZIP_URL="file://$UP/v3.zip" bash "$later/.claude/scripts/upgrade.sh" 2>&1)
+ok "with no folder named, it downloads the newest version" "$out" "Downloaded the newest version"
+ok "and upgrades to it" "$(cat "$later/.claude/shipped.tsv")" "version	v3"
+out=$(OS_TEMPLATE_ZIP_URL="file://$UP/nothing-here.zip" bash "$later/.claude/scripts/upgrade.sh" --preview 2>&1)
+ok "a download that fails says so plainly" "$out" "couldn't download"
+
 # Only a fresh download. Pointing it at a folder someone has used would copy
 # their files into yours.
 used="$UP/used"; cp -R "$v3" "$used"; put "$used/CLAUDE.md" "somebody's own rules"

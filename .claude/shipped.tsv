@@ -1,9 +1,9 @@
 # What the template shipped: one fingerprint per file. Written by
 # .claude/scripts/upgrade.sh. Leave it alone; it is how an upgrade
 # tells your changes from the template's.
-# version	2026-09-26
-407598278-243	.claude/CHANGES.md
-547265990-8032	.claude/README.md
+# version	2026-09-26.2
+1579406126-945	.claude/CHANGES.md
+1317565549-8067	.claude/README.md
 1900124940-1296	.claude/agents/README.md
 2725082446-997	.claude/guides/blank-note.md
 773775918-2649	.claude/guides/getting-the-text.md
@@ -20,7 +20,7 @@
 3334270038-5409	.claude/hooks/spot-worth-saving.sh
 3428656200-2820	.claude/output-styles/plain-words.md
 1409499313-4105	.claude/scripts/daily-commit.sh
-533908192-9163	.claude/scripts/upgrade.sh
+1932127268-10288	.claude/scripts/upgrade.sh
 1234458631-1968	.claude/settings.json
 3180237796-1566	.claude/skills/README.md
 1172797707-3215	.claude/skills/archive/SKILL.md
@@ -32,13 +32,13 @@
 643833937-6235	.claude/skills/save-to-my-os/SKILL.md
 1610360367-10580	.claude/skills/setup/SKILL.md
 3844294339-5406	.claude/skills/tidy-up/SKILL.md
-1808343756-3582	.claude/skills/update-os/SKILL.md
+1136093544-3829	.claude/skills/update-os/SKILL.md
 1706400845-2525	.claude/skills/what-do-i-know/SKILL.md
-4133748263-33010	.claude/tests/run.sh
+3229234157-33690	.claude/tests/run.sh
 783184258-760	.gitignore
 2235804478-6708	CLAUDE.md
 291019485-1060	LICENSE
-1537161896-11452	README.md
+2899725567-11543	README.md
 3310588861-1940	me/README.md
 1554955216-1689	me/my-setup.md
 3738797066-2996	me/who-i-am.md

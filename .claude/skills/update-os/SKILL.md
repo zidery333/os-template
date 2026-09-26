@@ -3,25 +3,27 @@ name: update-os
 description: >-
   Brings this OS folder up to a newer version of the template — new fixes to
   the skills, hooks and rules — without losing anything the person wrote or
-  changed. Use when they have downloaded a new version, or ask to update,
-  upgrade, or get the latest version of the folder.
+  changed. Use when they ask to update or upgrade the folder, ask whether
+  there's a new version, or have downloaded one.
 when_to_use: >-
   The user says 'update my OS', 'upgrade the folder', 'there's a new version',
   'get the latest template', or names a folder they just downloaded. Also when
   the session check says an upgrade was left half-finished.
-argument-hint: <folder with the new version>
+argument-hint: "[folder with a new version — leave out to fetch the newest]"
 ---
 Upgrade this folder from: $ARGUMENTS
 
 A script does the safe part. You do the part that needs judgment: carrying the
 template's changes into files the person has made their own.
 
-## 1. Find the new copy
+## 1. Where the new version comes from
 
-It has to be a **fresh download** of the template, unzipped anywhere. Ask for
-the path if they didn't give one. Never download it yourself, and never point
-at a folder somebody has used — the script refuses those anyway, because this
-folder never reads anyone else's.
+Usually nowhere you need to ask about: with no folder named, the script
+downloads the newest version from the template's GitHub page itself. Only if
+they name a folder — a fresh download they unzipped themselves — pass it on
+the end of both commands below. Never point it at a folder somebody has used;
+the script refuses those anyway, because this folder never reads anyone
+else's.
 
 If the folder is a git repository with uncommitted changes, offer to commit
 first, in one line. It makes the whole upgrade one easy undo.
@@ -29,8 +31,10 @@ first, in one line. It makes the whole upgrade one easy undo.
 ## 2. Preview, then ask
 
 ```bash
-bash .claude/scripts/upgrade.sh --preview <new-copy>
+bash .claude/scripts/upgrade.sh --preview
 ```
+
+"Nothing to do" means they already have the newest version. Say so and stop.
 
 Tell them what it says in three or four lines: how many files get the new
 version, which of theirs stay as they are, and anything they deleted that
@@ -39,7 +43,7 @@ stays deleted. Then ask for a yes. Don't paste the whole list unless they ask.
 ## 3. Run it
 
 ```bash
-bash .claude/scripts/upgrade.sh <new-copy>
+bash .claude/scripts/upgrade.sh
 ```
 
 ## 4. Carry the changes over, one file at a time
@@ -78,7 +82,8 @@ Rules for doing it well:
   check. Don't call the upgrade done.
 - Once `new/` is empty and the checks pass, ask before deleting
   `.claude/.upgrade/` — it's their backup of this upgrade.
-- Offer to commit, and say they can delete the download.
+- Offer to commit. If they unzipped a download themselves, say they can
+  delete it.
 
 ## What this skill never does
 

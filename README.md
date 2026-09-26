@@ -148,7 +148,7 @@ All of these also work as slash commands when you want to force one:
 /new-skill <what it does> # teach it a job you keep doing by hand
 /new-subject <name>       # start learning about something
 /archive <name>           # retire a project without deleting it
-/update-os <folder>       # take a newer version of this template, keep your changes
+/update-os                # take the newest version of this template, keep your changes
 /save-to-my-os            # write down something lasting about you
 /what-do-i-know <thing>   # answer from your own notes, not the internet
 /catch-me-up              # what's waiting, what changed, what needs you
@@ -205,19 +205,22 @@ Over a hundred checks, about five seconds, and it tells you which one you broke.
 
 ## Getting a newer version
 
-The template gets fixes. To take them, download the new version, unzip it
-anywhere, and type:
+The template gets fixes. To take them, type:
 
 ```
-/update-os ~/Downloads/<the new folder>
+/update-os
 ```
 
-It shows you what would change before it changes anything. Files you never
+It fetches the newest version from this page, and shows you what would change
+before it changes anything. Files you never
 touched get the new version. Files you changed stay yours — the new version
 is put beside them, and Claude helps you carry over what's worth having. Files
 you deleted stay deleted. Your notes, projects and answers are never touched.
 It upgrades this folder where it is, and keeps the old version of every file
 it replaces in `.claude/.upgrade/before/`, just in case.
+
+To hear when there's a new version, click **Watch** at the top of this page,
+then **Custom**, then tick **Releases**.
 
 `.claude/CHANGES.md` says what changed in each version. `.claude/shipped.tsv`
 is how the upgrade tells your changes from the template's — leave it alone.
