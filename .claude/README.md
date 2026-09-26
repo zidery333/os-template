@@ -30,6 +30,7 @@ Everything Claude can run. The name is fixed by Claude Code — don't rename it.
 | `new-skill` | **Yes** — when you notice yourself doing the same job over and over. |
 | `archive` | **Yes** — when you say a project is finished or dead. |
 | `catch-me-up` | **Yes** — when you ask what's new. |
+| `wrapup` | **Yes** — when you say you're done. Makes sure the files are up to date, then says it's safe to close. |
 | `update-os` | **Yes** — when you say you've downloaded a new version. Always shows you first. |
 | `setup` | No. Type `/setup`. It rewrites your files, so it waits to be asked. |
 

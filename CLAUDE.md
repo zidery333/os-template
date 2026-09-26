@@ -112,9 +112,10 @@ it costs nothing and adds no delay.
   changing what was claimed or chosen is not.
 - **After every reply**, the words are checked against
   `.claude/hooks/plain-words.tsv`. A hit sends the reply back to be said plainly.
-Nothing is written down at the end of a session on purpose. The folder itself
-is the state, so the check at the start of the next one always reads the truth
-rather than a saved copy of it.
+No log of the session is ever written. The folder itself is the state, so
+the check at the start of the next one reads the truth rather than a saved
+copy of it. `/wrapup` only makes sure the folder's own files are true before
+the chat closes.
 
 ## Working rules
 

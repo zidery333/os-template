@@ -31,6 +31,10 @@ except Exception: pass')
 
 [ -n "$PROMPT" ] || exit 0
 
+# Text they pasted in was written somewhere else — a log, an article, another
+# chat. "Too long" inside it is not them pushing back on you.
+PROMPT=$(printf '%s' "$PROMPT" | python3 -c 'import re,sys
+sys.stdout.write(re.sub(r"<pasted_content[^>]*>.*?</pasted_content[^>]*>", " ", sys.stdin.read(), flags=re.S))')
 LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 
 # Phrases that nearly always mean "this is true about me, not just about now".
@@ -47,7 +51,9 @@ case "$LOWER" in
   *\?|\?*|how\ *|what\ *|why\ *|when\ *|where\ *|which\ *|can\ *|could\ *|should\ *|is\ *|are\ *|do\ *|does\ *) ;;
   *) printf '%s' "$LOWER" | grep -qE "$SIGNAL" && KIND="fact" ;;
 esac
-printf '%s' "$LOWER" | grep -qE "$CORRECTION" && KIND="correction"
+# Pushing back is short. A long message that happens to say "too long"
+# somewhere is about something else.
+[ "${#LOWER}" -le 400 ] && printf '%s' "$LOWER" | grep -qE "$CORRECTION" && KIND="correction"
 [ -n "$KIND" ] || exit 0
 
 # What they have already turned down. Without this, the same question comes

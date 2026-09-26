@@ -152,6 +152,7 @@ All of these also work as slash commands when you want to force one:
 /save-to-my-os            # write down something lasting about you
 /what-do-i-know <thing>   # answer from your own notes, not the internet
 /catch-me-up              # what's waiting, what changed, what needs you
+/wrapup                   # before you close a chat: files up to date, safe to close
 /tidy-up                  # merge repeats, delete what went stale
 ```
 

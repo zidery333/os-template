@@ -698,6 +698,10 @@ ok "a stuffy word in a bullet point is still caught" \
 # A question is not a fact about the person.
 quiet "\"how do I use git\" is a question, not something to save" \
    "$(printf '{"prompt":"how do I use git","user_prompt":"how do I use git"}' | "$REAL/.claude/hooks/spot-worth-saving.sh")"
+quiet "pushback words inside pasted text are not pushback" \
+   "$(python3 -c 'import json;m="look at this <pasted_content id=\"x1\">it was too long and too many words</pasted_content id=\"x1\">";print(json.dumps({"prompt":m,"user_prompt":m}))' | "$REAL/.claude/hooks/spot-worth-saving.sh")"
+ok "but pushback outside the paste still counts" \
+   "$(python3 -c 'import json;m="too long. <pasted_content id=\"x1\">log</pasted_content id=\"x1\">";print(json.dumps({"prompt":m,"user_prompt":m}))' | "$REAL/.claude/hooks/spot-worth-saving.sh")" "pushback"
 quiet "asking for a paragraph is not pushback" \
    "$(printf '{"prompt":"write me a paragraph about my trip","user_prompt":"write me a paragraph about my trip"}' | "$REAL/.claude/hooks/spot-worth-saving.sh")"
 

@@ -175,7 +175,7 @@ Write all of these before you say anything about being done:
   unless an answer goes against one; change those, and add anything from
   answers 4 and 5 in their own words. Delete the `TO FILL` comment. Leave the
   rest of the file alone.
-- **`notes/<subject>/what-i-think.md`** — one per subject from answer 7, each a stub that
+- **`notes/<subject>/what-i-think.md`** — one per subject from answer 6, each a stub that
   says what the subject covers and nothing more. Plus the matching folder
   `notes/<subject>/sources/` holding a short README that points at
   `notes/README.md` for the rules — the same one `/new-subject` writes.
@@ -193,8 +193,11 @@ Write all of these before you say anything about being done:
   that is working fine.
 - **`notes/where-i-learn/who-to-trust.md`** — official docs and blogs for
   whatever they work on in the top table; you can suggest these yourself,
-  they may not know them. Everything else from answer 8 goes under "no record
-  yet". **Do not write a single word about how good any of them is.** You
+  they may not know them. But only for tools they have already chosen. If
+  the choice is still open — which blockchain, which language, which shop
+  platform — leave it out and name the choice as the thing still to decide.
+  A guess written here looks like their decision. Everything else from
+  answer 7 goes under "no record yet". **Do not write a single word about how good any of them is.** You
   don't know yet, and a guess written on day one gets read as fact in a
   month.
 ## Then finish
