@@ -16,7 +16,6 @@ Everything Claude can run. The name is fixed by Claude Code — don't rename it.
 | Version record | `shipped.tsv` | What the template gave you, one fingerprint per file. How `/update-os` tells your changes apart. Leave it alone. |
 | What changed | `CHANGES.md` | What each version of the template changed, file by file. |
 | Tests | `tests/run.sh` | Checks that the checks still work. Run it after changing a hook. |
-| Home folder | `home/` | Optional. For people with several OS folders: one place to see them all and share skills. Copy it out; `home/README.md` says how. |
 
 ## The skills
 

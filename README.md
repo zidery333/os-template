@@ -226,18 +226,6 @@ then **Custom**, then tick **Releases**.
 `.claude/CHANGES.md` says what changed in each version. `.claude/shipped.tsv`
 is how the upgrade tells your changes from the template's — leave it alone.
 
-## Got more than one OS folder?
-
-Some people end up with a few — one for work, one for home. `.claude/home/` is
-an optional home folder that looks after all of them from one place. It shows
-what's on the go in each, runs their checks, sends a shared skill to every
-one, and sets up a new OS folder when you want another. It never writes into your notes or work, never deletes, and sends nothing
-until you say so. To use it, copy it out beside your folders and read its README:
-
-```bash
-cp -R .claude/home ~/os-home
-```
-
 ## Keeping it safe
 
 Git is the whole backup story. A folder you just downloaded isn't a git

@@ -3,6 +3,16 @@
 Newest at the top. `/update-os` reads this to know what to carry into files
 you've made your own, so each entry says exactly what moved, file by file.
 
+## 2026-09-26.6 — the home folder is gone again
+
+- **Removed: `.claude/home/`.** Its one real user found it didn't fit how
+  they work: it looked after folders but couldn't work in them. If you had it,
+  `/update-os` moves it to `.claude/.upgrade/removed/` rather than deleting it,
+  and any home folder you already copied out keeps working on its own.
+- **`README.md`:** the "Got more than one OS folder?" part is gone.
+- **`.claude/README.md`:** the table no longer lists `home/`.
+- **`.claude/tests/run.sh`:** no longer runs the home folder's checks.
+
 ## 2026-09-26.5 — the home folder can set up a new OS folder
 
 - **`.claude/home/home`:** new command, `./home new <path> "what it's for"`.
