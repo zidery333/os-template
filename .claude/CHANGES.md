@@ -3,6 +3,22 @@
 Newest at the top. `/update-os` reads this to know what to carry into files
 you've made your own, so each entry says exactly what moved, file by file.
 
+## 2026-09-26.5 — the home folder can set up a new OS folder
+
+- **`.claude/home/home`:** new command, `./home new <path> "what it's for"`.
+  It downloads a fresh copy of the template, starts git in it with a first
+  commit, and adds it to the list. It never overwrites anything, refuses to
+  put one OS folder inside another, and refuses a copy someone filled in.
+  Also fixed: status now finds projects inside category folders and skips
+  folders a folder's own settings ignore; sync says when a folder has gone
+  instead of listing every file as new. A purpose with a line break no
+  longer breaks `folders.tsv`, and stray `*` marks are gone from status.
+- **`.claude/home/README.md`:** says how to use `./home new`, that a shared
+  skill should be changed in `master/`, not in a folder, and exactly what
+  sync writes in each kind of folder.
+- **`.claude/home/CLAUDE.md`, `.claude/home/master/README.md`, `README.md`:** mention it.
+- **`.claude/home/tests/run.sh`:** checks for all of the above.
+
 ## 2026-09-26.4 — an optional home folder for people with several OS folders
 
 - **New: `.claude/home/`.** An optional home folder: copy it out beside your OS

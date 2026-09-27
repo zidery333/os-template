@@ -43,7 +43,15 @@ out=$("$H/home" add "$C" "no git"); has "$out" "Added" "add a folder with no git
 out=$("$H/home" add "$T" "parent" 2>&1); has "$out" "Refusing" "refuse a parent of home"
 out=$("$H/home" add "$A" "twice" 2>&1); has "$out" "already listed" "refuse the same folder twice"
 
+mkdir -p "$A/Work/Clients/Big job"; echo '{}' > "$A/Work/Clients/.category"
+printf -- '---\ntitle: "Big job"\nstatus: pushing\n---\n\n## Next action\n- [ ] send the quote\n' > "$A/Work/Clients/Big job/README.md"
+mkdir -p "$A/Work/scratchpad"; printf -- '---\ntitle: Scratch\n---\n## Next action\n- junk line\n' > "$A/Work/scratchpad/README.md"
+echo '{"ignore": ["scratchpad"]}' > "$A/.os/config.json"
+git -C "$A" add -A && git -C "$A" commit -qm category
+out=$("$H/home" status); grep -q "junk line" <<<"$out" && bad "status listed a folder the folder's own config ignores" || ok
 out=$("$H/home" status); has "$out" "ring the client" "status shows the next action"
+has "$out" "send the quote" "status finds projects inside a category folder"
+grep -q '"Big job"' <<<"$out" && bad "status showed a title's quote marks" || ok
 has "$out" "old version, upgrade pending" "status marks old folders"
 
 out=$("$H/home" check); has "$out" "all good" "check runs the folder's own ./os check"
@@ -129,6 +137,57 @@ has "$(cat "$A/os")" "$before" "and the file changed before it is put back"
 
 M2="$T/Two/FolderA"; newfolder "$M2"; "$H/home" add "$M2" "same name" >/dev/null
 out=$("$H/home" sync FolderA 2>&1); has "$out" "More than one folder" "a name two folders share is refused"
+
+mkdir -p "$T/Gone"; "$H/home" add "$T/Gone" "gone" --as new >/dev/null; rmdir "$T/Gone"
+out=$("$H/home" sync Gone 2>&1); has "$out" "isn't there any more" "sync says when a folder has gone"
+grep -q "add " <<<"$out" && bad "sync listed files for a folder that's gone" || ok
+
+# ---- setting up a new folder ----
+FAKE="$T/Downloads/os-template-main"; mkdir -p "$FAKE/me" "$FAKE/notes" "$FAKE/work" "$FAKE/.claude/hooks"
+printf '# Who I am\nTO FILL\n' > "$FAKE/me/who-i-am.md"; printf '# version\tx\n' > "$FAKE/.claude/shipped.tsv"
+printf '#!/bin/sh\n' > "$FAKE/.claude/hooks/a.sh"; chmod +x "$FAKE/.claude/hooks/a.sh"
+out=$("$H/home" new "$T/Fresh" "a fresh one" --from "$FAKE" 2>&1); has "$out" "Made" "new makes a folder from a blank template"
+[ -f "$T/Fresh/me/who-i-am.md" ] && ok || bad "the new folder has the template in it"
+has "$(git -C "$T/Fresh" log --oneline 2>&1)" "fresh OS folder" "the new folder starts with a commit"
+has "$(grep Fresh "$H/folders.tsv")" "template" "the new folder is on the list"
+(cd "$T/Downloads" && python3 -c "import shutil; shutil.make_archive('t', 'zip', '.', 'os-template-main')")
+python3 - "$T/Downloads/t.zip" <<'PY'
+import sys, zipfile
+src = sys.argv[1]; out = src.replace("t.zip", "t2.zip")
+with zipfile.ZipFile(src) as a, zipfile.ZipFile(out, "w") as b:
+    for i in a.infolist():
+        if i.filename.endswith("a.sh"):
+            i.external_attr = (0o100755 << 16)
+        b.writestr(i, a.read(i))
+PY
+out=$("$H/home" new "$T/Zipped" "from a zip" --from "$T/Downloads/t2.zip" 2>&1); has "$out" "Made" "new works from a zip"
+[ -x "$T/Zipped/.claude/hooks/a.sh" ] && ok || bad "a hook from the zip lost its run bit"
+out=$("$H/home" new "$T/Fresh" "again" --from "$FAKE" 2>&1); has "$out" "already something" "new never overwrites a folder"
+out=$("$H/home" new "$A/Inner" "nested" --from "$FAKE" 2>&1); has "$out" "inside another" "new refuses to nest OS folders"
+[ -e "$A/Inner" ] && bad "a refused new still made something" || ok
+echo "Zid, video editor" > "$FAKE/me/who-i-am.md"
+out=$("$H/home" new "$T/Used" "used" --from "$FAKE" 2>&1); has "$out" "filled in already" "new refuses a template someone filled in"
+out=$("$H/home" new "$T/Nope" "no starter" --as new 2>&1); has "$out" "master/starter" "an ./os folder needs a starter"
+mkdir -p "$H/master/starter/.os"; echo '{"name": "x"}' > "$H/master/starter/.os/config.json"; echo "rules" > "$H/master/starter/AGENTS.md"
+out=$("$H/home" new "$T/Brand" "an os one" 2>&1); has "$out" "Made" "new makes an ./os folder"
+has "$(cat "$T/Brand/.os/config.json")" '"Brand"' "the ./os folder is named after itself"
+has "$(cat "$T/Brand/.os/engine.py")" "engine v2" "the ./os folder gets the shared program"
+[ -d "$T/Brand/Work" ] && [ -d "$T/Brand/Notes" ] && [ -d "$T/Brand/Archive" ] && ok || bad "a new ./os folder is missing its rooms"
+out=$("$H/home" sync Brand 2>&1); has "$out" "already the same" "a new ./os folder already matches master"
+
+# A purpose with a line break used to split into a second, broken line.
+mkdir -p "$T/Multi"; out=$("$H/home" add "$T/Multi" "$(printf 'line one\nline two')" --as new)
+has "$(grep Multi "$H/folders.tsv")" "line one line two" "a line break in the purpose stays on one line"
+[ "$(grep -c . "$H/folders.tsv")" -eq "$(grep -c '	' "$H/folders.tsv")" ] && ok || bad "folders.tsv has a broken line"
+# A CLAUDE.md above the spot, even in the home folder of the computer, is refused.
+mkdir -p "$T/Home"; echo "rules" > "$T/Home/CLAUDE.md"
+out=$(HOME="$T/Home" "$H/home" new "$T/Home/inside" "x" --from "$FAKE" 2>&1); has "$out" "has a CLAUDE.md" "new refuses a spot under any CLAUDE.md"
+[ -e "$T/Home/inside" ] && bad "a refused new still made something" || ok
+# master/new can't carry a file into a person's rooms of a new folder either.
+mkdir -p "$H/master/new/work"; echo x > "$H/master/new/work/evil.md"
+out=$("$H/home" new "$T/Evil" "x" --as new 2>&1); has "$out" "isn't something a folder should get" "new refuses a bad file in master"
+[ -e "$T/Evil" ] && bad "a refused new still made something" || ok
+rm -r "$H/master/new/work"
 
 grep -nE 'rmtree|unlink|os\.remove|rmdir|os\.rename|"rm"|git.*"rm"|"mv"' "$REAL/home" && bad "home has a way to delete or move" || ok
 grep -nE '"--fix"' "$REAL/home" && bad "home can run a fix" || ok

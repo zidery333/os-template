@@ -6,3 +6,5 @@ What `./home sync` hands out. Nothing loose in this folder goes anywhere.
   have. Copy the whole skill folder in.
 - `new/` — the shared `./os` program and skills, for folders that run it.
   Most people won't have any.
+- `starter/` — the first files a new `./os` folder gets from `./home new --as new`,
+  besides what's in `new/`. Sync never hands these out.

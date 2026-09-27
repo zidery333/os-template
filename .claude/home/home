@@ -6,19 +6,24 @@
   ./home sync [name]             show every file sync would add or change (writes nothing)
   ./home sync <name> --apply     write those files, then commit them in that folder
   ./home add <path> "what it's for" [--as old]
+  ./home new <path> "what it's for"   set up a brand-new OS folder there
 
 The folders are listed in folders.tsv, next to this script. The shared copy that
 sync hands out lives in master/. This script never deletes anything, never writes
 into anyone's Work, Notes or Archive, and never starts a job in another folder.
 """
 import filecmp
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+TEMPLATE_ZIP = "https://github.com/zidery333/os-template/archive/refs/heads/main.zip"
 REGISTRY = os.path.join(HERE, "folders.tsv")
 MASTER = os.path.join(HERE, "master")
 
@@ -188,7 +193,7 @@ def header(text):
         for line in text[4:end].splitlines():
             if ":" in line:
                 k, v = line.split(":", 1)
-                meta[k.strip()] = v.strip()
+                meta[k.strip()] = v.strip().strip("'\"")
     return meta
 
 
@@ -204,7 +209,8 @@ def first_line_under(text, heading):
                 s = re.sub(r"^([-*]|\d+[.)])?\s*(\[[ xX]\])?\s*", "", nxt.strip()) if not got else nxt.strip()
                 if s:
                     got.append(s)
-            return " ".join(got).replace("**", "")
+            # Bold and italic marks are for reading the file, not this list.
+            return " ".join(got).replace("*", "")
     return ""
 
 
@@ -212,13 +218,35 @@ def cut(s, n=100):
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
-def items_new(path):
-    work = os.path.join(path, "Work")
-    rows = []
-    for name in sorted(os.listdir(work)) if os.path.isdir(work) else []:
-        readme = os.path.join(work, name, "README.md")
-        if name == "Content" or not os.path.isfile(readme):
+def skipped_names(path):
+    """Folders the folder's own ./os never treats as projects: Content, plus
+    whatever its .os/config.json adds under "ignore"."""
+    names = {"Content"}
+    try:
+        with open(os.path.join(path, ".os", "config.json"), encoding="utf-8") as f:
+            names.update(str(n) for n in json.load(f).get("ignore") or [])
+    except (OSError, ValueError, AttributeError):
+        pass
+    return names
+
+
+def work_items(folder, skip):
+    """Every project folder in Work/, including those grouped into category
+    folders (a folder holding a .category file)."""
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        here = os.path.join(folder, name)
+        if name in skip or name.startswith(".") or os.path.islink(here) or not os.path.isdir(here):
             continue
+        if os.path.isfile(os.path.join(here, ".category")):
+            for item in work_items(here, skip):
+                yield item
+        elif os.path.isfile(os.path.join(here, "README.md")):
+            yield name, os.path.join(here, "README.md")
+
+
+def items_new(path):
+    rows = []
+    for name, readme in work_items(os.path.join(path, "Work"), skipped_names(path)):
         with open(readme, encoding="utf-8", errors="replace") as f:
             text = f.read()
         meta = header(text)
@@ -375,6 +403,9 @@ def cmd_sync(args):
         if f["kind"] not in ALLOWED:
             say("  old version, upgrade pending — sync skips it")
             continue
+        if not os.path.isdir(f["path"]):
+            say("  missing: %s isn't there any more" % f["path"])
+            continue
         if inside(HERE, f["path"]) or inside(f["path"], HERE):
             say("  skipped: it holds this home folder, or sits inside it")
             continue
@@ -459,9 +490,19 @@ def cmd_add(args):
         stop("Refusing: a folder can't hold this home folder or sit inside it.")
     if any(os.path.realpath(f["path"]) == path for f in load()):
         stop("%s is already listed." % path)
+    for f in load():
+        if inside(path, f["path"]) or inside(f["path"], path):
+            stop("Refusing: %s sits inside %s, or holds it. Claude would load both folders' rules." % (path, f["name"]))
     kind = kind or detect(path)
     if kind not in ("new", "old", "template"):
         stop("%s doesn't look like an OS folder. Use --as old or --as new to say which it is." % path)
+    register(path, kind, purpose)
+
+
+def register(path, kind, purpose):
+    if "\t" in path or "\n" in path:
+        stop("Refusing: a folder name with a tab or line break in it would break folders.tsv.")
+    purpose = " ".join(purpose.split())
     home = os.path.expanduser("~")
     shown = "~" + path[len(home):] if path.startswith(home + "/") else path
     new = not os.path.exists(REGISTRY)
@@ -472,8 +513,143 @@ def cmd_add(args):
     say("Added %s as %s." % (shown, kind))
 
 
+# ---------- new ----------
+
+def take_flag(args, flag):
+    if flag not in args:
+        return args, ""
+    i = args.index(flag)
+    return args[:i] + args[i + 2:], (args[i + 1] if i + 1 < len(args) else "")
+
+
+def unzip(zip_path, into):
+    """Unpack a zip, keeping which files can be run. Python's own unzip drops
+    that, and a hook that can't run fails without a word."""
+    real = os.path.realpath(into)
+    with zipfile.ZipFile(zip_path) as z:
+        for info in z.infolist():
+            target = os.path.realpath(os.path.join(into, info.filename))
+            if not target.startswith(real + os.sep):
+                stop("Refusing: the download tries to put a file outside its own folder.")
+            z.extract(info, into)
+            mode = info.external_attr >> 16
+            if mode and not info.is_dir():
+                os.chmod(target, mode & 0o777)
+    tops = [d for d in os.listdir(into) if not d.startswith(".")]
+    return os.path.join(into, tops[0]) if len(tops) == 1 else into
+
+
+def fresh_template(source, tmp):
+    """A never-used copy of the template: downloaded, or from --from."""
+    if not source:
+        say("Downloading the template…")
+        zip_path = os.path.join(tmp, "template.zip")
+        try:
+            r = subprocess.run(["curl", "-sfL", "-o", zip_path, TEMPLATE_ZIP], timeout=300)
+        except (OSError, subprocess.TimeoutExpired):
+            r = None
+        if r is None or r.returncode:
+            stop("Couldn't download the template. Check the internet, or use --from <folder or zip>.")
+        source = zip_path
+    source = os.path.expanduser(source)
+    if os.path.isfile(source) and zipfile.is_zipfile(source):
+        folder = unzip(source, os.path.join(tmp, "unzipped"))
+    elif os.path.isdir(source):
+        folder = os.path.join(tmp, "copy")
+        shutil.copytree(source, folder, symlinks=True,
+                        ignore=shutil.ignore_patterns(".git", ".state", ".upgrade", ".DS_Store"))
+    else:
+        stop("There's no folder or zip at %s." % source)
+    if not os.path.isfile(os.path.join(folder, ".claude", "shipped.tsv")) or detect(folder) != "template":
+        stop("That isn't a copy of the OS template.")
+    try:
+        with open(os.path.join(folder, "me", "who-i-am.md"), encoding="utf-8") as f:
+            blank = "TO FILL" in f.read()
+    except OSError:
+        blank = False
+    if not blank:
+        stop("That copy has been filled in already. A new folder starts from a blank one.")
+    return folder
+
+
+def fresh_new(tmp, name):
+    """A new ./os folder: master/starter/ for its own first files, then the
+    shared program and skills from master/new/."""
+    starter = os.path.join(MASTER, "starter")
+    if not os.path.isdir(starter) or not os.path.isdir(os.path.join(MASTER, "new")):
+        stop("Making an ./os folder needs master/starter/ and master/new/ here.")
+    folder = os.path.join(tmp, "new")
+    shutil.copytree(starter, folder, ignore=shutil.ignore_patterns(*JUNK))
+    for src, dest in master_files("new"):
+        if not safe("new", dest) or os.path.islink(src):
+            stop("Refusing: master/new/%s isn't something a folder should get." % dest)
+        target = os.path.join(folder, dest)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(src, target)
+    for room in ("Work", "Notes", "Archive"):
+        os.makedirs(os.path.join(folder, room), exist_ok=True)
+    config = os.path.join(folder, ".os", "config.json")
+    if os.path.isfile(config):
+        with open(config, encoding="utf-8") as f:
+            data = json.load(f)
+        data["name"] = name
+        with open(config, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    return folder
+
+
+def cmd_new(args):
+    args, kind = take_flag(args, "--as")
+    args, source = take_flag(args, "--from")
+    # A home that keeps a starter for ./os folders makes those unless told otherwise.
+    kind = kind or ("new" if os.path.isdir(os.path.join(MASTER, "starter")) else "template")
+    if not args:
+        stop('Usage: ./home new <path> "what it is for"')
+    if kind not in ("template", "new"):
+        stop("--as takes template or new.")
+    path = os.path.abspath(os.path.expanduser(args[0]))
+    purpose = " ".join(args[1:]).strip() or "—"
+    if os.path.lexists(path) and (not os.path.isdir(path) or os.listdir(path)):
+        stop("There's already something at %s. A new folder needs an empty spot." % path)
+    if inside(path, HERE) or inside(HERE, path):
+        stop("Refusing: the new folder can't hold this home folder or sit inside it.")
+    for f in load():
+        if inside(path, f["path"]) or inside(f["path"], path):
+            stop("Refusing: that would put one OS folder inside another (%s).\n"
+                 "Claude would load both folders' rules at once. Put it beside them." % f["name"])
+    up = os.path.dirname(path)
+    while up != os.path.dirname(up):
+        if os.path.isfile(os.path.join(up, "CLAUDE.md")):
+            stop("Refusing: %s has a CLAUDE.md, so a folder inside it would get its rules too." % up)
+        up = os.path.dirname(up)
+    with tempfile.TemporaryDirectory() as tmp:
+        built = fresh_template(source, tmp) if kind == "template" else fresh_new(tmp, os.path.basename(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.isdir(path):
+            for name in os.listdir(built):
+                shutil.move(os.path.join(built, name), os.path.join(path, name))
+        else:
+            shutil.move(built, path)
+    git(path, "init", "-q")
+    git(path, "add", "-A")
+    if git(path, "var", "GIT_AUTHOR_IDENT").returncode == 0 and \
+            git(path, "commit", "-q", "-m", "A fresh OS folder, set up by the home folder").returncode == 0:
+        saved = "It's in git, with a first commit to go back to."
+    else:
+        saved = "It's in git, but git doesn't know your name yet, so nothing is committed."
+    register(path, kind, purpose)
+    say("Made %s. %s" % (path, saved))
+    if kind == "template":
+        say("Next: open it in Claude Code and type /setup.",
+            "  cd \"%s\" && claude" % path)
+    else:
+        say("Next: open it in any AI and run ./os — it says hello and asks what you're working on.")
+
+
 def main():
-    cmds = {"status": cmd_status, "check": cmd_check, "sync": cmd_sync, "add": cmd_add}
+    cmds = {"status": cmd_status, "check": cmd_check, "sync": cmd_sync, "add": cmd_add,
+            "new": cmd_new}
     args = sys.argv[1:]
     if not args or args[0] not in cmds:
         say(__doc__.strip())
