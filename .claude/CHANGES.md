@@ -3,6 +3,20 @@
 Newest at the top. `/update-os` reads this to know what to carry into files
 you've made your own, so each entry says exactly what moved, file by file.
 
+## 2026-09-26.4 — an optional home folder for people with several OS folders
+
+- **New: `.claude/home/`.** An optional home folder: copy it out beside your OS
+  folders and it shows what's on the go in each (`./home status`), runs their
+  checks (`./home check`), and sends shared skills to all of them
+  (`./home sync`, a dry run until you add `--apply`). It never writes into
+  me/, notes/ or work/, never deletes, and refuses when a folder isn't in git,
+  has unsaved changes to a file it would write, or has something running in it.
+  `.claude/home/README.md` says how to set it up.
+- **`.claude/tests/run.sh`:** also runs the home folder's own checks, and
+  checks its scripts can be run.
+- **`README.md`:** new part, "Got more than one OS folder?", before "Keeping it safe".
+- **`.claude/README.md`:** the table lists `home/`.
+
 ## 2026-09-26.3 — /wrapup, and setup stops guessing
 
 - **New: `.claude/skills/wrapup/SKILL.md`.** Say you're done and it makes sure

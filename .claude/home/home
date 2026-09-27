@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""home — look after several OS folders from one place.
+
+  ./home status                  what's on the go in every folder, on one screen
+  ./home check                   run each folder's own check (never fixes anything)
+  ./home sync [name]             show every file sync would add or change (writes nothing)
+  ./home sync <name> --apply     write those files, then commit them in that folder
+  ./home add <path> "what it's for" [--as old]
+
+The folders are listed in folders.tsv, next to this script. The shared copy that
+sync hands out lives in master/. This script never deletes anything, never writes
+into anyone's Work, Notes or Archive, and never starts a job in another folder.
+"""
+import filecmp
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+REGISTRY = os.path.join(HERE, "folders.tsv")
+MASTER = os.path.join(HERE, "master")
+
+# Rooms that belong to the person, in either layout. Sync refuses any path
+# inside them. Lower case because a Mac treats Work and work as the same folder.
+PROTECTED = {"work", "notes", "archive", "me"}
+
+# The only places sync may write, per kind of folder.
+ALLOWED = {
+    "new": ("os", ".os/engine.py", ".os/learn.py", ".os/upgrade.py",
+            ".os/shipped.json", ".os/templates/", ".os/tests/", ".claude/skills/"),
+    "template": (".claude/skills/",),
+}
+JUNK = {"__pycache__", ".DS_Store"}
+
+
+def say(*lines):
+    for line in lines:
+        print(line)
+
+
+def stop(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------- the list of folders ----------
+
+def load():
+    folders = []
+    if not os.path.exists(REGISTRY):
+        return folders
+    with open(REGISTRY, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            parts += [""] * (3 - len(parts))
+            path = os.path.expanduser(parts[0])
+            folders.append({"path": path, "kind": parts[1], "purpose": parts[2],
+                            "name": os.path.basename(path.rstrip("/"))})
+    return folders
+
+
+def detect(path):
+    if os.path.isfile(os.path.join(path, ".os", "engine.py")) and os.path.isfile(os.path.join(path, "os")):
+        return "new"
+    if all(os.path.isdir(os.path.join(path, d)) for d in ("me", "notes", "work")):
+        return "template"
+    return ""
+
+
+def inside(a, b):
+    """True when a is b or somewhere inside it."""
+    a, b = os.path.realpath(a), os.path.realpath(b)
+    return a == b or a.startswith(b.rstrip("/") + "/")
+
+
+def pick(folders, name):
+    hits = [f for f in folders if f["name"].lower() == name.lower()
+            or os.path.realpath(f["path"]) == os.path.realpath(os.path.expanduser(name))]
+    if not hits:
+        stop("No folder called '%s' in folders.tsv. ./home status lists them." % name)
+    if len(hits) > 1:
+        stop("More than one folder is called '%s'. Give its whole path instead." % name)
+    return hits[0]
+
+
+# ---------- what's running ----------
+
+def my_ancestors():
+    pids, pid = set(), os.getpid()
+    while pid > 1 and pid not in pids:
+        pids.add(pid)
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                 capture_output=True, text=True).stdout.strip()
+            pid = int(out)
+        except (ValueError, OSError):
+            break
+    return pids
+
+
+def open_files():
+    """Every program's working folder and open files, the way lsof -F prints
+    them. Linux often has no lsof, so read /proc there instead."""
+    try:
+        return subprocess.run(["lsof", "-n", "-w", "-F", "pcn"], capture_output=True,
+                              text=True, timeout=120).stdout
+    except FileNotFoundError:
+        if not os.path.isdir("/proc/self/fd"):
+            return ""
+    lines = []
+    for pid in (d for d in os.listdir("/proc") if d.isdigit()):
+        try:
+            with open("/proc/%s/comm" % pid) as f:
+                lines += ["p" + pid, "c" + f.read().strip()]
+            lines.append("n" + os.readlink("/proc/%s/cwd" % pid))
+            for fd in os.listdir("/proc/%s/fd" % pid):
+                lines.append("n" + os.readlink("/proc/%s/fd/%s" % (pid, fd)))
+        except OSError:
+            continue
+    return "\n".join(lines)
+
+
+def running_in(paths):
+    """Map each path to the programs that have their working folder or an open
+    file inside it. None means the check itself failed, so nobody can be sure."""
+    try:
+        out = open_files()
+        ps = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "args="], capture_output=True,
+                            text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if not out:
+        return None
+    mine = my_ancestors()
+    found = {p: {} for p in paths}
+    real = {p: os.path.realpath(p).rstrip("/") for p in paths}
+    pid, cmd = 0, ""
+    for line in out.splitlines():
+        tag, val = line[:1], line[1:]
+        if tag == "p":
+            pid, cmd = int(val), ""
+        elif tag == "c":
+            cmd = val
+        elif tag == "n" and pid not in mine:
+            for p in paths:
+                if val == real[p] or val.startswith(real[p] + "/"):
+                    found[p][pid] = cmd
+    for line in ps.splitlines():
+        bits = line.strip().split(None, 1)
+        if len(bits) == 2 and bits[0].isdigit() and int(bits[0]) not in mine:
+            for p in paths:
+                if real[p] + "/" in bits[1] or bits[1].endswith(real[p]):
+                    found[p].setdefault(int(bits[0]), os.path.basename(bits[1].split()[0]))
+    return found
+
+
+# ---------- git ----------
+
+def git(path, *args):
+    return subprocess.run(["git", "--no-optional-locks", "-C", path] + list(args),
+                          capture_output=True, text=True)
+
+
+def is_repo(path):
+    r = git(path, "rev-parse", "--show-toplevel")
+    return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(path)
+
+
+def dirty(path, paths=None):
+    args = ["status", "--porcelain", "--untracked-files=all"]
+    if paths:
+        args += ["--"] + paths
+    r = git(path, *args)
+    return [l[3:] for l in r.stdout.splitlines()] if r.returncode == 0 else None
+
+
+# ---------- status ----------
+
+def header(text):
+    meta = {}
+    if text.startswith("---\n"):
+        end = text.find("\n---", 4)
+        for line in text[4:end].splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                meta[k.strip()] = v.strip()
+    return meta
+
+
+def first_line_under(text, heading):
+    """The first entry under a heading, with any lines it wraps onto."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().lower() == heading.lower():
+            got = []
+            for nxt in lines[i + 1:]:
+                if nxt.startswith("## ") or (got and (not nxt.strip() or nxt.lstrip()[:1] in "-*" or nxt[:1].isdigit())):
+                    break
+                s = re.sub(r"^([-*]|\d+[.)])?\s*(\[[ xX]\])?\s*", "", nxt.strip()) if not got else nxt.strip()
+                if s:
+                    got.append(s)
+            return " ".join(got).replace("**", "")
+    return ""
+
+
+def cut(s, n=100):
+    return s if len(s) <= n else s[:n - 1].rstrip() + "…"
+
+
+def items_new(path):
+    work = os.path.join(path, "Work")
+    rows = []
+    for name in sorted(os.listdir(work)) if os.path.isdir(work) else []:
+        readme = os.path.join(work, name, "README.md")
+        if name == "Content" or not os.path.isfile(readme):
+            continue
+        with open(readme, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        meta = header(text)
+        state = meta.get("status", "?")
+        if state == "holding":
+            line = "holding — " + first_line_under(text, "## Where it stands")
+        else:
+            line = state + " — next: " + (first_line_under(text, "## Next action") or "nothing written")
+        rows.append("  %s: %s" % (meta.get("title", name), cut(line)))
+    return rows or ["  nothing in Work/"]
+
+
+def items_template(path):
+    rows, active = [], False
+    try:
+        with open(os.path.join(path, "work", "projects.md"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ["  no work/projects.md"]
+    for line in lines:
+        if line.startswith("## "):
+            active = line.strip() == "## Active"
+        elif active and line.startswith("- ["):
+            name = line[3:line.find("]")]
+            nxt = ""
+            try:
+                with open(os.path.join(path, "work", name, "brief.md"), encoding="utf-8") as f:
+                    for b in f.read().split("\n**"):
+                        if b.startswith("Next:**"):
+                            nxt = " ".join(b[7:].split())
+            except OSError:
+                pass
+            rows.append("  %s — next: %s" % (name, cut(nxt or "nothing written")))
+    return rows or ["  no active projects"]
+
+
+def cmd_status(_args):
+    folders = load()
+    if not folders:
+        stop('No folders yet. Add one: ./home add ~/SomeFolder "what it is for"')
+    busy = running_in([f["path"] for f in folders])
+    for f in folders:
+        say("", "%s — %s" % (f["name"], f["purpose"]))
+        if not os.path.isdir(f["path"]):
+            say("  missing: %s isn't there any more" % f["path"])
+            continue
+        progs = (busy or {}).get(f["path"], {})
+        # Claude's own program is named after its version, like 2.1.282.
+        names = sorted(set("claude" if n.replace(".", "").isdigit() else n for n in progs.values()))
+        run = "busy: %s" % ", ".join(names) if names else "nothing running"
+        if busy is None:
+            run = "couldn't check what's running"
+        d = dirty(f["path"]) if is_repo(f["path"]) else None
+        saved = "not in git" if d is None else ("all saved" if not d else "%d unsaved files" % len(d))
+        say("  %s · %s" % (run, saved))
+        if f["kind"] == "old":
+            say("  old version, upgrade pending")
+        elif f["kind"] == "new":
+            say(*items_new(f["path"]))
+        else:
+            say(*items_template(f["path"]))
+
+
+# ---------- check ----------
+
+def cmd_check(_args):
+    worst = 0
+    for f in load():
+        say("", "== %s" % f["name"])
+        if f["kind"] == "old":
+            say("  old version, upgrade pending — no check yet")
+            continue
+        if f["kind"] == "new":
+            cmd = [os.path.join(f["path"], "os"), "check"]
+        else:
+            cmd = ["bash", os.path.join(f["path"], ".claude", "tests", "run.sh")]
+        try:
+            r = subprocess.run(cmd, cwd=f["path"], capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            say("  couldn't run it: %s" % e)
+            worst = 1
+            continue
+        for line in (r.stdout + r.stderr).rstrip().splitlines():
+            say("  " + line)
+        if r.returncode:
+            worst = 1
+    sys.exit(worst)
+
+
+# ---------- sync ----------
+
+def master_files(kind):
+    # Only what sits inside master/<kind>/ is handed out. A note left loose in
+    # master/ itself stays there.
+    root = os.path.join(MASTER, kind)
+    out = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if x not in JUNK)
+        for name in sorted(files):
+            if name in JUNK or name.endswith(".pyc"):
+                continue
+            src = os.path.join(d, name)
+            rel = os.path.relpath(src, root)
+            dest = ".claude/" + rel if rel.startswith("skills/") else rel
+            out.append((src, dest))
+    return out
+
+
+def safe(kind, dest):
+    parts = dest.split("/")
+    if parts[0].lower() in PROTECTED or ".." in parts or dest.startswith("/"):
+        return False
+    return any(dest == a or (a.endswith("/") and dest.startswith(a)) for a in ALLOWED.get(kind, ()))
+
+
+def escapes(root, dest):
+    """True when writing dest would land outside root, or on a link. A linked
+    skills folder could point into another OS folder entirely."""
+    path = root
+    for part in dest.split("/"):
+        path = os.path.join(path, part)
+        if os.path.islink(path):
+            return True
+    real = os.path.realpath(root)
+    return not os.path.realpath(os.path.join(root, dest)).startswith(real + "/")
+
+
+def plan(f):
+    changes = []
+    for src, dest in master_files(f["kind"]):
+        if not safe(f["kind"], dest):
+            stop("Refusing: master/%s would write %s, which sync is never allowed to touch." % (f["kind"], dest))
+        if escapes(f["path"], dest):
+            stop("Refusing: %s in %s is a link, or leads outside the folder." % (dest, f["name"]))
+        target = os.path.join(f["path"], dest)
+        if os.path.isdir(target):
+            stop("Refusing: %s in %s is a folder, where master has a file." % (dest, f["name"]))
+        if not os.path.exists(target):
+            changes.append(("add", src, dest))
+        elif not filecmp.cmp(src, target, shallow=False):
+            changes.append(("change", src, dest))
+    return changes
+
+
+def cmd_sync(args):
+    apply = "--apply" in args
+    names = [a for a in args if not a.startswith("--")]
+    folders = load()
+    if apply and not names:
+        stop("--apply needs one folder name, so nothing is written by accident.")
+    todo = [pick(folders, n) for n in names] if names else folders
+    for f in todo:
+        say("", "== %s" % f["name"])
+        if f["kind"] not in ALLOWED:
+            say("  old version, upgrade pending — sync skips it")
+            continue
+        if inside(HERE, f["path"]) or inside(f["path"], HERE):
+            say("  skipped: it holds this home folder, or sits inside it")
+            continue
+        if not os.path.isdir(os.path.join(MASTER, f["kind"])):
+            say("  nothing in master/%s to hand out" % f["kind"])
+            continue
+        changes = plan(f)
+        if not changes:
+            say("  already the same as master — nothing to do")
+            continue
+        for what, _src, dest in changes:
+            say("  %-6s %s" % (what, dest))
+        say("  %d files. Skills that aren't in master are left alone." % len(changes))
+        if apply:
+            write(f, changes)
+        else:
+            say("  Dry run: nothing written. Add --apply to write.")
+
+
+def write(f, changes):
+    path, dests = f["path"], [c[2] for c in changes]
+    if not is_repo(path):
+        stop("Refusing: %s isn't a git folder, so this couldn't be undone." % path)
+    d = dirty(path, dests)
+    if d is None or d:
+        stop("Refusing: these files have unsaved changes in %s:\n  %s\nCommit or undo them first."
+             % (path, "\n  ".join(d or ["(git couldn't say)"])))
+    # git status says nothing about files it ignores or never tracked, so an
+    # edit there would be lost for good. Only overwrite what git can bring back.
+    for what, _src, dest in changes:
+        if git(path, "check-ignore", "-q", "--", dest).returncode == 0:
+            stop("Refusing: git ignores %s in %s, so this couldn't be undone." % (dest, path))
+        if what == "change" and git(path, "ls-files", "--error-unmatch", "--", dest).returncode:
+            stop("Refusing: %s in %s was never committed, so git couldn't bring it back." % (dest, path))
+    if git(path, "var", "GIT_AUTHOR_IDENT").returncode:
+        stop("Refusing: git doesn't know your name in %s, so it couldn't commit.\n"
+             "Tell it once: git config --global user.name \"Your Name\" and user.email." % path)
+    busy = running_in([path])
+    if busy is None:
+        stop("Refusing: couldn't check what's running in %s." % path)
+    if busy[path]:
+        stop("Refusing: something is running in %s:\n  %s\nWait for it to finish."
+             % (path, "\n  ".join("%s (pid %d)" % (c, p) for p, c in sorted(busy[path].items()))))
+    done = []
+    for what, src, dest in changes:
+        target = os.path.join(path, dest)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(src, target)
+        except OSError as e:
+            back = [d for w, d in done if w == "change"]
+            if back:
+                git(path, "checkout", "--", *back)
+            new = [d for w, d in done if w == "add"]
+            stop("Stopped: couldn't write %s (%s). Changed files were put back.%s"
+                 % (dest, e, "\nNew files left behind, safe to remove:\n  " + "\n  ".join(new) if new else ""))
+        done.append((what, dest))
+    r = git(path, "add", "--", *dests)
+    if r.returncode == 0:
+        r = git(path, "commit", "-q", "-m", "Sync shared skills from the home folder", "--", *dests)
+    if r.returncode:
+        stop("Files were written but the commit failed:\n%s" % (r.stderr or r.stdout))
+    sha = git(path, "rev-parse", "--short", "HEAD").stdout.strip()
+    say("  Written and committed as %s. To undo: git -C \"%s\" revert %s" % (sha, path, sha))
+
+
+# ---------- add ----------
+
+def cmd_add(args):
+    kind = ""
+    if "--as" in args:
+        i = args.index("--as")
+        kind = args[i + 1] if i + 1 < len(args) else ""
+        args = args[:i] + args[i + 2:]
+    if not args:
+        stop('Usage: ./home add <path> "what it is for" [--as old]')
+    path = os.path.realpath(os.path.expanduser(args[0]))
+    purpose = " ".join(args[1:]).strip() or "—"
+    if not os.path.isdir(path):
+        stop("There's no folder at %s." % path)
+    if inside(path, HERE) or inside(HERE, path):
+        stop("Refusing: a folder can't hold this home folder or sit inside it.")
+    if any(os.path.realpath(f["path"]) == path for f in load()):
+        stop("%s is already listed." % path)
+    kind = kind or detect(path)
+    if kind not in ("new", "old", "template"):
+        stop("%s doesn't look like an OS folder. Use --as old or --as new to say which it is." % path)
+    home = os.path.expanduser("~")
+    shown = "~" + path[len(home):] if path.startswith(home + "/") else path
+    new = not os.path.exists(REGISTRY)
+    with open(REGISTRY, "a", encoding="utf-8") as fh:
+        if new:
+            fh.write("# path\tkind (new, old or template)\twhat it is for\n")
+        fh.write("%s\t%s\t%s\n" % (shown, kind, purpose.replace("\t", " ")))
+    say("Added %s as %s." % (shown, kind))
+
+
+def main():
+    cmds = {"status": cmd_status, "check": cmd_check, "sync": cmd_sync, "add": cmd_add}
+    args = sys.argv[1:]
+    if not args or args[0] not in cmds:
+        say(__doc__.strip())
+        sys.exit(0 if not args or args[0] in ("help", "-h", "--help") else 1)
+    cmds[args[0]](args[1:])
+
+
+if __name__ == "__main__":
+    main()

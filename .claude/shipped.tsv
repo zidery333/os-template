@@ -1,14 +1,19 @@
 # What the template shipped: one fingerprint per file. Written by
 # .claude/scripts/upgrade.sh. Leave it alone; it is how an upgrade
 # tells your changes from the template's.
-# version	2026-09-26.3
-268721529-1841	.claude/CHANGES.md
-768626015-8187	.claude/README.md
+# version	2026-09-26.4
+1139541600-2676	.claude/CHANGES.md
+267675495-8345	.claude/README.md
 1900124940-1296	.claude/agents/README.md
 2725082446-997	.claude/guides/blank-note.md
 773775918-2649	.claude/guides/getting-the-text.md
 2320127639-5054	.claude/guides/how-to-add-stuff.md
 2014219911-3140	.claude/guides/ideas-not-apps.md
+1256541366-587	.claude/home/CLAUDE.md
+3587018706-3061	.claude/home/README.md
+2393313516-18745	.claude/home/home
+2489470599-314	.claude/home/master/README.md
+690386143-8112	.claude/home/tests/run.sh
 1798357170-488	.claude/hooks/declined.tsv
 3532788060-3355	.claude/hooks/keep-tidy.sh
 1562010922-20482	.claude/hooks/lib.sh
@@ -35,11 +40,11 @@
 1136093544-3829	.claude/skills/update-os/SKILL.md
 1706400845-2525	.claude/skills/what-do-i-know/SKILL.md
 1584721888-2019	.claude/skills/wrapup/SKILL.md
-694093273-34241	.claude/tests/run.sh
+2589606066-34509	.claude/tests/run.sh
 783184258-760	.gitignore
 1604508048-6762	CLAUDE.md
 291019485-1060	LICENSE
-1688683783-11628	README.md
+194909075-12103	README.md
 3310588861-1940	me/README.md
 1554955216-1689	me/my-setup.md
 3738797066-2996	me/who-i-am.md

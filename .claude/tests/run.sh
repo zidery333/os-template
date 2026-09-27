@@ -735,7 +735,8 @@ say "What gets shipped"
 # Every hook is run by name out of settings.json. Lose the executable bit on
 # one of them — a copy through a zip, a share, a cloud drive — and it stops
 # firing with no message anywhere. Nothing else in this folder would notice.
-for f in "$REAL"/.claude/hooks/*.sh "$REAL"/.claude/scripts/*.sh "$REAL"/.claude/tests/run.sh; do
+for f in "$REAL"/.claude/hooks/*.sh "$REAL"/.claude/scripts/*.sh "$REAL"/.claude/tests/run.sh \
+         "$REAL"/.claude/home/home "$REAL"/.claude/home/tests/run.sh; do
   if [ -x "$f" ]; then pass=$((pass+1)); printf '  ok    %s can be run\n' "${f#$REAL/}"
   else fail=$((fail+1)); printf '  FAIL  %s is not executable — chmod +x it\n' "${f#$REAL/}"; fi
 done
@@ -746,6 +747,9 @@ for rel in $(grep -o '\.claude/[a-z/-]*\.sh' "$REAL/.claude/settings.json" | sor
   if [ -f "$REAL/$rel" ]; then pass=$((pass+1)); printf '  ok    settings.json points at a real %s\n' "$(basename "$rel")"
   else fail=$((fail+1)); printf '  FAIL  settings.json names %s, which does not exist\n' "$rel"; fi
 done
+
+# The home folder kit has checks of its own. Nothing else would notice one breaking.
+ok "the home folder's own checks pass" "$(bash "$REAL/.claude/home/tests/run.sh" 2>&1 | tail -1)" ", 0 failed"
 
 # ---------------------------------------------------------------------------
 printf '\n\033[1m%s passed, %s failed\033[0m\n' "$pass" "$fail"
