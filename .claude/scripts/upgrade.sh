@@ -44,11 +44,13 @@ TEMPLATE_HOME="https://github.com/zidery333/os-template"
 print_hash() { cksum < "$1" | awk '{ print $1 "-" $2 }'; }
 
 # Every file that counts as part of the template, one per line, sorted.
+# .claude/snags.md is the person's own list from /snag, so it never counts,
+# even in a copy that has one by mistake.
 shipped_files() {
   (cd "$1" && find . -type f \
       ! -path './.git/*' ! -path './.claude/.state/*' ! -path './.claude/.upgrade/*' \
       ! -name '.DS_Store' ! -path './.claude/settings.local.json' \
-      ! -path './.claude/shipped.tsv' | sed 's|^\./||' | LC_ALL=C sort)
+      ! -path './.claude/shipped.tsv' ! -path './.claude/snags.md' | sed 's|^\./||' | LC_ALL=C sort)
 }
 
 record_top() {  # record_top <version>

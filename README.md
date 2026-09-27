@@ -38,6 +38,7 @@ work/     what you're making
 /catch-me-up              what's waiting and what went stale
 /update-os                take the newest version, keep your changes
 /wrapup                   before you close a chat
+/snag <what broke>        write it down; on its own, the list to send
 ```
 
 The full list and how every part works: `.claude/README.md`.
@@ -50,13 +51,7 @@ Never rewrite `sources/` or `decisions.md`. They're the record.
 
 ## Make it better
 
-Found something broken? Got a better idea?
-
-Add me on Discord: **zidery333**.
-
-Tell me what broke and what you'd change. A screenshot of the error helps.
-
-The good ones go in the next version.
+Broken thing or better idea? Send your `/snag` list to **zidery333** on Discord.
 
 ## What's proven
 

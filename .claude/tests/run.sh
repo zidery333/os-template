@@ -646,6 +646,40 @@ printf 'MIT\n' > "$FIX/LICENSE"
 no "the license file is not called loose" "$(rot)" "LICENSE"
 
 # ---------------------------------------------------------------------------
+say "The snag list"
+
+# .claude/snags.md is the person's own list from /snag. The template never
+# ships one, an upgrade never touches theirs, and no check nags about it.
+SN="$FIX/snag"; rm -rf "$SN"
+s1="$SN/s1"; mkdir -p "$s1/.claude/scripts"
+cp "$REAL/.claude/scripts/upgrade.sh" "$s1/.claude/scripts/"
+put "$s1/.claude/hooks/a.sh" "old a"; record "$s1" s1 >/dev/null
+s2="$SN/s2"; cp -R "$s1" "$s2"
+put "$s2/.claude/hooks/a.sh" "newer a"
+put "$s2/.claude/snags.md" "a stray list in the new version"
+record "$s2" s2 >/dev/null
+no "a stray snag list never goes in the record" "$(cat "$s2/.claude/shipped.tsv")" "snags.md"
+snagger="$SN/mine"; cp -R "$s1" "$snagger"
+put "$snagger/.claude/snags.md" "- first 2026-09-01 · last 2026-09-02 · 2 times · my snag"
+out=$(bash "$snagger/.claude/scripts/upgrade.sh" "$s2" 2>&1)
+ok "the upgrade still happens" "$(cat "$snagger/.claude/hooks/a.sh")" "newer a"
+ok "and the person's snag list survives it" "$(cat "$snagger/.claude/snags.md")" "2 times · my snag"
+no "and the upgrade never mentions it" "$out" "snags.md"
+no "and it is not in their record" "$(cat "$snagger/.claude/shipped.tsv")" "snags.md"
+
+blank_folder
+{ printf '# Snags\n\n## x\n\n## x\n'; seq 1 300; } > "$FIX/.claude/snags.md"
+quiet "a long snag list is not a notes file"      "$(tidy "$FIX/.claude/snags.md")"
+quiet "and is no record to guard"                 "$(guard Write .claude/snags.md)"
+quiet "and is not a loose file"                   "$(rot)"
+quiet "and a folder with one says nothing at all" "$(health)"
+p4="t$RANDOM"
+quiet "a snag list shown in a code block is not checked for words" \
+      "$(python3 -c 'import json,sys;print(json.dumps({"last_assistant_message":"```\nSnags from my OS folder\n- first 2026-09-01 · last 2026-09-02 · 2 times · it tried to leverage a heuristic\n```","prompt_id":sys.argv[1]}))' "$p4" | "$REAL/.claude/hooks/plain-words.sh")"
+quiet "a /snag message is not a fact about them" \
+      "$(printf '{"user_prompt":"/snag i always have to add a new subject to the map by hand"}' | "$REAL/.claude/hooks/spot-worth-saving.sh")"
+
+# ---------------------------------------------------------------------------
 say "Odd names, odd machines"
 
 # A folder called "My OS". The hook paths in settings.json had no quotes, so

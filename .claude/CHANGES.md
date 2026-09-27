@@ -3,6 +3,35 @@
 Newest at the top. `/update-os` reads this to know what to carry into files
 you've made your own, so each entry says exactly what moved, file by file.
 
+## 2026-09-27.2 — /snag and a one-line contact part
+
+- **New: `.claude/skills/snag/SKILL.md`.** `/snag <what broke>` writes down
+  something wrong with the folder's machinery in `.claude/snags.md`: first
+  seen, last seen, how many times, one sentence. The same snag again bumps its
+  count instead of adding a line. Claude also writes one on its own when the
+  machinery gets in its way, and never puts your own content in it. `/snag` on
+  its own shows the list, most repeated first, ready to send.
+- **`.claude/snags.md` is yours.** The template never ships one, and an
+  upgrade never reads, replaces or mentions it.
+- **`.claude/scripts/upgrade.sh`:** in `shipped_files()`, added
+  `! -path './.claude/snags.md'` after `! -path './.claude/shipped.tsv'`, so
+  the list can never end up in `shipped.tsv`.
+- **`.claude/hooks/spot-worth-saving.sh`:** right after the `LOWER=` line,
+  added `case "$LOWER" in /snag*) exit 0 ;; esac` with a two-line comment, so
+  a `/snag` message isn't offered for saving as a fact about you.
+- **`.claude/tests/run.sh`:** new part, "The snag list", before "Odd names,
+  odd machines": the list stays out of the record, survives an upgrade, and
+  no check nags about it. 160 checks now.
+- **`.claude/README.md`:** a `snags.md` row in the first table, after
+  `CHANGES.md`, and a `snag` row in the skills table, after `update-os`.
+- **`CLAUDE.md`:** one new last bullet under "Working rules": "**Log snags.**
+  When this folder's machinery gets in your way, write it down with `/snag`
+  without asking. Never about my own work." If you edited yours, add that line
+  by hand.
+- **`README.md`:** `/snag` added as the last line of the Commands block. The
+  "Make it better" part is one line now: "Broken thing or better idea? Send
+  your `/snag` list to **zidery333** on Discord." Nothing else changed.
+
 ## 2026-09-27 — a much shorter README
 
 - **`README.md`:** cut from about 1,900 words to about 280. It keeps the

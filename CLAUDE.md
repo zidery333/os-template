@@ -135,6 +135,7 @@ the chat closes.
   folder, even if I point you at one. If something outside is needed, say so
   and let me copy it in myself. The one exception: `/update-os` reads a fresh,
   never-used download of the template.
+- **Log snags.** When this folder's machinery gets in your way, write it down with `/snag` without asking. Never about my own work.
 
 ## What's actually proven here
 

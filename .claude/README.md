@@ -15,6 +15,7 @@ Everything Claude can run. The name is fixed by Claude Code — don't rename it.
 | Scripts | `scripts/*.sh` | Jobs you or a timer run. |
 | Version record | `shipped.tsv` | What the template gave you, one fingerprint per file. How `/update-os` tells your changes apart. Leave it alone. |
 | What changed | `CHANGES.md` | What each version of the template changed, file by file. |
+| Snag list | `snags.md` | Yours: what went wrong with the machinery, written by `/snag`. Never shipped, never touched by an upgrade. |
 | Tests | `tests/run.sh` | Checks that the checks still work. Run it after changing a hook. |
 
 ## The skills
@@ -32,6 +33,7 @@ Everything Claude can run. The name is fixed by Claude Code — don't rename it.
 | `catch-me-up` | **Yes** — when you ask what's new. |
 | `wrapup` | **Yes** — when you say you're done. Makes sure the files are up to date, then says it's safe to close. |
 | `update-os` | **Yes** — when you say you've downloaded a new version. Always shows you first. |
+| `snag` | **Yes** — when the folder's own machinery gets in the way, it writes that down in `snags.md`. Type `/snag` on its own to see the list, ready to send. |
 | `setup` | No. Type `/setup`. It rewrites your files, so it waits to be asked. |
 
 Add `disable-model-invocation: true` to any skill's settings block to make it

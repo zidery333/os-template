@@ -37,6 +37,10 @@ PROMPT=$(printf '%s' "$PROMPT" | python3 -c 'import re,sys
 sys.stdout.write(re.sub(r"<pasted_content[^>]*>.*?</pasted_content[^>]*>", " ", sys.stdin.read(), flags=re.S))')
 LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 
+# A /snag is about this folder's machinery, not about them. "It always asks
+# twice" there is a complaint to write down, not a habit to save.
+case "$LOWER" in /snag*) exit 0 ;; esac
+
 # Phrases that nearly always mean "this is true about me, not just about now".
 SIGNAL='remember that|remember this|note that|don.t forget|keep in mind|from now on|going forward|i prefer|i like it when|i hate|i always|i never|i usually|my setup|i use |i work with|i am working on|i.m working on|actually i|for future|next time|save this|add this to|worth keeping|good to know'
 
