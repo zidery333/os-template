@@ -1,8 +1,8 @@
 # What the template shipped: one fingerprint per file. Written by
 # .claude/scripts/upgrade.sh. Leave it alone; it is how an upgrade
 # tells your changes from the template's.
-# version	2026-09-26.6
-2114905006-4235	.claude/CHANGES.md
+# version	2026-09-27
+2228767530-4638	.claude/CHANGES.md
 768626015-8187	.claude/README.md
 1900124940-1296	.claude/agents/README.md
 2725082446-997	.claude/guides/blank-note.md
@@ -39,7 +39,7 @@
 783184258-760	.gitignore
 1604508048-6762	CLAUDE.md
 291019485-1060	LICENSE
-1688683783-11628	README.md
+3898406400-1773	README.md
 3310588861-1940	me/README.md
 1554955216-1689	me/my-setup.md
 3738797066-2996	me/who-i-am.md

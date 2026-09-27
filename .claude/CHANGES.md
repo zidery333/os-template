@@ -3,6 +3,14 @@
 Newest at the top. `/update-os` reads this to know what to carry into files
 you've made your own, so each entry says exactly what moved, file by file.
 
+## 2026-09-27 — a much shorter README
+
+- **`README.md`:** cut from about 1,900 words to about 280. It keeps the
+  install steps, the four rooms, five commands, two rules and what's proven,
+  and points to `.claude/README.md` for everything else. New part, "Make it
+  better": how to reach the author on Discord with fixes and ideas. Nothing
+  else changed; if you edited your own README, keep yours.
+
 ## 2026-09-26.6 — the home folder is gone again
 
 - **Removed: `.claude/home/`.** Its one real user found it didn't fit how
