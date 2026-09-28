@@ -1,8 +1,8 @@
 # What the template shipped: one fingerprint per file. Written by
 # .claude/scripts/upgrade.sh. Leave it alone; it is how an upgrade
 # tells your changes from the template's.
-# version	2026-09-27.2
-1300105054-6474	.claude/CHANGES.md
+# version	2026-09-27.3
+1971227886-7373	.claude/CHANGES.md
 1930875300-8488	.claude/README.md
 1900124940-1296	.claude/agents/README.md
 2725082446-997	.claude/guides/blank-note.md
@@ -30,7 +30,7 @@
 648929815-3926	.claude/skills/new-skill/SKILL.md
 2958165771-2624	.claude/skills/new-subject/SKILL.md
 643833937-6235	.claude/skills/save-to-my-os/SKILL.md
-2315411921-10832	.claude/skills/setup/SKILL.md
+729727912-11880	.claude/skills/setup/SKILL.md
 2330055746-3264	.claude/skills/snag/SKILL.md
 3844294339-5406	.claude/skills/tidy-up/SKILL.md
 1136093544-3829	.claude/skills/update-os/SKILL.md

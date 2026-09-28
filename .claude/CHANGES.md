@@ -3,6 +3,21 @@
 Newest at the top. `/update-os` reads this to know what to carry into files
 you've made your own, so each entry says exactly what moved, file by file.
 
+## 2026-09-27.3 — /setup saves each answer as it goes
+
+- **`.claude/skills/setup/SKILL.md`:** three changes, nothing else moved.
+  Under "Before you ask anything", a new last paragraph: if
+  `me/setup-answers.md` exists, an earlier setup stopped halfway, so read it,
+  say how far it got, and carry on from the first unanswered question. Under
+  "Rules for the interview", a new rule before the last one: write each
+  answer to `me/setup-answers.md` under its question number before asking
+  the next, and stop if the write fails. The last rule now says answers are
+  already going into that file. Under "Then write the files", the opening
+  line now says to write everything from `me/setup-answers.md`, check every
+  answer landed somewhere, then delete that file.
+- **`me/setup-answers.md` is yours.** The template never ships one. It only
+  exists while a setup is running or stopped halfway.
+
 ## 2026-09-27.2 — /snag and a one-line contact part
 
 - **New: `.claude/skills/snag/SKILL.md`.** `/snag <what broke>` writes down

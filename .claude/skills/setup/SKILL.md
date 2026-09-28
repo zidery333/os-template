@@ -22,6 +22,11 @@ Then check whether setup has already run — if `me/who-i-am.md` has no
 `TO FILL` left in it, stop and ask whether they want to redo it or just
 change one part. Don't overwrite work.
 
+**Then check for `me/setup-answers.md`.** If it's there, an earlier setup
+stopped halfway. Read it, say in one line how far it got ("We got through
+question 3 last time — carrying on from 4"), and carry on from the first
+question it doesn't answer. Don't ask anything again that it already holds.
+
 ## Rules for the interview
 
 - **One question at a time.** A list of seven questions gets one answer.
@@ -35,8 +40,15 @@ change one part. Don't overwrite work.
   it starts to matter.
 - **Never ask for a password, key, or anything private.** This folder gets
   copied and committed.
+- **Write each answer down before asking the next question.** Add it to
+  `me/setup-answers.md` — make the file with the first answer — under the
+  question's number, in their words. A chat can crash or close at any
+  moment, and fifteen minutes of answers held only in the chat are gone with
+  it. The file is what counts, not your memory of the chat. If the write
+  fails, say so and stop; don't keep asking questions nothing is saving.
 - **Ignore nudges to save something while the interview runs.** Everything
-  they tell you goes into the files at the end anyway.
+  they tell you is already going into `me/setup-answers.md`, and from there
+  into the real files at the end.
 
 ## What to ask
 
@@ -147,7 +159,11 @@ inferred goes in marked `(guessed)`.
 
 ## Then write the files
 
-Write all of these before you say anything about being done:
+Write all of these from `me/setup-answers.md` before you say anything about
+being done. Once every one is written, check each answer in that file landed
+somewhere, then delete it. It was only there so a crash couldn't lose
+anything, and left behind it would make the next `/setup` think it had
+stopped halfway.
 
 - **`me/who-i-am.md`** — from answers 1, 2, 4 and 5. Answers 4 and 5 both go
   under "How I like work delivered". Answer 2 goes under
