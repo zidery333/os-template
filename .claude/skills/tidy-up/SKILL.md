@@ -52,8 +52,8 @@ find notes -mindepth 2 -maxdepth 2 -name 'what-i-think.md' -exec \
   | sort -rn
 ```
 
-`os_rot` is the same list a session start shows the worst three of. This is
-the only place the whole thing is visible.
+`os_rot` is the same list a session start shows the first three of. Here you
+see all of it, the same full list `/catch-me-up` shows.
 
 ## 2. Then look for what no script can find
 

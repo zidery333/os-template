@@ -65,7 +65,10 @@ person at most, then back to the job. Don't stop their work to talk about it.
 
 1. Read `.claude/snags.md`. No file, or no lines: say "No snags yet." and stop.
 2. Show every line, most repeated first, inside one code block so it copies
-   cleanly. Above the lines, one heading line: `Snags from my OS folder`.
+   cleanly. Above the lines, one heading line:
+   `Snags from my OS folder — version <v>`, where `<v>` is what follows
+   `# version` near the top of `.claude/shipped.tsv`, or `unknown` if that
+   line isn't there. It tells the author which fixes they already have.
 3. Under it, say: "Read it before you send it, in case something personal
    slipped in. Then paste it to **zidery333** on Discord."
 

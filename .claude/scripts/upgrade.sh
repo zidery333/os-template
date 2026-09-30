@@ -21,7 +21,8 @@
 #   you changed it        left alone; the new version is put beside it in
 #                         .claude/.upgrade/new/ for you to look at
 #   you deleted it        stays deleted, this time and every time after
-#   new in the template   added
+#   new in the template   added, or put beside yours in .claude/.upgrade/new/
+#                         if you already made a file with that name
 #   dropped from it       moved to .claude/.upgrade/removed/ if you never
 #                         changed it, left alone if you did
 #
@@ -83,19 +84,34 @@ main() {
     write_record "$2" "$3"; return 0
   fi
 
-  local preview=0
-  [ "${1:-}" = "--preview" ] && { preview=1; shift; }
+  local preview=0 src="" a
+  for a in "$@"; do
+    case "$a" in
+      --preview) preview=1 ;;
+      -*) die "usage: upgrade.sh [--preview] [<new-copy>]" ;;
+      *) [ -z "$src" ] || die "usage: upgrade.sh [--preview] [<new-copy>]"; src="$a" ;;
+    esac
+  done
 
-  local here new src="${1:-}"
+  local here new
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   if [ -z "$src" ]; then
+    # A download's copy of this script, run from inside your own folder,
+    # would upgrade the download and say it already matches.
+    if [ -f "$PWD/.claude/shipped.tsv" ] && [ "$(pwd -P)" != "$(cd "$here" && pwd -P)" ]; then
+      die "this script upgrades the folder it sits in ($here), not the one you're in. In your own folder run: bash .claude/scripts/upgrade.sh"
+    fi
+    # unzip is missing on some Linux machines; python3 can open a ZIP too.
+    if command -v unzip >/dev/null 2>&1; then unpack() { unzip -q "$1" -d "$2"; }
+    elif command -v python3 >/dev/null 2>&1; then unpack() { python3 -m zipfile -e "$1" "$2"; }
+    else die "this needs unzip, which isn't on this computer. On Ubuntu or Debian: sudo apt install unzip"; fi
     # No folder named: fetch the newest version. The ZIP from GitHub is a
     # fresh copy by definition, so it passes the check below like any other.
     local url="${OS_TEMPLATE_ZIP_URL:-$TEMPLATE_HOME/archive/refs/heads/main.zip}"
     FETCHED="$(mktemp -d)" || die "couldn't make a temporary folder."
     trap 'rm -rf "$FETCHED"' EXIT
     curl -sfL -o "$FETCHED/new.zip" "$url" || die "couldn't download $url. Are you online?"
-    unzip -q "$FETCHED/new.zip" -d "$FETCHED/unzipped" 2>/dev/null || die "the download from $url isn't a ZIP file."
+    unpack "$FETCHED/new.zip" "$FETCHED/unzipped" 2>/dev/null || die "the download from $url isn't a ZIP file."
     src="$(find "$FETCHED/unzipped" -mindepth 1 -maxdepth 1 -type d | head -1)"
     [ -n "$src" ] || die "the download from $url was empty."
     echo "Downloaded the newest version from $TEMPLATE_HOME"
@@ -124,36 +140,48 @@ main() {
 
   local out="$here/.claude/.upgrade" rec_tmp
   rec_tmp="$(mktemp)"
-  local added="" updated="" kept="" gone="" removed="" orphaned=""
+  local added="" updated="" kept="" taken="" gone="" removed="" orphaned="" failed=""
   # Never start over the top of the last upgrade. What it left — your files
   # with a new version beside them, the old versions it kept — would be lost,
   # and the record has already moved on, so none of it would be offered again.
-  if [ "$preview" -eq 0 ]; then
-    [ ! -e "$out" ] || die "the last upgrade is still in .claude/.upgrade/. Finish it with /update-os, or delete that folder if you're done with it, then run this again."
-    mkdir -p "$out"
+  if [ "$preview" -eq 0 ] && [ -e "$out" ]; then
+    n=$(find "$out/new" -type f -name '*.new' 2>/dev/null | wc -l | tr -d ' ')
+    them="$n of your own files with a newer version beside them"
+    [ "$n" -eq 1 ] && them="one of your own files with a newer version beside it"
+    [ "$n" -eq 0 ] || die "an earlier upgrade isn't finished. It left $them in .claude/.upgrade/new/. Type /update-os and it picks up there."
+    die "the last upgrade's backup is still in .claude/.upgrade/. Delete that folder if you're done with it, then run this again."
   fi
+  [ "$preview" -eq 1 ] || mkdir -p "$out"
 
+  # Each of these fails if a copy does, so nothing is reported done that isn't.
   bring_in() {  # bring_in <path>: copy the new version over this folder's one
     # Keep the old one first, just in case. Cheap, and it makes undoing the
     # whole upgrade a copy back rather than a hope.
     if [ -f "$here/$1" ]; then
-      mkdir -p "$(dirname "$out/before/$1")"
-      cp -p "$here/$1" "$out/before/$1"
+      mkdir -p "$(dirname "$out/before/$1")" && cp -p "$here/$1" "$out/before/$1" || return 1
     fi
-    mkdir -p "$(dirname "$here/$1")"
-    cp "$new/$1" "$here/$1"
+    mkdir -p "$(dirname "$here/$1")" && cp "$new/$1" "$here/$1" || return 1
     case "$1" in *.sh) chmod +x "$here/$1" ;; esac
   }
   put_beside() {  # put_beside <path>: leave theirs, put the new one in .upgrade/new
-    mkdir -p "$(dirname "$out/new/$1")"
-    cp "$new/$1" "$out/new/$1.new"
+    mkdir -p "$(dirname "$out/new/$1")" && cp "$new/$1" "$out/new/$1.new"
+  }
+  # A file it couldn't write keeps its old line in the record, so the next
+  # upgrade tries it again instead of taking it for one of yours.
+  couldnt() {  # couldnt <path> <old fingerprint>
+    failed="$failed
+  $1"
+    [ -z "$2" ] || printf '%s\t%s\n' "$2" "$1" >> "$rec_tmp"
   }
 
   # Everything the new version ships.
-  local o c
+  local o c theirs
   while IFS=$'\t' read -r n path; do
     case "$n" in \#*|"") continue ;; esac
     o="$(recorded "$oldrec" "$path")"
+    # theirs:<fingerprint> is a file of their own that shares a name with one
+    # of the template's, and which template version they were last shown.
+    theirs=""; case "$o" in theirs:*) theirs="${o#theirs:}"; o="" ;; esac
     c=""; [ -f "$here/$path" ] && c="$(print_hash "$here/$path")"
 
     if [ -z "$c" ] && [ -n "$o" ]; then
@@ -162,43 +190,53 @@ main() {
   $path"
       printf 'gone\t%s\n' "$path" >> "$rec_tmp"; continue
     fi
-    printf '%s\t%s\n' "$n" "$path" >> "$rec_tmp"
 
     if [ -z "$c" ]; then
+      [ "$preview" -eq 1 ] || bring_in "$path" || { couldnt "$path" ""; continue; }
       added="$added
   $path"
-      [ "$preview" -eq 1 ] || bring_in "$path"
     elif [ "$c" = "$n" ]; then
       :  # already the same as the new version
     elif [ -n "$o" ] && [ "$o" != "gone" ] && [ "$c" = "$o" ]; then
+      [ "$preview" -eq 1 ] || bring_in "$path" || { couldnt "$path" "$o"; continue; }
       updated="$updated
   $path"
-      [ "$preview" -eq 1 ] || bring_in "$path"
     elif [ -n "$o" ] && [ "$o" = "$n" ]; then
       :  # they changed it, the template didn't; nothing new to offer
+    elif [ -z "$o" ] && [ "$norecord" -eq 0 ]; then
+      # New in the template, but they already made a file of their own with
+      # this name. Not an edit of the template's, so it is recorded as theirs,
+      # and shown again only when the template's one changes.
+      if [ "$theirs" != "$n" ]; then
+        [ "$preview" -eq 1 ] || put_beside "$path" || { couldnt "$path" ""; continue; }
+        taken="$taken
+  $path"
+      fi
+      printf 'theirs:%s\t%s\n' "$n" "$path" >> "$rec_tmp"; continue
     else
+      [ "$preview" -eq 1 ] || put_beside "$path" || { couldnt "$path" "$o"; continue; }
       kept="$kept
   $path"
-      [ "$preview" -eq 1 ] || put_beside "$path"
     fi
+    printf '%s\t%s\n' "$n" "$path" >> "$rec_tmp"
   done < "$newrec"
 
   # Everything the old version shipped that the new one doesn't.
   if [ "$norecord" -eq 0 ]; then
     while IFS=$'\t' read -r o path; do
-      case "$o" in \#*|"") continue ;; esac
+      case "$o" in \#*|""|theirs:*) continue ;; esac
       [ -n "$(recorded "$newrec" "$path")" ] && continue
       [ -f "$here/$path" ] || continue
       if [ "$o" != "gone" ] && [ "$(print_hash "$here/$path")" = "$o" ]; then
-        removed="$removed
-  $path"
         if [ "$preview" -eq 0 ]; then
-          mkdir -p "$(dirname "$out/removed/$path")"
-          mv "$here/$path" "$out/removed/$path"
+          mkdir -p "$(dirname "$out/removed/$path")" && mv "$here/$path" "$out/removed/$path" \
+            || { couldnt "$path" "$o"; continue; }
           # Tidy away the folder it leaves empty, like a skill's own folder.
           local d; d="$(dirname "$here/$path")"
           while [ "$d" != "$here" ] && rmdir "$d" 2>/dev/null; do d="$(dirname "$d")"; done
         fi
+        removed="$removed
+  $path"
       else
         orphaned="$orphaned
   $path"
@@ -210,7 +248,7 @@ main() {
   local report
   report="$(
     if [ "$preview" -eq 1 ]; then echo "PREVIEW — nothing has been changed yet."; fi
-    echo "Upgrading from ${from:-an unrecorded version} to ${to:-an unnamed version}."
+    echo "Upgrading $here from ${from:-an unrecorded version} to ${to:-an unnamed version}."
     if [ "$norecord" -eq 1 ]; then
       echo "This folder has no record of what it was shipped with, so every file"
       echo "that differs is treated as one you changed. Nothing of yours is lost;"
@@ -219,10 +257,12 @@ main() {
     [ -z "$updated" ]  || echo "Replaced with the new version (you never changed these). The old ones are kept in .claude/.upgrade/before/:$updated"
     [ -z "$added" ]    || echo "New in this version:$added"
     [ -z "$kept" ]     || echo "Yours, left as they are. The new version is beside each in .claude/.upgrade/new/:$kept"
+    [ -z "$taken" ]    || echo "New in the template, but you already have your own file with this name. The template's one is beside it in .claude/.upgrade/new/:$taken"
     [ -z "$gone" ]     || echo "You deleted these, so they stay deleted:$gone"
     [ -z "$removed" ]  || echo "Dropped from the template. Moved to .claude/.upgrade/removed/:$removed"
     [ -z "$orphaned" ] || echo "Dropped from the template, but you changed them, so they stay:$orphaned"
-    if [ -z "$updated$added$kept$removed" ]; then echo "Nothing to do. This folder already matches."; fi
+    [ -z "$failed" ]   || echo "Couldn't write these. The old version of any it had started to replace is in .claude/.upgrade/before/. Once you've fixed what stopped them and nothing is left in .claude/.upgrade/new/, delete .claude/.upgrade/ and run it again. It tries these again:$failed"
+    if [ -z "$updated$added$kept$taken$removed$failed" ]; then echo "Nothing to do. This folder already matches."; fi
   )"
   echo "$report"
 
@@ -236,8 +276,8 @@ main() {
   } > "$oldrec"
   rm -f "$rec_tmp"
   echo "$report" > "$out/report.txt"
-  [ -n "$kept$removed$updated" ] || { rm -rf "$out"; }
-  return 0
+  [ -n "$kept$taken$removed$updated$failed" ] || { rm -rf "$out"; }
+  [ -z "$failed" ]
 }
 
 main "$@"; exit $?

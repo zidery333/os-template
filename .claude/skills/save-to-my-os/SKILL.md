@@ -4,7 +4,8 @@ description: >-
   Saves a lasting fact about the user into their OS folder — something they
   prefer, a habit, their machine or tools, the state of a project, or
   something they worked out that would otherwise be forgotten when the
-  session ends. Offers it without being asked, then waits for a yes.
+  session ends. Offers it without being asked, then waits for a yes, unless
+  they already said 'remember' or 'from now on'.
 when_to_use: >-
   The user states something true about themselves rather than asking a
   question — 'remember that', 'from now on', 'I prefer', 'I always', 'my
@@ -103,9 +104,13 @@ asking. Once they ignore it, the whole folder stops working.
 
 ## 4. Ask, in one line
 
+**If they said "remember ..." or "from now on ...", that is the yes.** Don't
+ask back. Save it now (step 6) and say in one line which file it went in.
+Everything below is for facts they only stated in passing.
+
 **Answer their actual question first.** Then offer, in one short line:
 
-> Want me to save that to `me/who-i-am.md`?
+> Want me to save that to `<the file from the table in step 2>`?
 
 Rules for the asking:
 
@@ -114,7 +119,8 @@ Rules for the asking:
   vague answer.
 - **Ask once.** If they say no, or say nothing, drop it. Never ask twice about
   the same fact.
-- **Never save without asking.** They may have been thinking out loud.
+- **Never save a fact they only stated without asking.** They may have been
+  thinking out loud.
 - **Don't interrupt.** If they're deep in something, let it wait. A fact
   worth keeping will come up again; a badly timed question just teaches them
   to ignore you.
@@ -137,8 +143,11 @@ Then move on. Don't acknowledge it, don't explain what you wrote.
 
 ## 6. Write it small
 
-One or two lines, in **their** words, not yours. Mark how solid it is:
-`(said)` if they told you, `(guessed)` if you worked it out.
+One or two lines, in **their** words, not yours. Mark how solid it is, with
+the labels the file itself uses: in `who-i-am.md`, `(said)` if they told you,
+`(guessed)` if you worked it out, `(unsure)` if nobody checked with them; in
+`my-setup.md`, `(checked)` if it was really looked at, `(guessed)` if not; a
+claim in `notes/` gets one of the four sureness words in `notes/README.md`.
 
 Add the date only when it's the sort of thing that goes out of date.
 

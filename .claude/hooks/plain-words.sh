@@ -5,7 +5,7 @@
 # This is the only thing here that actually enforces plain speaking. A rule in
 # a file is a suggestion; this is a check.
 #
-# It fires at most once per reply, so it cannot get stuck in a loop.
+# It never checks its own rewrite, so it cannot get stuck in a loop.
 # To turn it off, delete this hook from .claude/settings.json.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 need_python
@@ -17,34 +17,19 @@ LIST="$ROOT/.claude/hooks/plain-words.tsv"
 
 IN=$(cat)
 # Same rule as the other hooks: take whichever field name this version sends,
-# rather than one and a silent failure.
+# rather than one and a silent failure. stop_hook_active means this reply is
+# already the rewrite; checking it again could bounce forever.
 MSG=$(printf '%s' "$IN" | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)
+    if d.get("stop_hook_active") is True: sys.exit(0)
     for k in ("last_assistant_message", "assistant_message", "message"):
         v = d.get(k)
         if isinstance(v, str) and v.strip():
             print(v); break
 except Exception: pass')
 
-# One check per reply. The key is whatever identifies this turn — the field has
-# been called prompt_id and turn_index. Falling back to the session alone would
-# check once and then never again, so say so plainly rather than pretend.
-PID=$(printf '%s' "$IN" | python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-    sid = str(d.get("session_id", "s"))[:24]
-    turn = next((str(d[k]) for k in ("prompt_id", "turn_index", "tool_use_id")
-                 if d.get(k) is not None), "0")
-    print((sid + "-" + turn).replace("/", "_"))
-except Exception: print("none")')
-
 [ -n "$MSG" ] || exit 0
-
-# One check per reply. Without this, the rewritten reply gets checked again and
-# the two sides could bounce forever.
-GUARD="$STATE/plain-$PID"
-[ -f "$GUARD" ] && exit 0
 
 # Strip out anything being quoted rather than said: code spans, fenced blocks,
 # and text in quote marks. Naming a word to talk about it is not using it, and
@@ -71,14 +56,14 @@ while IFS=$'\t' read -r WORD PLAIN; do
 done < "$LIST"
 
 [ -n "$HITS" ] || exit 0
-: > "$GUARD"
-find "$STATE" -name 'plain-*' -mmin +120 -delete 2>/dev/null
 
-REASON="That reply used words the user has asked you not to use. Say it again, plainly:
+REASON="That reply used words from this folder's plain-words list. Say it again, plainly:
 $HITS
 
 Rewrite only the sentences with those words in them. Keep everything else the
 same, keep it the same length or shorter, and do not mention this check or
 apologise — just say the thing properly."
 
-printf '%s' "$REASON" | python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":sys.stdin.read()}))'
+# Feedback, not a block: Claude Code shows a block as a hook error, after an
+# answer that was fine.
+printf '%s' "$REASON" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":sys.stdin.read()}}))'

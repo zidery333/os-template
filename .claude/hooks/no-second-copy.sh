@@ -17,8 +17,11 @@
 # looks for the things a write-up of the same source cannot avoid repeating —
 # the figures and the names.
 #
-# It warns; it does not block. Two sources really can share a number, and a
-# second write-up of the same source from a different angle is sometimes right.
+# It turns the first try back, once. A warning that only rode along with the
+# write reached Claude after the second copy already existed. But two sources
+# really can share a number, and a second write-up of the same source from a
+# different angle is sometimes right, so a second try at the same file goes
+# through.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 need_python
 
@@ -48,6 +51,8 @@ case "$REL" in
 esac
 case "$REL" in */sources/README.md) exit 0 ;; esac
 [ -f "$FILE" ] && exit 0   # already there: that is an edit, not a second copy
+MARK="$STATE/second-$(printf '%s' "$REL" | cksum | cut -d' ' -f1)"
+[ -f "$MARK" ] && { rm -f "$MARK"; exit 0; }   # the second try
 
 cd "$ROOT" 2>/dev/null || exit 0
 
@@ -70,6 +75,8 @@ def marks(text):
     # Figures: 61%, 28.64%, 3,733. These are what a study is remembered by.
     out |= {m.replace(",", "") for m in re.findall(r"\d[\d,]*\.?\d*%", text)}
     out |= {m.replace(",", "") for m in re.findall(r"\b\d{3,}(?:,\d{3})*\b", text)}
+    # Not years, though. Every episode of a show they follow shares one.
+    out = {m for m in out if not re.fullmatch(r"(19|20)\d\d", m)}
     # Surnames and proper nouns, minus the ones every file here carries.
     common = {"Claude","Anthropic","OpenAI","The","This","That","They","It","A",
               "Date","From","Subject","How","What","Does","Decision","Their",
@@ -109,9 +116,12 @@ msg = (
     "Open it before creating a second file. If it is the same source, edit that "
     "one or add a dated line to it — a folder with two write-ups of one study "
     "cannot tell you what you actually read. If it genuinely is a different "
-    "source that happens to share a figure, carry on and say so in the file."
+    "source that happens to share a figure, say so in the file and write it "
+    "again: a second try at the same file goes through."
 ) % (path, n, ", ".join(shared), extra)
 
 print(msg)
 ')
-say_to_claude "$WARNING" PreToolUse
+[ -n "$WARNING" ] || exit 0
+: > "$MARK"
+stop_tool deny "$WARNING"

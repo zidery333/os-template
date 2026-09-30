@@ -37,12 +37,26 @@ to do worked.
 
 ## 3. Save it
 
-If the folder is a git repository with changes, offer to commit them in one
-line. On a yes:
+`/setup` starts the folder's history. See whether there is anything to add
+to it:
 
 ```bash
-git add -A && git commit -m "<what changed today, in a few words>"
+bash .claude/scripts/history.sh check
 ```
+
+- `save: changes` — offer to save them, in one line. On a yes:
+
+  ```bash
+  git add -A && git commit -m "<what changed today, in a few words>"
+  ```
+
+- `save: the template's own` — they downloaded it with `git clone`, so a
+  save would go into the template's own history. Don't save. Say so in one
+  line and give them the command to start fresh; don't run it yourself:
+  `rm -rf .git && bash .claude/scripts/history.sh start`
+- Anything else — skip this step. With `no history of its own`, a save
+  would go into a bigger folder's history around this one, and take all of
+  that folder too.
 
 ## 4. Say
 

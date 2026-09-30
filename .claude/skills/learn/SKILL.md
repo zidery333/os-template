@@ -41,7 +41,7 @@ an app, also read `.claude/guides/ideas-not-apps.md`.
 |---|---|
 | A YouTube link | Pull the subtitles. |
 | Any other link | Fetch the page. |
-| A file path | Read it. PDFs and Word files included. |
+| A file path | Read it. Word and PowerPoint files need a command first. |
 | Pasted text | Use it as it is. |
 | A subject, no link | Go and find sources. See below. |
 | Nothing at all | Ask what they want to add. Don't guess. |

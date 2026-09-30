@@ -17,7 +17,7 @@ Write a new skill: $ARGUMENTS
 ## 1. Check it should be a skill at all
 
 **A hook** if it must happen every time and needs no thinking — checking a
-file's length, spotting a word, counting a queue. Hooks are shell in
+file's length, spotting a word, counting files. Hooks are shell in
 `.claude/hooks/`, they cost nothing, and they never forget.
 
 **A skill** if it needs judgment. Deciding whether something is worth keeping.

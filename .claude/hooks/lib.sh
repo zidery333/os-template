@@ -55,6 +55,17 @@ say_to_claude() {
     "$esc" "${2:-SessionStart}" "$esc"
 }
 
+# Stop a tool before it runs. Text added with say_to_claude only arrives next
+# to the result, after the file is already changed. "ask" puts it to the
+# person, who reads $2. "deny" turns Claude back, and Claude reads $2. $3, if
+# given, reaches Claude next to the result.
+stop_tool() {
+  local extra=""
+  [ -n "${3:-}" ] && extra=",\"additionalContext\":$(printf '%s' "$3" | json_str)"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s","permissionDecisionReason":%s%s}}\n' \
+    "$1" "$(printf '%s' "$2" | json_str)" "$extra"
+}
+
 # How big a notes file has to get before it needs splitting or trimming.
 BIG_FILE_LINES="${OS_BIG_FILE_LINES:-250}"
 
@@ -98,8 +109,10 @@ os_not_mine() {
   local marked
   marked=$(find . -name '.not-my-os' 2>/dev/null | sed 's|^\./||; s|/\.not-my-os$||')
   [ -n "$marked" ] || { cat; return 0; }
-  awk -v list="$marked" '
-    BEGIN { n = split(list, d, "\n") }
+  # Through the environment, not -v: macOS awk refuses a line break in a -v
+  # value, so two marked copies used to wipe out the whole list.
+  L="$marked" awk '
+    BEGIN { n = split(ENVIRON["L"], d, "\n") }
     {
       for (i = 1; i <= n; i++)
         if (d[i] != "" && index($0, d[i] "/") == 1) next
@@ -114,8 +127,8 @@ os_not_mine() {
 #                projects, so a big folder can produce dozens of these at once.
 #                Covers notes/, work/, and the top level of the folder itself.
 #   os_health  — what a session actually gets handed: everything only the
-#                person can answer, then the three worst rot lines and a count
-#                of the rest.
+#                person can answer, then the first three rot lines and what
+#                kinds the rest are.
 #
 # Both print nothing when there is nothing to say. That silence is what stops
 # this becoming background noise.
@@ -132,8 +145,9 @@ ROT_SHOWN="${OS_ROT_SHOWN:-3}"
 # every subject file. Without this the folder tells you off for following its
 # own advice: notes/README.md teaches "Tried and it did nothing for me" as the
 # most valuable section in a subject file, and the second subject you write
-# gets it flagged as a repeat. Add your own headings here if you use them
-# everywhere on purpose, separated by semicolons.
+# gets it flagged as a repeat. To add your own, set OS_SHARED_HEADINGS in the
+# env block of .claude/settings.json, separated by semicolons. It replaces this
+# list, so copy these three in too.
 # (No apostrophes in here. Bash parses quotes inside a ${VAR:-default}, so one
 # stray apostrophe silently breaks the whole file.)
 SHARED_HEADINGS="${OS_SHARED_HEADINGS:-## Tried and it did nothing for me;## Open questions;## What I have not worked out yet}"
@@ -334,10 +348,14 @@ os_rot() {
 
   # ---- the nightly save -------------------------------------------------------
   # Only if it was ever turned on. A timer that stops working says nothing, so
-  # the last good run is the only way to know.
+  # the last good run is the only way to know. A save that has never worked
+  # has no good run to go stale, so it leaves the reason it failed instead.
   stamp=.claude/.state/daily-commit.last-success
-  if [ -f "$stamp" ] && [ -z "$(find "$stamp" -mmin -2880 2>/dev/null)" ]; then
-    echo "The nightly save hasn't worked for over two days. Its log is /tmp/os-commit.log. A common cause on a Mac is the folder sitting in Downloads, Documents or Desktop."
+  why=$(head -n 1 .claude/.state/daily-commit.last-failure 2>/dev/null)
+  if [ ! -f "$stamp" ] && [ -n "$why" ]; then
+    echo "The nightly save has never worked. On ${why%% *} it said: ${why#* }"
+  elif [ -f "$stamp" ] && [ -z "$(find "$stamp" -mmin -2880 2>/dev/null)" ]; then
+    echo "The nightly save hasn't worked for over two days. Its log is /tmp/os-commit.log. A common cause on a Mac is the folder sitting in Downloads, Documents or Desktop.${why:+ On ${why%% *} it said: ${why#* }}"
   fi
 
   # ---- a half-finished upgrade ----------------------------------------------
@@ -345,7 +363,9 @@ os_rot() {
   # .claude/.upgrade/new/. Left there, nobody ever carries the change over.
   if [ -d .claude/.upgrade/new ]; then
     n=$(find .claude/.upgrade/new -type f -name '*.new' 2>/dev/null | wc -l | tr -d ' ')
-    [ "$n" -gt 0 ] && echo "An upgrade left $n of your own files with a newer version beside them. Offer /update-os to finish carrying the changes over."
+    them="$n of your own files with a newer version beside them"
+    [ "$n" -eq 1 ] && them="one of your own files with a newer version beside it"
+    [ "$n" -gt 0 ] && echo "An upgrade left $them. Offer /update-os to finish carrying the changes over."
   fi
 
   # ---- the folder itself ----------------------------------------------------
@@ -368,7 +388,14 @@ os_health() {
   # These are never capped. There are at most three of them, and they are
   # the only ones nobody but the person can deal with.
 
-  has_python || echo "python3 isn't installed, so most of this folder's checks are switched off. Tell them once: on a Mac, run xcode-select --install in Terminal, then restart Claude Code."
+  has_python || echo "python3 isn't installed, so most of this folder's checks are switched off. Tell them once: on a Mac, run xcode-select --install in Terminal, then restart Claude Code. On Linux, install python3 with the package manager (Ubuntu: sudo apt install python3)."
+
+  # Windows hands the hooks paths with backslashes, so every check that goes
+  # by path matches nothing and stays quiet. Not handled yet, so say so.
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo "This folder is running on Windows, which it doesn't support yet. The checks that guard write-ups and decision logs, and look over each file as it is written, never fire here. Tell them once." ;;
+  esac
 
   # Blanks nobody has filled. The highest-value lines in the folder.
   #
@@ -384,20 +411,48 @@ os_health() {
   # different answer: point at /setup once, don't start the interview by
   # hand one file at a time. Anything less than both is a half-finished
   # setup, and that gets the ordinary nudge below.
-  if grep -q 'TO FILL' me/who-i-am.md 2>/dev/null &&
+  #
+  # me/setup-answers.md still there means a /setup stopped partway. Its
+  # answers are all in that file, so /setup can finish the job; asking about
+  # the blank files one by one would ask every question again.
+  if [ -f me/setup-answers.md ]; then
+    echo "A /setup stopped partway — its answers are still in me/setup-answers.md. Offer /setup in one line to finish it; it carries on from there. Don't ask the questions yourself."
+  elif grep -q 'TO FILL' me/who-i-am.md 2>/dev/null &&
      grep -q 'TO FILL' CLAUDE.md 2>/dev/null; then
     echo "This folder has never been set up — the starting files are still blank. Offer /setup in one line, then wait. Don't run the questions yourself."
   else
-    blanks=$(grep -rl 'TO FILL' me CLAUDE.md work 2>/dev/null | grep -v '^work/archive/' | os_not_mine | tr '\n' ' ' | sed 's/ *$//')
+    # Only notes can hold the marker. Reading a 2 GB video for it took this
+    # check past its fifteen-second limit, and all of it was thrown away.
+    blanks=$(grep -rl --include='*.md' 'TO FILL' me CLAUDE.md work 2>/dev/null | grep -v '^work/archive/' | os_not_mine | tr '\n' ' ' | sed 's/ *$//')
     [ -n "$blanks" ] && echo "Still blank: $blanks — ask about these when a natural moment comes up, don't interrogate."
   fi
 
-  # Everything else is rot, and there can be a lot of it. Show the worst few.
+  # Everything else is rot, and there can be a lot of it. Show the first few,
+  # in the order the checks run, then name the kinds the rest are. It used to
+  # say "more like that", so a quiet project behind three unlinked write-ups
+  # was passed off as one more write-up.
   rot=$(os_rot)
   [ -n "$rot" ] || return 0
   n=$(printf '%s\n' "$rot" | wc -l | tr -d ' ')
   printf '%s\n' "$rot" | head -"$ROT_SHOWN"
   if [ "$n" -gt "$ROT_SHOWN" ]; then
-    echo "...and $((n - ROT_SHOWN)) more like that. Don't work through them here — say so in one line and offer /tidy-up."
+    kinds=$(printf '%s\n' "$rot" | tail -n +"$((ROT_SHOWN + 1))" | awk '{
+      if      (index($0, ".claude/skills/") == 1)                   k = "skills that need fixing"
+      else if (index($0, "Too long to stay useful"))                k = "subject files too long"
+      else if (index($0, " is not linked from "))                   k = "write-ups nothing links to"
+      else if (index($0, "These headings appear"))                  k = "ideas written twice"
+      else if (index($0, "is not listed in notes/subjects.md"))     k = "subjects missing from the map"
+      else if (index($0, "has not changed in a year"))              k = "subjects untouched for a year"
+      else if (index($0, "is not listed in work/projects.md"))      k = "projects missing from the map"
+      else if (index($0, "has no brief.md") || index($0, "has no decisions.md")) k = "projects missing a file"
+      else if (index($0, "has not changed in three months"))        k = "projects untouched for three months"
+      else if (index($0, "projects in work/ with an end"))          k = "too many projects"
+      else if (index($0, "nightly save"))                           k = "the nightly save"
+      else if (index($0, "An upgrade left"))                        k = "an unfinished upgrade"
+      else if (index($0, "sits loose at the top level"))            k = "loose files"
+      else                                                          k = "other things"
+      if (!(k in seen)) { seen[k] = 1; out = out (out == "" ? "" : ", ") k }
+    } END { print out }')
+    echo "...and $((n - ROT_SHOWN)) more: $kinds. Don't work through them here — say so in one line and offer /tidy-up."
   fi
 }

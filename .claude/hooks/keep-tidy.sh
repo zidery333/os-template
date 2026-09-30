@@ -15,12 +15,15 @@ except Exception: pass')
 
 [ -n "$FILE" ] || exit 0
 [ -f "$FILE" ] || exit 0
-# Only notes written in this folder's rooms. A long code file inside a project
-# folder is not a note, and a file outside this folder is none of its business.
+# Only notes written in this folder's rooms. In a project that means the brief
+# and the decision log: its chapters, code and meeting notes are not notes, and
+# a file outside this folder is none of its business.
 case "$FILE" in "$ROOT"/*) ;; *) exit 0 ;; esac
 REL="${FILE#"$ROOT"/}"
+# In a case pattern * also matches '/', so anything deeper in a project goes first.
+case "$REL" in work/*/*/*) exit 0 ;; esac
 case "$REL" in
-  notes/*.md|me/*.md|work/*.md) ;;
+  notes/*.md|me/*.md|work/projects.md|work/*/brief.md|work/*/decisions.md) ;;
   *) exit 0 ;;
 esac
 case "$REL" in *README.md) exit 0 ;; esac
@@ -71,8 +74,11 @@ if printf '%s' "$REL" | grep -q '^notes/[^/]*/what-i-think\.md$'; then
   HEADS=$(grep -c '^## ' "$FILE" 2>/dev/null); HEADS=${HEADS:-0}
   SRCS=$(grep -c 'sources/\|my own\|I tried\|I tested\|untested' "$FILE" 2>/dev/null); SRCS=${SRCS:-0}
   if [ "$HEADS" -gt 2 ] && [ "$SRCS" -eq 0 ]; then
+    # Only a subject with no end lets what they saw for themselves go unlabelled.
+    FREE="Tastes need nothing."
+    grep -qF 'This one has no end.' "$FILE" && FREE="Tastes and what they saw for themselves need nothing."
     MSGS="$MSGS
-$REL has $HEADS sections and not one of them says where it came from. Add the source, or mark it as their own thinking."
+$REL has $HEADS sections and not one of them says where it came from. If any are claims, add the source or mark them as their own thinking. $FREE"
   fi
 fi
 

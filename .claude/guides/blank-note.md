@@ -1,9 +1,10 @@
 # <title> — <link>
 
 Date:      <YYYY-MM-DD>
-From:      <who said it. Use the exact short name from
-           notes/where-i-learn/who-to-trust.md — the record is counted by
-           this string, so a different spelling is a different source.>
+From:      <who said it. Use its short name word for word from
+           notes/where-i-learn/who-to-trust.md: its section heading, or its
+           row in the top table. The record is counted by this string, so a
+           different spelling is a different source.>
 Subject:   <which notes/ subject this belongs to>
 
 The claim:  <the one thing being asserted, in a sentence>

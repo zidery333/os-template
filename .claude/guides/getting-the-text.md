@@ -5,10 +5,12 @@ about getting clean text. What to do with the text is back in `/learn`.
 
 ## A YouTube link
 
-`yt-dlp` fetches the automatic subtitles without downloading the video:
+`yt-dlp` fetches the automatic subtitles without downloading the video. The
+folder starts empty for each video, because the clean-up below reads every
+subtitle file in it:
 
 ```bash
-mkdir -p /tmp/add && cd /tmp/add
+rm -rf /tmp/add && mkdir -p /tmp/add && cd /tmp/add
 yt-dlp --skip-download --write-auto-subs --sub-lang en --sub-format vtt \
   -o '%(id)s' "<the URL>"
 ```
@@ -21,7 +23,7 @@ that up, or you'll read the same sentence three times and the file will be
 about ten times bigger than it should be:
 
 ```bash
-grep -vE '^(WEBVTT|Kind:|Language:|[0-9]{2}:)' /tmp/add/*.en.vtt \
+grep -hvE '^(WEBVTT|Kind:|Language:|[0-9]{2}:)' /tmp/add/*.vtt \
   | sed -e 's/<[^>]*>//g' \
         -e 's/\[[^][]*\]//g' \
         -e 's/[[:space:]][[:space:]]*/ /g' \
@@ -61,7 +63,17 @@ But a release note that changes nothing you do is still a throw-away.
 
 ## A file path
 
-Read it. PDFs and Word files included.
+Read it. PDFs read fine. Word and PowerPoint files don't — the file reader
+turns them away — so pull the words out first, Word on the first line,
+PowerPoint on the second:
+
+```bash
+unzip -p "<the file>" word/document.xml | awk '{ gsub(/<\/w:p>/, "\n"); gsub(/<[^>]*>/, ""); print }'
+unzip -p "<the file>" 'ppt/slides/slide*.xml' | awk '{ gsub(/<\/a:p>/, "\n"); gsub(/<[^>]*>/, ""); print }'
+```
+
+On a Mac, `textutil -convert txt -stdout "<the file>"` does Word, RTF and
+OpenDocument files more cleanly.
 
 ## Pasted text
 

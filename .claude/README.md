@@ -9,6 +9,7 @@ Everything Claude can run. The name is fixed by Claude Code — don't rename it.
 | Hooks | `hooks/*.sh` | Plain shell that runs by itself when something happens. No model involved. |
 | How it talks | `output-styles/plain-words.md` | Goes straight into Claude's instructions. The strongest lever on how replies read. |
 | Settings | `settings.json` | Which hooks run, which output style is on, what's allowed without asking. |
+| Claude Code's own memory | `settings.json` | Off here, so what Claude learns about you goes in `me/`, where you can read it, not in a hidden folder of Claude Code's. To turn it back on, delete the `"autoMemoryEnabled": false,` line. |
 | Rulebooks | `guides/*.md` | Shared rules the skills point at instead of repeating. |
 | The blank form | `guides/blank-note.md` | The shape every new write-up gets filled into. |
 | Word list | `hooks/plain-words.tsv` | Words to swap for plainer ones. Checked after every reply. |
@@ -31,8 +32,8 @@ Everything Claude can run. The name is fixed by Claude Code — don't rename it.
 | `new-skill` | **Yes** — when you notice yourself doing the same job over and over. |
 | `archive` | **Yes** — when you say a project is finished or dead. |
 | `catch-me-up` | **Yes** — when you ask what's new. |
-| `wrapup` | **Yes** — when you say you're done. Makes sure the files are up to date, then says it's safe to close. |
-| `update-os` | **Yes** — when you say you've downloaded a new version. Always shows you first. |
+| `wrapup` | **Yes** — when you say you're done. Makes sure the files are up to date, offers to save them in the folder's history, then says it's safe to close. |
+| `update-os` | **Yes** — when you ask to update the folder, or whether there's a new version. Always shows you first. |
 | `snag` | **Yes** — when the folder's own machinery gets in the way, it writes that down in `snags.md`. Type `/snag` on its own to see the list, ready to send. |
 | `setup` | No. Type `/setup`. It rewrites your files, so it waits to be asked. |
 
@@ -44,9 +45,9 @@ wait to be typed.
 | File | When it runs | What it does |
 |---|---|---|
 | `session-start.sh` | Session opens | Tells Claude what in the folder needs attention. |
-| `spot-worth-saving.sh` | Every message you send | Spots you stating a lasting fact, so Claude offers to save it. |
-| `protect-the-record.sh` | Before a file is written | Says so when the target is a write-up or a decision log — the two kinds that are never rewritten. Warns; never blocks. |
-| `no-second-copy.sh` | Before a new write-up is created | Says so if the folder already holds one about the same source. Matches on the figures and names inside, not the file name. Warns; never blocks. |
+| `spot-worth-saving.sh` | Every message you send | Spots you stating a lasting fact, so Claude offers to save it. When you said "remember" or "from now on", Claude just saves it and says where. |
+| `protect-the-record.sh` | Before a file is written, and before a command | Says so when the target is a write-up or a decision log — the two kinds that are never rewritten. An edit gets a reminder; replacing the whole file, a command that rewrites one, or moving or deleting a decision log asks you first. Adding to the end never asks, and nor does deleting a write-up. |
+| `no-second-copy.sh` | Before a new write-up is created | Says so if the folder already holds one about the same source. Matches on the figures and names inside, not the file name. Turns the first try back so Claude reads it in time; a second try goes through. |
 | `keep-tidy.sh` | After any file is written | Checks the file right then: too long, repeated headings, claims with no source. |
 | `plain-words.sh` | After every reply | Sends the reply back if it used a word from `plain-words.tsv`. |
 
@@ -84,15 +85,19 @@ alone, and even those are short enough to read.
 | `hooks/declined.tsv` | What you've said no to saving. Claude appends; you can empty it. |
 | `settings.json` | Which hooks run, and what's allowed without asking. |
 
-Changing a guide is the highest-leverage edit here. The skills all point at
+Changing a guide is the edit that reaches furthest. The skills all point at
 `guides/how-to-add-stuff.md` rather than repeating its rules, so one edit
 there changes how everything decides what to keep.
 
-The knobs are environment settings at the top of `hooks/lib.sh`:
-`OS_BIG_FILE_LINES` (how long a notes file can get, default 250),
-`OS_BIG_LOG_LINES` (a decision log, default 600), `OS_MAX_PROJECTS`
-(default 4), `OS_ROT_SHOWN` (warnings per session start, default 3) and
-`OS_PLAIN_CHECK=off` to silence the word check.
+The knobs are environment settings. Set them in the `env` block of
+`settings.json`, like `"env": { "OS_BIG_FILE_LINES": "400" }`, and the hooks
+pick them up. Don't change the numbers in `hooks/lib.sh`: an update can
+replace that file, and your number with it. `OS_BIG_FILE_LINES` (how long a
+notes file can get, default 250), `OS_BIG_LOG_LINES` (a decision log, default
+600), `OS_MAX_PROJECTS` (default 4), `OS_ROT_SHOWN` (warnings per session
+start, default 3), `OS_SHARED_HEADINGS` (headings every subject file may
+share, separated by semicolons; it replaces the three in `hooks/lib.sh`, so
+copy those in too) and `OS_PLAIN_CHECK=off` to silence the word check.
 
 ## Changing a hook without breaking it
 
@@ -116,7 +121,7 @@ teaches you to skim the two that were right.
 ## Which should I make — a skill or a hook?
 
 **A hook** when it must happen *every* time and needs no thinking. Checking a
-file's length. Spotting a word. Counting what's in a queue.
+file's length. Spotting a word. Counting files.
 
 **A skill** when it needs judgment. Deciding whether something is worth
 keeping. Merging two notes. Working out which subject something belongs to.
@@ -151,10 +156,15 @@ quietly following two different versions of it.
 
 ## The scripts
 
-- `scripts/daily-commit.sh` — **optional.** Commits this folder once a day so
-  you don't lose it, and pushes it too if you've set up a remote. With no
-  remote it commits and says so, rather than failing quietly every night.
+- `scripts/daily-commit.sh` — **optional.** Saves this folder in its history
+  once a day, and pushes it too if you've set up a remote. `/setup` starts
+  that history; if there is none, the first run starts it. With no remote it
+  saves and says so. If it stops working, the next session tells you.
   Read it before turning it on. Setup is in the comment at the top.
+- `scripts/history.sh` — the skills run it for you. It starts the folder's
+  history for `/setup`, says whether there's anything to save for
+  `/wrapup`, and lists what changed this week for `/catch-me-up`. It never
+  adds to a history that came with `git clone`.
 - `scripts/upgrade.sh` — takes the newest version of the template, fetched
   from its GitHub page. `/update-os` runs it for you and helps with the part
   a script can't do. Run it with `--preview` first to see what it would

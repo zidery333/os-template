@@ -33,12 +33,23 @@ find notes -path '*/sources/*' -name '[0-9]*.md' 2>/dev/null | while read -r f; 
   fi
 done
 
-# what moved, and what got binned
-git log --oneline --since="7 days ago" -- notes/ work/ me/ CLAUDE.md
+# what moved, and what got binned. With no history to read, the files
+# changed this week instead.
+bash .claude/scripts/history.sh moved
 grep '^| 20' notes/thrown-away.md | tail -5
 
-# everything the folder thinks is worn out. A session start shows the worst
-# three; this is the only place the whole list is visible.
+# whether a newer version is out. The request carries nothing about them, and
+# offline or slow it says nothing. The number after the dot counts, so .10
+# comes after .9.
+mine=$(awk -F'\t' '$1 == "# version" { print $2; exit }' .claude/shipped.tsv 2>/dev/null)
+latest=$(curl -fsS --max-time 5 https://api.github.com/repos/zidery333/os-template/releases/latest 2>/dev/null |
+  sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
+newest=$(printf '%s\n%s\n' "$mine" "$latest" | sort -t. -k1,1 -k2,2n | tail -1)
+[ -n "$mine" ] && [ -n "$latest" ] && [ "$newest" = "$latest" ] && [ "$latest" != "$mine" ] &&
+  echo "newer version out: $latest"
+
+# everything the folder thinks is worn out. A session start shows the first
+# three; this shows the whole list, as /tidy-up does.
 bash -c 'source .claude/hooks/lib.sh && os_rot'
 ```
 
@@ -53,20 +64,22 @@ thing only they can do. Leave out any that's empty — don't write "nothing
 here".
 
 **Needs you** — decisions nobody else can make. Anything still saying
-`TO FILL` goes here. These are the highest-value lines in the folder.
+`TO FILL` goes here. These are the highest-value lines in the folder. If the
+check above printed `newer version out`, add one line at the end: "A newer
+version of this folder is out — /update-os brings it in."
 
 **Projects** — each active project's "what I'm doing next" line, one line
-each, and nothing else. Say plainly if one hasn't moved in a month; don't
-dress that up as progress.
+each, and nothing else. Say plainly if one with an end hasn't moved in three
+months; don't dress that up as progress. Never say it about one whose brief
+says `**This one has no end.**`
 
 **Half-finished** — write-ups that never got a decision. Flag the ones past
-two weeks: by the rules in `.claude/guides/how-to-add-stuff.md` that's a
-throw-away, not a backlog.
+two weeks and ask, one line each, whether to add what it taught or throw it
+away.
 
 **Changed** — what moved in `notes/`, `work/` or `me/` this week, in plain
-words. "Nothing changed" is a real answer; say it in one line. In the first
-week the log still holds the commits that built the folder itself — that
-isn't news, skip it.
+words. "Nothing changed" is a real answer; say it in one line. The
+`Set up` save is the folder being made, not news; leave it out.
 
 ## Rules
 

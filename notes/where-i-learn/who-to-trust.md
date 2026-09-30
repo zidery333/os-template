@@ -16,10 +16,12 @@ its own.
 
 | Source | What it's good for | Record |
 |---|---|---|
-| TO FILL | TO FILL | no record yet |
+
+Nothing yet.
 
 <!-- The official documentation, release notes and engineering blogs for
-     whatever you work on. Two or three good ones beat a long list.
+     whatever you work on. Two or three good ones beat a long list. A new
+     row's Record starts as "no record yet".
 
      Official does not mean useful. Keep the Record column honest — "8 looked
      at, 3 kept" — including the times it had nothing for you. A source you
@@ -37,17 +39,21 @@ One section per person, channel, or site. **Written as you go, not up front.**
 
 ### On the list, no record yet
 
-TO FILL — add them here the day you start following them, and move them up
-into their own section once you actually know something.
+Add them here the day you start following them, and move them up into their
+own section once you actually know something.
+
+Nothing yet.
 
 **Nothing here is proven.** Anything written on day one is a guess dressed up
 as a fact.
 
-<!-- Template — copy this for each one you get a record on:
+<!-- Template — copy this for each one you get a record on. The heading is
+     the source's short name: use it word for word in a write-up's From:
+     line and in notes/thrown-away.md, because the record is counted by it.
 
-### Channel name — @handle
+### Short name
 
-How often it posts, what it's mostly about.
+@handle or link. How often it posts, what it's mostly about.
 
 **Record so far: N looked at → N kept, N thrown away.**
 

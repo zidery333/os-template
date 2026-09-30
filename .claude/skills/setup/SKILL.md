@@ -18,14 +18,17 @@ Say what's about to happen, in three lines or fewer. Something like: "I'll
 ask you about seven questions, then fill in the blank files. You can change
 any answer later by editing the file. Nothing here is permanent."
 
-Then check whether setup has already run — if `me/who-i-am.md` has no
-`TO FILL` left in it, stop and ask whether they want to redo it or just
-change one part. Don't overwrite work.
+**Then check for `me/setup-answers.md`, before any other check.** If it's
+there, an earlier setup stopped halfway. Read it, say in one line how far it
+got ("We got through question 3 last time — carrying on from 4"), and carry
+on from the first question it doesn't answer. Don't ask anything again that
+it already holds. If it answers every question, it stopped while writing the
+files: go straight to writing them.
 
-**Then check for `me/setup-answers.md`.** If it's there, an earlier setup
-stopped halfway. Read it, say in one line how far it got ("We got through
-question 3 last time — carrying on from 4"), and carry on from the first
-question it doesn't answer. Don't ask anything again that it already holds.
+If it isn't there, check whether setup has already run. It hasn't if
+`me/who-i-am.md` and `CLAUDE.md` both still have `TO FILL` in them — the
+same test the folder check uses. Otherwise it has: stop and ask whether they
+want to redo it or just change one part. Don't overwrite work.
 
 ## Rules for the interview
 
@@ -76,10 +79,10 @@ answer and a common one.** Don't talk anybody into a project so the folder
 has something in it; an empty `work/` is honest.
 
 If there is something, for each one: what it is in one sentence, where the
-real work lives, and what state it's really in. "Where it lives" can be
-anything — a folder on this computer, an app, a paper notebook, the back
-garden. If it's a folder, get the path: a blank there costs them a question
-at the start of every future conversation.
+real work lives, what state it's really in, and the one next thing to do.
+"Where it lives" can be anything — a folder on this computer, an app, a
+paper notebook, the back garden. If it's a folder, get the path: a blank
+there costs them a question at the start of every future conversation.
 
 **Then ask the question that decides the shape: is this one you want to
 finish, or one you'll just keep doing?** For anything they'll just keep, put
@@ -90,15 +93,16 @@ at the market by spring". Those get the first goal as their finish line. This
 one question is what stops the folder feeling like a job by week three.
 
 **Go deep on one, and one only** — whichever they sound most alive about, and
-ask which if it isn't obvious. Four things about three projects is twelve
-answers inside a single question and it will eat the whole ten minutes. For
+ask which if it isn't obvious. Five things about three projects is fifteen
+answers inside a single question and it will eat the whole fifteen minutes. For
 the others take a name and a sentence, write `TO FILL` on the rest, and say
 they can finish it next time they touch that project. **Except the ones with
 no end:** those get only "What it is" and the no-end line — no `TO FILL`,
 because nothing about a garden is waiting to be answered, and the folder
-check would ask about it every session. Past three, ask which are real and
-put the rest under Ideas with no folder. Nothing at all is a fine answer — don't invent a project to
-fill the folder.
+check would ask about it every session. Past three that they mean to finish
+(don't count the no-end ones), ask which are real and put the rest under
+Ideas with no folder. Nothing at all is a fine answer — don't invent a
+project to fill the folder.
 
 **4. How do you want answers?** Two picks, one after the other. How long:
 very short / normal / full detail. Then: explain your thinking / just do it
@@ -133,9 +137,15 @@ Run these and report the findings in a single line, not a wall:
 ```bash
 sw_vers 2>/dev/null || uname -a
 pwd
-git config user.name; git config user.email
+# A Mac without Apple's developer tools has only stand-ins for git and
+# python3 in /usr/bin, and running one pops up an install box.
+nodev=; sw_vers >/dev/null 2>&1 && ! xcode-select -p >/dev/null 2>&1 && nodev=1
+if [ -n "$nodev" ]; then echo 'developer tools: missing'
+else git config user.name; git config user.email; fi
 for t in yt-dlp gh node python3; do
-  printf '%s: %s\n' "$t" "$(command -v $t || echo 'not installed')"
+  p=$(command -v $t) || p='not installed'
+  [ -n "$nodev" ] && [ "$p" = "/usr/bin/$t" ] && p='not installed'
+  printf '%s: %s\n' "$t" "$p"
 done
 ```
 
@@ -144,11 +154,23 @@ is the useful half — it's what `/learn` uses to read a video someone hands
 you. If it's missing, say `/learn` can still take a pasted transcript. Don't
 push an install.
 
-**Then look at where the folder is.** If `pwd` is inside `~/Downloads`,
-`~/Documents` or `~/Desktop`, say so in one line: macOS blocks timed jobs
-from reading those, so anything on a timer — the daily commit — fails
-silently every day. Moving the folder somewhere plain like `~/os` fixes it.
-Tell them; don't move it yourself.
+If it says `developer tools: missing`, git and python3 aren't really there,
+and most of this folder's checks stay off until they are. Write
+`developer tools missing — run xcode-select --install` into
+`me/my-setup.md`, and say that in the one-line report. Leave git's name and
+email until the tools are in: running git before then pops up the same box.
+
+**If either `git config` line ran and printed nothing,** git doesn't know their name
+and email. On many machines, Linux above all, every save with git then fails,
+the nightly one and `/wrapup`'s included. Give them the two lines to run, with
+their own name and email in: `git config --global user.name "Their Name"` and
+`git config --global user.email them@example.com`.
+
+**Then look at where the folder is.** On a Mac (`sw_vers` printed a
+version), if `pwd` is inside `~/Downloads`, `~/Documents` or `~/Desktop`,
+say so in one line: macOS blocks timed jobs from reading those, so anything
+on a timer — the daily commit — fails silently every day. Moving the folder
+somewhere plain like `~/os` fixes it. Tell them; don't move it yourself.
 
 **And note anything installed somewhere odd** — a tool under
 `/Library/Frameworks/...` or `~/Library/Python/...` won't be found by a timed
@@ -213,9 +235,36 @@ stopped halfway.
   the choice is still open — which blockchain, which language, which shop
   platform — leave it out and name the choice as the thing still to decide.
   A guess written here looks like their decision. Everything else from
-  answer 7 goes under "no record yet". **Do not write a single word about how good any of them is.** You
+  answer 7 goes under "no record yet". Delete a "Nothing yet." line once
+  something goes in its place; with nothing to add, leave it as it is.
+  **Do not write a single word about how good any of them is.** You
   don't know yet, and a guess written on day one gets read as fact in a
   month.
+
+## Then start a history
+
+Once `me/setup-answers.md` is gone, start a history for the folder, without
+asking, so what gets saved at the end of a session can be taken back.
+`/wrapup` and the nightly save both add to it. Put their name in where it
+says `Their Name`, or leave it out if they didn't give one; it is used only
+when git has no name set.
+
+```bash
+bash .claude/scripts/history.sh start "Their Name"
+```
+
+What it printed decides the one line you add to the finish below:
+
+- `history: started` — "I also started a history for this folder, so what
+  gets saved at the end of a session can be taken back."
+- `history: the template's own` — they downloaded it with `git clone`, so
+  their notes would go into the template's own history. Say so in one line
+  and give them the command to start fresh; don't run it yourself:
+  `rm -rf .git && bash .claude/scripts/history.sh start`
+- `history: couldn't start` — say that in one line, with the reason it
+  gave.
+- Anything else — say nothing about it.
+
 ## Then finish
 
 Say three things, in under ten lines total:

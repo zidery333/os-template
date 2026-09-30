@@ -103,13 +103,15 @@ it costs nothing and adds no delay.
 - **When I say something lasting** — a preference, a habit, my setup, a
   project's state — you get told to consider saving it. Answer my actual
   question first, then offer in one line. Never save without asking, and never
-  ask twice about the same thing.
+  ask twice about the same thing. If I said "remember" or "from now on", that
+  was the asking: save it and say where.
 - **After any file in `notes/`, `work/` or `me/` is written**, it gets checked
   for being too long, saying the same thing twice, or making claims with no
   source. Fix it then and there, not later.
 - **Before any file is written**, if the target is a write-up or a decision
   log you get told so. Those two are never rewritten. Fixing a typo is fine;
-  changing what was claimed or chosen is not.
+  changing what was claimed or chosen is not. Replacing a whole one, or
+  rewriting one with a shell command, asks me first.
 - **After every reply**, the words are checked against
   `.claude/hooks/plain-words.tsv`. A hit sends the reply back to be said plainly.
 No log of the session is ever written. The folder itself is the state, so
@@ -119,8 +121,9 @@ the chat closes.
 
 ## Working rules
 
-- **Throwing it away is the normal answer.** Most things you read don't
-  transfer. A session that keeps nothing is a good session, not a wasted one.
+- **Throwing it away is the normal answer** for things I want to use. Most
+  things you read don't transfer. A session that keeps nothing is a good
+  session, not a wasted one.
 - **Edit before adding.** A file that nearly copies an existing one is worse
   than no file.
 - **Say what hasn't been tested.** Most of `notes/` is one person's opinion.

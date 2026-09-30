@@ -7,7 +7,7 @@ notes are opinions that should change when you learn better, and projects
 have their own state and their own decisions.
 
 Empty on purpose. Run `/new-subject <name>` to start one, or just share
-something and you'll be asked which subject it belongs in.
+something and it gets filed under the subject that fits, or a new one.
 
 ## What a subject folder looks like
 

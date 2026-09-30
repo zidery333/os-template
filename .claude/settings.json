@@ -1,4 +1,5 @@
 {
+  "autoMemoryEnabled": false,
   "outputStyle": "Plain words",
   "hooks": {
     "SessionStart": [
@@ -26,7 +27,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|Bash",
         "hooks": [
           {
             "type": "command",
@@ -74,9 +75,7 @@
     "allow": [
       "Bash(yt-dlp:*)",
       "Bash(git status:*)",
-      "Bash(git log:*)",
-      "Bash(git diff:*)",
-      "Bash(git show:*)",
+      "Bash(bash .claude/scripts/history.sh:*)",
       "Bash(cat:*)",
       "Bash(ls:*)",
       "Bash(wc:*)",
@@ -85,6 +84,15 @@
       "Bash(find:*)",
       "Bash(head:*)",
       "Bash(tail:*)"
+    ],
+    "ask": [
+      "Bash(awk *> \"*)",
+      "Bash(awk *>\"*)"
+    ],
+    "deny": [
+      "Bash(yt-dlp *--exec*)",
+      "Bash(yt-dlp *--netrc-cmd*)",
+      "Bash(yt-dlp *--print-to-file*)"
     ]
   }
 }

@@ -3,7 +3,7 @@
 One folder per skill: `<name>/SKILL.md`.
 
 A **skill** is a set of instructions Claude picks up on its own when a job
-matches it. You don't type anything — it just applies.
+matches it. Most start on their own; some, like `/setup`, wait to be typed.
 
 The settings block at the top has a `name` and a `description`. **The
 description is the only thing that decides whether the skill ever fires.**
@@ -18,9 +18,9 @@ fixed list of steps. Type `/name` to force any of them.
 ```markdown
 ---
 name: check-my-writing
-description: Check writing against my rules — plain words, short sentences,
-  answer first. Use when reviewing, editing, or drafting anything I'll send
-  to another person.
+description: Checks writing against the person's rules — plain words, short
+  sentences, answer first. Use when reviewing, editing, or drafting anything
+  they will send to someone.
 ---
 
 # Checking writing
