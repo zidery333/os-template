@@ -1,0 +1,185 @@
+{
+  "what": "sha1 of every version of each shipped file the template has ever released. upgrade.py overwrites a file only when it still matches one of these; anything the person edited is kept and the new version set aside. Refresh with: python3 .os/upgrade.py --record",
+  "files": {
+    ".claude/agents/builder.md": [
+      "063d3bd54f1b5dcd3dd2a4882d759c45a0f26144",
+      "121487c6d60f5c36c5bf9b716743b54a135e84d2",
+      "785b33a1acb6042e571d20bfef79d701757fb4d9",
+      "4468c6fd487460e7dd02ff8330dda984fc550059"
+    ],
+    ".claude/agents/researcher.md": [
+      "38f6ddcce47c1850039d6d339b33cf580358313a",
+      "3badb40d03b33527d7024586e3d72d1facaa7bd0",
+      "aa303f16191ad00561676f4bd2a9a2881552aed6"
+    ],
+    ".claude/agents/reviewer.md": [
+      "85c25f7e6c33e624c5819aa88aa312561809e92a",
+      "f13ca30600636e8c6f81bd47b7efb0adb4fc8530",
+      "f9d81dc1b30485526c61e167c9b158a420d11228",
+      "3e3b781179dd9b4e6f1392e936a91cfa4d919a25"
+    ],
+    ".claude/agents/student.md": [
+      "427c4e5c4f75470237e976cc810d53c3c6584915",
+      "4eb6f30fe09332a0297623362901ae02c66f02a8",
+      "6b8c2a07d19d4de607be5e3fbfea6b681ab2c00f"
+    ],
+    ".claude/hooks/mark-dirty.sh": [
+      "827447642c152214315f2bd307aba995e22984d2"
+    ],
+    ".claude/hooks/session-start.sh": [
+      "c5cf660b7593146a5f6cd27d023925c23525e97f",
+      "adacaf7f2d5669361751302c16413ace5f2d06a5"
+    ],
+    ".claude/hooks/settle.sh": [
+      "3d5a93ccb29a9f903990bd0da7ebd5c1cc221107",
+      "fcbe21308e5a406e376a05605cfe01e0f0bf6187"
+    ],
+    ".claude/skills/catchup/SKILL.md": [
+      "373ba7efc8d5e7047592af002dda6ce7b56fff2f",
+      "57ea51e2ee2eefc79ab0b98544a710cad233b277",
+      "a342902956ac3eb7751bd4ac777ce8e28538b962",
+      "c04f4e2277dd5243df0786e84da43c0702610f67",
+      "85217cd0a4751cf580ab539f28bbd4fd2be002db"
+    ],
+    ".claude/skills/find/SKILL.md": [
+      "304e11faae5bd27589698a59732927d5143c3bb7",
+      "3ce647097b5766897938f7d857dbf835224c75f2",
+      "eba6281a78f44f30b21fbf6f4b3a2ded63c13a4e",
+      "b590c0cf230e596d9786d8b82af49f8ad2235feb"
+    ],
+    ".claude/skills/learn/NOTE.md": [
+      "3f7c8843add51eb99eb30e7bd4f8b789bf730ba6",
+      "f8dc62c9dcf410159c092a95e076ff4dcbd1df23"
+    ],
+    ".claude/skills/learn/SKILL.md": [
+      "25b156ff7dc552427d3e98c4aa6e4c07d4b8fdad",
+      "4d3e7de393797445fdc749e604e0c415e934c8eb",
+      "6359341f71e520bb0d5cbb661faed4132eaf91c4",
+      "b7e3ea12aece6730faa5af3e48529c7ce3321112",
+      "e35b9f7e71b206aebd4da09be020aa7911de60b9"
+    ],
+    ".claude/skills/learn/SOURCES.md": [
+      "5abab194cbf3cbeb374f33c29c64c9b269b24223",
+      "72070579432a92de587b40fbe28e177ad42b1447",
+      "a121203af2616f9797ee57965967259e3aa8dec9"
+    ],
+    ".claude/skills/make-skill/SKILL.md": [
+      "472a923fecf5064b84b10d56e075fd668742652f",
+      "7a8c30c3e98de7300b52c4af0c6c5e2097db13d1",
+      "c7ae7ec567c920ba21c708142bed8a2b80ce1a38"
+    ],
+    ".claude/skills/save/SKILL.md": [
+      "533966aafee3a4d1f648c0380c3f0c8c65c5914c",
+      "ea3a27ab6bac6d6701d9668f782ab6b5e1b9990c",
+      "ed73800f573a4d56d58c40d747c9d7ed4dd92b8c",
+      "90b59dc051297c0d41feabc78606cbc7d0b48bf2",
+      "71fe6004842ec7fb7c7bd4962a557a743d92834a"
+    ],
+    ".claude/skills/tidy/SKILL.md": [
+      "13a987e8d4ae79e0d2c6ce5955a2ca298dc17e70",
+      "d6c119ea59316a2b060bada6c41f5b6c45adc315",
+      "f7aa5c5297b2728866bd5fb91c42f7f4a708a96b",
+      "ffd50c3f356a20d036f941c4524ef929ab80c00f",
+      "600a613f35696f5c057e7dc3f66f5132fa98696c",
+      "82a64f941225436155c2274351f6d58ad03029a2"
+    ],
+    ".claude/skills/wrapup/SKILL.md": [
+      "3cdf8c093eb1a9f185b8a45f978bcdc9bb04d420",
+      "4aad4412ef617fa33aed9f97d215ad51a6281934",
+      "5794832f985812923ab774c0771db026e11786de",
+      "a11abf8ac9abf23a80bf6dec3892cc87c4b39726",
+      "119133b5e129cc20f118bf4578999a7e422819ce",
+      "ba560738f1cfc9485a72cad46937fd4ea246aeae"
+    ],
+    "AGENTS.md": [
+      "1465c7fd260a28aeb5b61b3a7fa1c45011fb4422",
+      "1c59926b5ec5c0f6b47775f7b411517123ca3113",
+      "4f98f5809d77db5fdbf023ef88563c8e133fec3e",
+      "51352f4603d30dadcf4fad30744b5fe0955daf46",
+      "69ca2ec9fe7f419f22602714dc3467236b366736",
+      "84a673ed02c4af524d9e9b97c88c7fa573172b59",
+      "9c1cf88d9bc39383e1dc45062fe15f3907bd3ea2",
+      "cb6e37623cc6cc825657962889cec20c00da1662",
+      "f3b2aeb1572edaa21c78478a5a2d6ad0c24ff1ad",
+      "71b331414cf8652a50e2fe99422eb855c5631d51",
+      "cf3eb9c384c63eda3bef065553407c7abf8e3403",
+      "4723eb93c98e26f524c5e6121ad38bb0a31c8836",
+      "42a6148b771dcdedcfd6b0db42e4bf8c3ccded83",
+      "ae0d5e3192accff7d7634b02ba5d11a9243ae57b"
+    ],
+    ".claude/skills/decide/SKILL.md": [
+      "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
+    ],
+    ".claude/skills/handoff/SKILL.md": [
+      "398733315dc52ff972dc06b22e8592f32cd1d1bb",
+      "a2e1589f211353e1286c194ff1f6de578ba57105"
+    ],
+    ".claude/skills/commands/SKILL.md": [
+      "4466f23ac9fbfae74b36a8245793237319bd3ed5"
+    ],
+    "os": [
+      "bb7de1bb647842ec1f518e495677380a4dffabe9"
+    ],
+    ".os/engine.py": [
+      "bac237136e89196303b5a92c4b5a36792a42fd8c"
+    ],
+    ".os/learn.py": [
+      "1b3f236a4556a3114e445c7288f8dd82805cc540"
+    ],
+    ".os/upgrade.py": [
+      "b02cb5841cb06fe71994843ae60e0f459e197d38"
+    ],
+    ".claude/settings.json": [
+      "549c7cdfc1efeb7e3a7af4e220add26b636197cc"
+    ],
+    ".gitignore": [
+      "110cb56982daa3818afbb83c42b9ac5d6a966009"
+    ],
+    ".claude/hooks/keep-the-record.sh": [
+      "35ba9345866878510b97c336aee5aa1bdc45048b"
+    ]
+  },
+  "keywords": {
+    "engineering": [
+      "c04e9c8748e72f10a3b603a142ab4a1c96746023"
+    ],
+    "writing": [
+      "5a1026dddaab600b10cfc5478388d0a9f3be6700"
+    ],
+    "research": [
+      "0ac66c61221dca8daa42d72556ba50b1649c8866"
+    ],
+    "business": [
+      "abb701fadba115cdaf69fd5a5a43c535788d5b06"
+    ],
+    "product": [
+      "c7850a600e63ceb318a4e3735af896bcc4089300"
+    ],
+    "design": [
+      "55bc02fb673c5a8f827f31d00ca5442b6a42d7e4"
+    ],
+    "marketing": [
+      "b375749f2dd169db4bb3e5f62fa6fabadef8af3c"
+    ],
+    "finance": [
+      "883c4ea40fcbb8e35e267e69a7b43dde403adfb8"
+    ],
+    "learning": [
+      "6191cb4eaa657d353a387836e95d842105b131d8"
+    ],
+    "operations": [
+      "0c9aede43c2b53e8b537f89833d0d2dbd3f40940"
+    ],
+    "personal": [
+      "5aad9709db6db5ba0c1954cdb62091bd8702a8de"
+    ],
+    "ai": [
+      "933e9315451ce0b6d4054b7d64c62dcc9a7dfe1f"
+    ]
+  },
+  "rules": [
+    "allow:Bash(./os:*)",
+    "deny:Read(/.os/backups/**)"
+  ],
+  "release": "2026-09-29.1"
+}

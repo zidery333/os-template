@@ -1,0 +1,33 @@
+# macOS clutter
+.DS_Store
+
+# Your own machine's Claude Code settings — permissions you granted locally.
+# Not shared, because they're about your machine, not this folder.
+.claude/settings.local.json
+
+# Subtitle and transcript scratch. Raw input, not something you keep.
+# ./os learn reads subtitles in a temporary folder outside this one, so these
+# should never fire. They're here for the day somebody runs yt-dlp in the
+# wrong directory.
+*.srt
+*.vtt
+
+# Never commit secrets.
+.env
+.env.*
+*.pem
+*.p12
+*_rsa
+
+# What ./os update set aside for you to merge into your own copies.
+.os/upgrades/
+
+# The ./os program's own state — rebuilt by ./os index, or local only.
+.os/registry.json
+.os/cache/
+.os/transcripts/
+.os/backups/
+.os/.lock
+.os/.dirty
+INDEX.md
+__pycache__/

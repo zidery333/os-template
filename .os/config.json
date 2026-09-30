@@ -1,0 +1,51 @@
+{
+  "$schema": "zenith/config/2",
+  "name": "Zenith",
+  "tagline": "One folder for your work. Any AI can use it.",
+  "version": "3.0.0",
+  "owner": "",
+  "buckets": {
+    "Work": {
+      "code": "W",
+      "role": "project",
+      "label": "Work",
+      "blurb": "Everything you're carrying — pushing on, or just keeping level.",
+      "categorize": true
+    },
+    "Notes": {
+      "code": "N",
+      "role": "note",
+      "label": "Notes",
+      "blurb": "Anything you'll look up later — notes, PDFs, pictures, data.",
+      "categorize": true
+    },
+    "Archive": {
+      "role": "archive",
+      "label": "Archive",
+      "blurb": "No longer live. Still searchable.",
+      "categorize": false
+    }
+  },
+  "thresholds": {
+    "category_split": 12,
+    "category_max_items": 99,
+    "max_categories_per_bucket": 9,
+    "stale_project_days": 30,
+    "dormant_project_days": 75,
+    "rules_max_lines": 160,
+    "skill_body_max_lines": 120,
+    "duplicate_similarity": 0.86,
+    "min_classify_score": 2.0
+  },
+  "behaviour": {
+    "keep_undo_steps": 20,
+    "keep_backups": 3,
+    "colour": "auto",
+    "date_format": "%Y-%m-%d"
+  },
+  "review": {},
+  "ignore": [
+    "Content",
+    "__pycache__"
+  ]
+}
