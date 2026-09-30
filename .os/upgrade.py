@@ -15,15 +15,19 @@ Brings the machinery up to date and leaves the person's things alone:
                aside in .os/upgrades/<stamp>/ for them (or their AI) to merge. One
                they deleted stays deleted. A program file changed there and never
                published stops it, unless told --anyway.
-               .claude/settings.json and each subject's keywords in .os/words.json,
-               when still as released
+               .claude/settings.json, and each subject's keywords and extensions
+               and the words that tell a note from work in .os/words.json, and
+               the line under the folder's name in .os/config.json, when still
+               as released
     merged     .os/config.json and .os/words.json (new settings added, theirs kept)
                .claude/settings.json they changed (new template hooks and permission
                rules added, a shipped hook as an older release wrote it renewed, theirs
                kept) · .gitignore they changed (new lines added; one still as
                released is replaced)
     kept       Work/ Notes/ Archive/ · state, snags, undo history · every skill,
-               helper or hook that is theirs · CLAUDE.md (only made to point at AGENTS.md)
+               helper or hook that is theirs · CLAUDE.md and GEMINI.md (only made to
+               point at AGENTS.md; either one missing is added, one that is a link
+               is left alone)
     migrated   in a folder from before releases only: W.04_ / N.03_ tags out of names
                and headers, then `./os sort` gives every renamed folder its Title Case
 
@@ -109,6 +113,49 @@ def keywords_sha(words: list) -> str:
     return hashlib.sha1(json.dumps(words, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+#: The lists in each subject of words.json that an update replaces whole while
+#: they are still as a release wrote them. Extensions joined when Writing lost
+#: .md and .txt: every note had been filed as writing on its file type alone,
+#: and a folder that updated would have gone on doing it.
+RENEWED_LISTS = ("keywords", "extensions")
+#: The same for each block under "intent", the words that tell a note from
+#: work, recorded in shipped.json as intent_keywords and intent_patterns.
+#: Only subjects were renewed, so "recipe", "ingredients" and the kitchen
+#: amounts never reached a folder that updated, and a lentil soup recipe was
+#: still filed there as work being pushed.
+INTENT_LISTS = ("keywords", "patterns")
+#: The line the first release put under the folder's name in ./os help. Each
+#: release since records its own in shipped.json as "taglines": this list
+#: alone missed the one that replaced it, which no later release could then
+#: have changed (review, 2026-09-30).
+RELEASED_TAGLINES = ("One folder for your work. Any AI can use it.",)
+
+
+def released_taglines(root: Path | None = None) -> set:
+    """Every line a release has put under the folder's name in ./os help."""
+    lines = set(RELEASED_TAGLINES)
+    for path in (HERE / "shipped.json", (root / ".os" / "shipped.json") if root else None):
+        if path is not None and path.is_file():
+            said = read_shipped(path).get("taglines")
+            lines |= {t for t in (said if isinstance(said, list) else []) if isinstance(t, str)}
+    return lines
+
+
+def _record_lists(data: dict, blocks, lists: tuple, prefix: str = "") -> int:
+    """Fingerprint each list in each block into data[prefix + list]."""
+    added = 0
+    for key in lists:
+        known_lists = data.setdefault(prefix + key, {})
+        for name, block in (blocks.items() if isinstance(blocks, dict) else []):
+            if isinstance(block, dict) and isinstance(block.get(key), list):
+                digest = keywords_sha(block[key])
+                known = known_lists.setdefault(name, [])
+                if digest not in known:
+                    known.append(digest)
+                    added += 1
+    return added
+
+
 def read_shipped(path: Path) -> dict:
     try:
         data = json.loads(path.read_text())
@@ -158,15 +205,18 @@ def record() -> int:
                 added += 1
     # Each subject's keywords too, so an update can tell a list nobody
     # changed (it gets the new words) from one they did (it stays theirs).
-    words = read_shipped(TEMPLATE / ".os" / "words.json").get("domains")
-    lists = data.setdefault("keywords", {})
-    for name, block in (words.items() if isinstance(words, dict) else []):
-        if isinstance(block, dict) and isinstance(block.get("keywords"), list):
-            digest = keywords_sha(block["keywords"])
-            known = lists.setdefault(name, [])
-            if digest not in known:
-                known.append(digest)
-                added += 1
+    # And its file extensions, the same way.
+    # And what tells a note from work, the same way.
+    words = read_shipped(TEMPLATE / ".os" / "words.json")
+    added += _record_lists(data, words.get("domains"), RENEWED_LISTS)
+    added += _record_lists(data, words.get("intent"), INTENT_LISTS, "intent_")
+    # And the line under its name in ./os help, so an update can tell one
+    # still as a release wrote it (it gets the new line) from theirs.
+    line = read_shipped(TEMPLATE / ".os" / "config.json").get("tagline")
+    taglines = data.setdefault("taglines", [])
+    if isinstance(line, str) and line and line not in taglines:
+        taglines.append(line)
+        added += 1
     # And every permission rule ever released, so an update can tell a new
     # one (added) from one they took out (left out).
     data["rules"] = sorted(set(data.get("rules") or []) | set(released_rules(TEMPLATE / SETTINGS)))
@@ -252,12 +302,10 @@ def merge_json(target: Path, source: Path, skip: tuple = ()) -> list[str] | None
     return added
 
 
-def renew_keywords(target: Path, source: Path, known: dict) -> list[str]:
-    """A subject whose keywords are still a list the template released gets
-    the new list. One they changed stays theirs; `learned` is never touched."""
-    theirs, ours = read_theirs(target), read_theirs(source)
-    mine = (theirs or {}).get("domains")
-    new = (ours or {}).get("domains")
+def _renew_lists(mine, new, released: dict) -> list[str]:
+    """Give each block in `mine` the new version of any list still exactly as
+    a release wrote it (`released`: list name → block name → fingerprints).
+    The names of the blocks that changed."""
     if not isinstance(mine, dict) or not isinstance(new, dict):
         return []
     renewed: list[str] = []
@@ -265,14 +313,51 @@ def renew_keywords(target: Path, source: Path, known: dict) -> list[str]:
         have = mine.get(name)
         if not isinstance(block, dict) or not isinstance(have, dict):
             continue
-        words, old = block.get("keywords"), have.get("keywords")
-        if isinstance(words, list) and isinstance(old, list) and words != old \
-                and keywords_sha(old) in known.get(name, []):
-            have["keywords"] = words
-            renewed.append(name)
+        for key, known in released.items():
+            words, old = block.get(key), have.get(key)
+            if isinstance(words, list) and isinstance(old, list) and words != old \
+                    and keywords_sha(old) in known.get(name, []):
+                have[key] = words
+                if name not in renewed:
+                    renewed.append(name)
+    return renewed
+
+
+def renew_keywords(target: Path, source: Path, known: dict,
+                   extensions: dict | None = None,
+                   intent: dict | None = None) -> list[str]:
+    """A subject whose keywords are still a list the template released gets
+    the new list, and the same for its extensions. One they changed stays
+    theirs; `learned` is never touched. The intent lists, what tells a note
+    from work, are renewed the same way when `intent` gives their released
+    fingerprints ({"keywords": ..., "patterns": ...}); a block renewed there
+    is named as "intent:<name>"."""
+    theirs, ours = read_theirs(target), read_theirs(source)
+    renewed = _renew_lists((theirs or {}).get("domains"), (ours or {}).get("domains"),
+                           {"keywords": known, "extensions": extensions or {}})
+    renewed += [f"intent:{name}" for name in _renew_lists(
+        (theirs or {}).get("intent"), (ours or {}).get("intent"), intent or {})]
     if renewed:
         target.write_text(json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
     return renewed
+
+
+def link_again(root: Path, name: str) -> str:
+    """A CLAUDE.md or GEMINI.md made with `ln` from AGENTS.md, linked to the
+    AGENTS.md there now, and what to say about it: "" when it already is."""
+    pointer_md = root / name
+    try:
+        if pointer_md.samefile(root / "AGENTS.md"):
+            return ""
+        new = pointer_md.with_name(name + ".new")
+        new.unlink(missing_ok=True)
+        os.link(root / "AGENTS.md", new)
+        os.replace(new, pointer_md)
+        return f"  kept      {name} — it's a link to AGENTS.md, and now to the new one"
+    except OSError:
+        # Can't link again: the pointer does the same job.
+        pointer_md.write_text("@AGENTS.md\n", encoding="utf-8")
+        return f"  fixed     {name} now points at AGENTS.md (it was a link to the old one)"
 
 
 def hook_script(command: str) -> str:
@@ -441,6 +526,18 @@ def main(argv: list[str]) -> int:
     given = before.get("files") if isinstance(before.get("files"), dict) else {}
     own_before = set(before.get("theirs") or [])
     known = shipped_hashes(root)
+    # A CLAUDE.md or GEMINI.md made with `ln` and no -s is AGENTS.md under a
+    # second name, but only until AGENTS.md is swapped for the new one. Then it
+    # held the old rules, got "@AGENTS.md" put on top, and Claude Code read the
+    # new rules and a stale copy of the old ones. So it's noted now, before
+    # AGENTS.md changes, and linked to the new one at the end.
+    hard_linked = set()
+    for name in ("CLAUDE.md", "GEMINI.md"):
+        try:
+            if not (root / name).is_symlink() and (root / name).samefile(root / "AGENTS.md"):
+                hard_linked.add(name)
+        except OSError:
+            pass
 
     # The program here was changed and never published: replacing it would
     # lose that, so it takes a deliberate --anyway.
@@ -475,7 +572,8 @@ def main(argv: list[str]) -> int:
         stamp = f"{base}-{n}"
     backup = root / ".os" / "backups" / f"before-upgrade-{stamp}"
     to_back = MACHINERY + GUARDED + [".os/shipped.json", ".claude/skills", ".claude/agents", ".claude/hooks",
-                                     SETTINGS, ".os/config.json", ".os/words.json", "CLAUDE.md", ".gitignore"]
+                                     SETTINGS, ".os/config.json", ".os/words.json", "CLAUDE.md", "GEMINI.md",
+                                     ".gitignore"]
     if not dry:
         for rel in to_back:
             src = root / rel
@@ -592,6 +690,14 @@ def main(argv: list[str]) -> int:
     if failed:
         for line in failed:
             say(f"  ✖ couldn't write {line}")
+        # AGENTS.md may be the new one already, and a CLAUDE.md made with
+        # `ln` still the old one. Run again, as it says to, it was no longer
+        # the same file, so it got "@AGENTS.md" put on top of the old rules
+        # (review, 2026-09-30). So it's linked to the new one now.
+        for name in sorted(hard_linked):
+            said = link_again(root, name)
+            if said:
+                say(said)
         sys.stdout.flush()
         print("  ✖ the update stopped partway. Put right what's above, then run it again to finish; "
               f"what it replaced is in {backup.relative_to(root)}", file=sys.stderr)
@@ -610,19 +716,33 @@ def main(argv: list[str]) -> int:
     if not dry:
         added = merge_json(root / ".os" / "config.json", TEMPLATE / ".os" / "config.json",
                            skip=("owner", "review"))
+        cfg = json.loads((root / ".os" / "config.json").read_text())
+        # The line under the name in ./os help, still as a release wrote it,
+        # takes the new one, as a keyword list does. "Any AI can use it" read
+        # as if the ChatGPT app would do, and theirs always won, so no update
+        # could ever take it back.
+        line = new_cfg.get("tagline")
+        renewed = cfg.get("tagline") in released_taglines(root) and bool(line) \
+            and line != cfg.get("tagline")
+        if renewed:
+            cfg["tagline"] = line
         (root / ".os" / "config.json").write_text(json.dumps(
-            {**json.loads((root / ".os" / "config.json").read_text()),
-             "version": new_cfg.get("version", old_cfg.get("version"))},
+            {**cfg, "version": new_cfg.get("version", old_cfg.get("version"))},
             indent=2, ensure_ascii=False) + "\n")
-        say("  merged    .os/config.json" + (f" — added {', '.join(added)}" if added else ""))
+        say("  merged    .os/config.json" + (f" — added {', '.join(added)}" if added else "")
+            + ("; a new line under its name in ./os help" if renewed else ""))
         words = root / ".os" / "words.json"
         added = merge_json(words, TEMPLATE / ".os" / "words.json")
         if added is None:
             unreadable(".os/words.json")
         else:
-            renewed = renew_keywords(words, TEMPLATE / ".os" / "words.json", shipped_hashes(root, "keywords"))
+            renewed = renew_keywords(words, TEMPLATE / ".os" / "words.json", shipped_hashes(root, "keywords"),
+                                     shipped_hashes(root, "extensions"),
+                                     {key: shipped_hashes(root, f"intent_{key}") for key in INTENT_LISTS})
+            subjects = [name for name in renewed if not name.startswith("intent:")]
             say("  merged    .os/words.json — your words kept" + (f", added {', '.join(added[:6])}" if added else "")
-                + (f"; new keywords for {', '.join(renewed)}" if renewed else ""))
+                + (f"; new words for {', '.join(subjects)}" if subjects else "")
+                + ("; better at telling a note from work" if len(subjects) < len(renewed) else ""))
         src, dst = TEMPLATE / SETTINGS, root / SETTINGS
         if not src.is_file() or (dst.is_file() and sha1(dst) == sha1(src)):
             pass
@@ -671,17 +791,45 @@ def main(argv: list[str]) -> int:
                                          encoding="utf-8")
                 say(f"  merged    .gitignore — added {', '.join(new_lines[:4])}"
                     + (" …" if len(new_lines) > 4 else ""))
-        claude_md = root / "CLAUDE.md"
-        if not claude_md.exists():
-            copy(TEMPLATE / "CLAUDE.md", claude_md)
-            say("  added     CLAUDE.md")
-        elif "AGENTS.md" not in claude_md.read_text()[:400]:
-            claude_md.write_text("@AGENTS.md\n\n" + claude_md.read_text())
-            say("  fixed     CLAUDE.md now points at AGENTS.md; your rules below it are kept")
-        else:
-            say("  kept      CLAUDE.md (yours)")
     else:
         say("  would merge  .os/config.json · .os/words.json · .claude/settings.json (yours win)")
+
+    # CLAUDE.md and GEMINI.md, each only made to point at AGENTS.md. Out here,
+    # not with the merges above, so a preview says it too: it named neither,
+    # and the real run then added GEMINI.md.
+    # A CLAUDE.md or GEMINI.md that is a link is theirs, and is left as
+    # it is. Written through, "@AGENTS.md" landed on top of whatever the
+    # link led to: on AGENTS.md itself, the usual one, which then brought
+    # itself in and matched no release again, so every update after it
+    # set the new rules aside for a merge by hand.
+    # Gemini CLI reads GEMINI.md and not AGENTS.md, so a Gemini user got
+    # none of the rules. Made to point at them the way CLAUDE.md is: one of
+    # their own keeps its lines, under the pointer.
+    for name, why in (("CLAUDE.md", ""), ("GEMINI.md", ", so Gemini CLI reads AGENTS.md too")):
+        pointer_md = root / name
+        if pointer_md.is_symlink():
+            say(f"  {'would keep' if dry else 'kept     '} {name} — it's a link, so it's left as it is")
+        elif name in hard_linked and dry:
+            # The real run links it to the new AGENTS.md; the preview said
+            # it would be left as it was (review, 2026-09-30).
+            say(f"  would keep {name} — it's a link to AGENTS.md, so it would be linked to the new one")
+        elif name in hard_linked:
+            say(link_again(root, name) or f"  kept      {name} — it's a link, so it's left as it is")
+        elif not pointer_md.exists():
+            if not dry:
+                if name == "CLAUDE.md" and (TEMPLATE / name).is_file():
+                    copy(TEMPLATE / name, pointer_md)
+                else:
+                    pointer_md.write_text("@AGENTS.md\n", encoding="utf-8")
+            say(f"  {'would add ' if dry else 'added    '} {name}{why}")
+        elif "AGENTS.md" not in pointer_md.read_text(encoding="utf-8", errors="replace")[:400]:
+            if not dry:
+                pointer_md.write_text("@AGENTS.md\n\n" + pointer_md.read_text(encoding="utf-8", errors="replace"),
+                                      encoding="utf-8")
+            say(f"  would point {name} at AGENTS.md; your rules below it would be kept" if dry else
+                f"  fixed     {name} now points at AGENTS.md; your rules below it are kept")
+        elif name == "CLAUDE.md":
+            say(f"  {'would keep' if dry else 'kept     '} CLAUDE.md (yours)")
 
     # 4. numbers out — only a folder from before releases can still have them.
     #    Anywhere else, a name like `1.10 meeting with Sam.md` is theirs.

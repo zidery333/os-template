@@ -15,8 +15,9 @@ source:
      this is it. One sentence — if it needs three, you haven't got it yet. -->
 
 ## Why I'm learning this
-<!-- One line, in their words: what they're going to do with it. This is what
-     makes the note worth reopening, so don't skip it. -->
+<!-- For using only. One line, in their words: what they're going to do with it.
+     This is what makes the note worth reopening, so don't skip it. Learned for
+     liking? Delete this heading: "I like it" needs no reason written down. -->
 
 ## The method
 <!-- Numbered, in order. Each step: what to do, how you know it's right, and
@@ -39,7 +40,8 @@ source:
 <!-- Only what's genuinely needed. Delete this heading if nothing is. -->
 
 ## Practice
-<!-- One thing, finishable today, with a pass condition. -->
+<!-- For using only. One thing, finishable today, with a pass condition.
+     Learned for liking? Delete this heading. -->
 
 ## Sources
 <!-- The official one first, if there is one: what it is, its URL, the date you
@@ -48,5 +50,5 @@ source:
      ones you rejected and why — that is as useful as the ones you kept. -->
 
 ## Related
-<!-- Other things here, by name: how-to-run-a-retro, Q3 OKR Review.
+<!-- Other things here, by name: how-to-bleed-a-radiator, Fix the Boiler.
      What step 1 turned up goes here. -->

@@ -34,15 +34,22 @@ once they agree. Describing the problem back to them is not the job.
 - **Doubles** → read both. Same thing? Merge into the older one, which has the
   inbound links, then close the newer. Say which one survived.
 - **Done by hand every time** → the highest-value line on the page and the
-  easiest to skip. Offer *one*: say the steps back in a sentence, and if that's
-  right, write the skill while they're in front of you (`/make-skill`, or
+  easiest to skip. It is found by words like "every week" in a note, so check
+  two things first. Is something already doing it on its own — a scheduled
+  task, a timer, a skill? Then it's no job for a skill; say so in a line. And
+  how often is it really done by hand? Count the times in its Log or its dates.
+  A note usually has neither, and no record is not the same as rarely: when
+  nothing shows it, ask how often they really do it. Done by hand, and often?
+  Offer *one*: say the steps back in a sentence, and if that's right, write the
+  skill while they're in front of you (`/make-skill`, or
   `./os new skill "<name>"`). One good skill beats three half-written ones.
 - **Broken** → `./os check --fix` handles the mechanical. Two things sharing a
-  name: keep the older, give the newer a name that says what it actually is. A
-  skill with no `description:`: write one naming the trigger words. A broken
-  link: relink to where the thing sits now.
+  name in different folders is fine, not broken: a command asks which one, so
+  leave them. A skill with no `description:`: write one naming the trigger
+  words. A broken link: relink to where the thing sits now.
 - **Snags** → the folder's own faults, not their job to fix. Offer
-  `./os snag --export` once so they have a page to hand over. Don't read the list out.
+  `./os snag --export` once so they have a page to hand over, and tell them to
+  read it before they send it. Don't read the list out.
 
 Finish with `./os check --fix`, then read every pushing item's `## Next action`
 and name the three to start on this week, in order, with a clause each on why.

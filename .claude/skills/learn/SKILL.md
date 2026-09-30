@@ -1,21 +1,35 @@
 ---
 name: learn
-description: Learn how good practitioners actually do something, and bring back a note you can work from — from the official source and from people who do it for a living, including a video or a whole channel. Use when the user says teach me, how do the pros do this, I want to get good at, learn this properly, watch this video and, or I keep doing this badly.
+description: Learn how good practitioners actually do something, and bring back a note you can work from — from the official source and from people who do it for a living, including a video or a whole channel. Use when the user says teach me, how do the pros do this, I want to get good at, learn this properly, watch this video and, I keep doing this badly, or I'm curious about.
 argument-hint: [the craft, or a link to learn it from]
 allowed-tools: Bash(./os:*), Bash(${CLAUDE_PROJECT_DIR}/os:*), Bash(grep:*), Task, Agent, Read, Write, Edit, Grep, Glob, WebSearch, WebFetch
 ---
 
 # Learn
 
-They don't want a summary of a topic. They want to **do the thing**, the way
-somebody good at it does it. Everything below serves that.
+They don't want a summary of a topic. Mostly they want to **do the thing**, the
+way somebody good at it does it — but not always.
+
+## First: is this for using, or for liking?
+
+It changes everything after it, so know which before anything else. Most of the
+time it's obvious; ask only when it isn't.
+
+**For using**: they want it to change what they do or what they make. Everything
+below applies. Be hard on the sources.
+
+**For liking**: a subject they find interesting, something learned for the
+pleasure of it, like birds or old maps. "I like this" is a complete reason. It
+doesn't have to be useful or change anything, so never ask what they'll do with
+it, and skip every step below marked *for using*. Nothing gets turned away for
+not fitting.
 
 ## Start where they already are
 
 `./os find "$ARGUMENTS"` first. Already covered? Extend that note and cite its
 name — never write a rival one. Then, in one message, only what changes the
-answer: what they'll do with it, and whether they've never tried, are doing it
-badly, or are improving. If `$ARGUMENTS` says, skip the question.
+answer. *For using*: what they'll do with it, and whether they've never tried,
+are doing it badly, or are improving. If `$ARGUMENTS` says, skip the question.
 
 ## Two kinds of source, and a real note needs both
 
@@ -50,8 +64,9 @@ what survived, whether the sources agree, and what it'll be called. Then ask.
 ## Write it
 
 Keep only what transfers — the steps, the judgement behind each, the beginner
-mistakes, the kit really used. Drop theory that changes nothing they'd do on
-Monday. Every subject hides one real disagreement; find it.
+mistakes, the kit really used. *For using*: drop theory that changes nothing
+they'd do on Monday. *For liking*: keep what makes it interesting to them. Every
+subject hides one real disagreement; find it.
 
 One note, or a folder if the sources really disagree. Ads, Excel, SEO: everyone
 does the same thing with better tips, so blend them — the blend *is* the truth.
@@ -71,8 +86,8 @@ the folder doesn't, minus anything another domain already owns:
 
 That is how the next passing thought about it files itself. Say nothing about it.
 
-Finally, offer **one** thing that makes it usable: a job they'll repeat becomes a
-skill (`/make-skill`), a craft they'll get better at becomes
+Finally, *for using*, offer **one** thing that makes it usable: a job they'll
+repeat becomes a skill (`/make-skill`), a craft they'll get better at becomes
 `./os new ongoing "<the craft>"` with the practice step as its standard, and
 neither means the note is enough — say so and stop.
 
@@ -98,6 +113,7 @@ neither means the note is enough — say so and stop.
 
 ## Done when
 
-They have a name they can open, a first step small enough to do today, and every
-claim traced to a named source — a timestamp, or a URL with a date — they could go
-and check themselves. And the folder knows the subject's words.
+They have a name they can open, a first step small enough to do today (*for
+using* only), and every claim traced to a named source — a timestamp, or a URL
+with a date — they could go and check themselves. And the folder knows the
+subject's words.

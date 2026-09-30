@@ -27,7 +27,7 @@ whole point of the skill.
 - Never list everything. More than five in a section? Name three, count the rest.
 - Never pad. Nothing quiet and nothing broken is a three-line answer, and that is
   the right length.
-- Use the names so they can act on it: "open Q3 OKR Review".
+- Use the names so they can act on it: "open Fix the Boiler".
 - Say plainly when something should just be held or closed out. Quiet work
   usually wants `./os hold`, not `./os close`.
 - No jargon and no health score. "Everything's in good shape."

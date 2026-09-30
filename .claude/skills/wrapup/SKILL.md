@@ -1,6 +1,6 @@
 ---
 name: wrapup
-description: Close out a working session — write down what happened, update the projects touched, file anything loose. Use when the user says done for now, wrap up, end session, save my progress, that's enough for today, or before they walk away from real work.
+description: Close out a working session — write down what happened, update the projects touched, file anything loose, keep a checkpoint, and say when it's safe to close. Use when the user says done for now, wrap up, end session, save my progress, that's enough for today, can I close this, or before they walk away from real work.
 allowed-tools: Bash(./os:*), Bash(${CLAUDE_PROJECT_DIR}/os:*), Read, Edit, Write
 ---
 
@@ -33,8 +33,23 @@ inside `.claude/`, do what it says.
 Then settle it: `./os sort`. Anything about the folder itself that got in the way
 today and isn't already written down: `./os snag "<what happened>"`.
 
+Last, keep a checkpoint: `./os checkpoint "<what changed today, in a few words>"`.
+It keeps every file as it is now in the folder's own history, so an edit made by
+hand after this can be taken back. `./os undo` can't do that: it only reverses
+what `./os` did. Footage in `Work/Content` is left out.
+
+- **It kept one, started one, or nothing had changed** — everything is saved.
+- **No git on this computer** — the files are still saved; say in one bullet that
+  hand edits can't be taken back until git is installed, with the line it gave.
+- **A history `./os` didn't start** — it's theirs, so offer to save it, in one
+  line. On a yes: `git add -A && git commit -m "<what changed today>"`.
+- **Anything else** (the history came with the download, or belongs to a bigger
+  folder around this one) — don't run git yourself. Say its line in one bullet.
+
 Report in the usual shape: a paragraph on what moved, bullets for what was
-decided and what's next, question bullets for what's still open.
+decided and what's next, question bullets for what's still open. End the
+paragraph with "It's all saved, so it's safe to close." — but only if it is: if
+something couldn't be written down or filed, say that instead.
 
 ## Rules
 
@@ -47,3 +62,4 @@ decided and what's next, question bullets for what's still open.
 
 Everything touched has a dated line in its `## Log`, and everything they pushed on
 has a current next action — held work doesn't need one, that's what holding means.
+A checkpoint was kept, or the reply says why not, and says whether it's safe to close.

@@ -18,6 +18,22 @@
 *.pem
 *.p12
 *_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.netrc
+*.kdbx
+
+# Footage and big exports live in Work/Content, and stay out of the history
+# ./os keeps of this folder. A file in that history stays there for good, even
+# after you delete it, so every clip would take up its room twice.
+/Work/Content/
+
+# What a code project in Work builds or downloads for itself. Big, made again
+# from the project's own files, and nothing of yours is in it.
+node_modules/
+.venv/
+venv/
 
 # What ./os update set aside for you to merge into your own copies.
 .os/upgrades/

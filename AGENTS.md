@@ -1,23 +1,22 @@
 # How to work in this folder
 
-This folder is called Zenith. It holds everything the person you're helping is
-working on — their projects, their notes, their files — and it keeps itself
+This folder is called Zenith. It holds whatever the person you're helping
+wants kept — plans, notes, files, the things they're into — and it keeps itself
 organised. You are the one running it for them. Works with any AI: if you can
 read this file and run `./os`, you can run this system. What follows is what the
 folder guarantees and needs; how you get there is your call.
 
 ## First, always
 
-Run `./os`. It says what's open, what's waiting and what has gone stale. Open with
-one plain sentence about where things stand. **If the folders are empty, this
-person has never used it**: don't explain the system and don't list commands — say
-hello, tell them in a line or two that whatever they tell you gets written down
-and filed for them, and ask what they're working on. `./os brief` says the same.
+Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one
+plain sentence about where things stand. **If the folders are empty, this person has
+never used it**: don't explain the system or list commands. Say hello, say in a line or
+two that whatever they tell you gets written down and filed, and ask what's on their
+mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
 
 ## Talk like a person
 
 They did not sign up to learn a filing system.
-
 - **Say what happened, not what ran.** "I wrote that down — it's in Notes as how-to-run-a-retro."
 - Indexing, front matter, taxonomies, health scores are your words for your work,
   not theirs. Explain the machinery only if they ask, then answer just that.
@@ -58,13 +57,12 @@ know least. Ask what it needs from them **now**:
 | `pushing` | there is a next action | `./os push <name>` |
 | `holding` | there is a standard, and no next action | `./os hold <name>` |
 
-The same item moves between the two, repeatedly — work that ships becomes work
-that is maintained — and that is one word in the header, not a move on disk.
-**It is the flip you will reach for most.** When something goes quiet, the usual
-truth is not that it is dead but that it stopped having a next action: hold it,
-don't close it. Held work is never counted as on the go and never nagged for going
-quiet, so it stops generating false guilt. Only offer `./os close` when they say
-it is genuinely over.
+The same item moves between the two, repeatedly — work that ships becomes work that is
+maintained — and that is one word in the header, not a move on disk. **It is the flip you will
+reach for most.** When something goes quiet, the usual truth is not that it is dead but that it
+stopped having a next action: hold it, don't close it. Held work is never counted as on the go
+and never nagged for going quiet, so it stops generating false guilt. Only offer `./os close`
+when they say it is genuinely over.
 
 ## The commands
 ```
@@ -82,11 +80,11 @@ it is genuinely over.
 ./os open <name>         where something lives on disk · ./os edit <name>  to change it
 ./os close <name>        no longer live — into Archive/
 ./os decide <name> "<text>"  write a settled thing into its ## Decisions
-./os claim <name>        tell the other chats you're working on it
-./os release <name>      let go of it again
+./os claim <name>        tell the other chats you're on it · ./os release <name>  let go again
 ./os rename <name> "..."  call it something else, everywhere at once
 ./os sort                file anything they dropped in by hand
 ./os undo                reverse the last thing ./os did
+./os checkpoint "..."    keep everything as it is now, so hand edits can be taken back
 ./os learn --list <url>  what a channel has · ./os learn <id> its actual words
 ./os words               the words it files by · ./os words <domain> "<word>" adds one
 ./os snag "<text>"       something wrong with THIS folder, not their work
@@ -102,9 +100,10 @@ refuses a near-duplicate too; read what it found.
 
 The rest of this file is for your judgement. These five protect their data, and are not.
 
-1. **Move files with `./os`, never by hand.** `save`, `new`, `sort`, `close`,
-   `back`, `hold` and `push` record every change so `./os undo` works; a manual `mv` breaks that
-   silently, and undo cannot recover hand edits either — only what `./os` did.
+1. **Move files with `./os`, never by hand.** `save`, `new`, `sort`, `close`, `back`, `hold`
+   and `push` record every change so `./os undo` works; a manual `mv` breaks that silently.
+   Undo can't take back hand edits, only what `./os` did. A hand edit can go back to the last
+   `./os checkpoint` (`git diff` shows it, `git restore` puts a file back).
 2. **Never delete the user's content.** `./os close <name>` instead. If they ask for
    a real deletion, say exactly what will be lost and ask once.
 3. **Keep the `---` block at the top of a file** — `title, type, status,
@@ -124,11 +123,12 @@ one file. Big media — footage, exports, anything too large to read — goes in
 
 ## When they ask for something new
 
-Anything they'll want done the same way again is a skill (`./os new skill "..."`);
-a big job deserving its own clean context is a helper (`./os new helper "..."`);
-a craft they want to be good at is `./os learn` for the sources,
-`./os new learning "..."` for the note it becomes, then `./os words` to teach the
-folder its vocabulary. Anything else: `./os save` and let the filing decide.
+Anything they'll want done the same way again is a skill (`./os new skill "..."`); a
+big job deserving its own clean context is a helper (`./os new helper "..."`); a craft
+they want to be good at is `./os learn` for the sources, `./os new learning "..."` for
+the note it becomes, then `./os words` to teach the folder its vocabulary. Anything else:
+`./os save` and let the filing decide. Each skill is `.claude/skills/<name>/SKILL.md`, listed
+in `.claude/CATALOG.md`, and any AI can use one: when a request fits it, read it and follow it.
 
 Before answering a how-to, `./os find "<subject>"` — a subject they have learned
 beats your general knowledge, because it is what *they* chose to trust.
@@ -140,17 +140,17 @@ it down. One at a time. `./os tidy` flags the ones already on paper.
 
 ## Ending a session
 
-When real work happened, write it down before you stop — **into the thing it
-happened to**, not into a diary. For each item touched: a dated line in its
-`## Log`, anything settled in its `## Decisions` (with what it rules out), and a
-current `## Next action`. Then `./os sort`. Decisions live next to the work they
-are about because that is where they are still findable a year later. Routine
-filing is already in `.os/state.json` and needs no line. Never pad: a session
-where nothing was decided gets one honest line, or none. A Log line is one or
-two sentences; the detail lives in the item's own files.
+When real work happened, write it down before you stop — **into the thing it happened
+to**, not into a diary. For each item touched: a dated line in its `## Log`, anything settled
+in its `## Decisions` (with what it rules out), and a current `## Next action`. Then `./os sort`.
+Then `./os checkpoint "<what changed>"`. Decisions live next to the work they are about because
+that is where they are still findable a year later. Routine filing is already in `.os/state.json`
+and needs no line. Never pad: a session where nothing was decided gets one honest line, or none.
+A Log line is one or two sentences; the detail lives in the item's own files.
 
-**This folder in your way?** `./os snag "<what happened>"` — a command that
-surprised you, a rule that made no sense. It is for the template's maintainer, not them.
+**This folder in your way?** `./os snag "<what happened>"` — a command that surprised
+you, a rule that made no sense. It is for the template's maintainer, not them, so
+nothing personal: no names, subjects or note text.
 
 ## What you're free to do
 

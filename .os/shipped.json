@@ -28,18 +28,21 @@
     ],
     ".claude/hooks/session-start.sh": [
       "c5cf660b7593146a5f6cd27d023925c23525e97f",
-      "adacaf7f2d5669361751302c16413ace5f2d06a5"
+      "adacaf7f2d5669361751302c16413ace5f2d06a5",
+      "984bfb035695bf7b188c94eddf84f108f9ff7b3b"
     ],
     ".claude/hooks/settle.sh": [
       "3d5a93ccb29a9f903990bd0da7ebd5c1cc221107",
-      "fcbe21308e5a406e376a05605cfe01e0f0bf6187"
+      "fcbe21308e5a406e376a05605cfe01e0f0bf6187",
+      "69002f84a7ba054836bc72b068f2c7a56637be05"
     ],
     ".claude/skills/catchup/SKILL.md": [
       "373ba7efc8d5e7047592af002dda6ce7b56fff2f",
       "57ea51e2ee2eefc79ab0b98544a710cad233b277",
       "a342902956ac3eb7751bd4ac777ce8e28538b962",
       "c04f4e2277dd5243df0786e84da43c0702610f67",
-      "85217cd0a4751cf580ab539f28bbd4fd2be002db"
+      "85217cd0a4751cf580ab539f28bbd4fd2be002db",
+      "81caf6dc07ec15e45ca274c1ecf8b94030559639"
     ],
     ".claude/skills/find/SKILL.md": [
       "304e11faae5bd27589698a59732927d5143c3bb7",
@@ -56,7 +59,8 @@
       "4d3e7de393797445fdc749e604e0c415e934c8eb",
       "6359341f71e520bb0d5cbb661faed4132eaf91c4",
       "b7e3ea12aece6730faa5af3e48529c7ce3321112",
-      "e35b9f7e71b206aebd4da09be020aa7911de60b9"
+      "e35b9f7e71b206aebd4da09be020aa7911de60b9",
+      "1f9dc7e7135c39555d1395eb24befb34647d290f"
     ],
     ".claude/skills/learn/SOURCES.md": [
       "5abab194cbf3cbeb374f33c29c64c9b269b24223",
@@ -73,7 +77,8 @@
       "ea3a27ab6bac6d6701d9668f782ab6b5e1b9990c",
       "ed73800f573a4d56d58c40d747c9d7ed4dd92b8c",
       "90b59dc051297c0d41feabc78606cbc7d0b48bf2",
-      "71fe6004842ec7fb7c7bd4962a557a743d92834a"
+      "71fe6004842ec7fb7c7bd4962a557a743d92834a",
+      "06e2a2557c7a047a4d4b273cef338c9f192bdf1e"
     ],
     ".claude/skills/tidy/SKILL.md": [
       "13a987e8d4ae79e0d2c6ce5955a2ca298dc17e70",
@@ -81,7 +86,8 @@
       "f7aa5c5297b2728866bd5fb91c42f7f4a708a96b",
       "ffd50c3f356a20d036f941c4524ef929ab80c00f",
       "600a613f35696f5c057e7dc3f66f5132fa98696c",
-      "82a64f941225436155c2274351f6d58ad03029a2"
+      "82a64f941225436155c2274351f6d58ad03029a2",
+      "248b367b84387111e19087326e67dc944ebc8842"
     ],
     ".claude/skills/wrapup/SKILL.md": [
       "3cdf8c093eb1a9f185b8a45f978bcdc9bb04d420",
@@ -89,7 +95,8 @@
       "5794832f985812923ab774c0771db026e11786de",
       "a11abf8ac9abf23a80bf6dec3892cc87c4b39726",
       "119133b5e129cc20f118bf4578999a7e422819ce",
-      "ba560738f1cfc9485a72cad46937fd4ea246aeae"
+      "ba560738f1cfc9485a72cad46937fd4ea246aeae",
+      "1315c4527ad5d602d06c6d98d6ae383968352974"
     ],
     "AGENTS.md": [
       "1465c7fd260a28aeb5b61b3a7fa1c45011fb4422",
@@ -105,7 +112,8 @@
       "cf3eb9c384c63eda3bef065553407c7abf8e3403",
       "4723eb93c98e26f524c5e6121ad38bb0a31c8836",
       "42a6148b771dcdedcfd6b0db42e4bf8c3ccded83",
-      "ae0d5e3192accff7d7634b02ba5d11a9243ae57b"
+      "ae0d5e3192accff7d7634b02ba5d11a9243ae57b",
+      "6fe46721e318717b775481de9f383fc554754d43"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
@@ -121,19 +129,22 @@
       "bb7de1bb647842ec1f518e495677380a4dffabe9"
     ],
     ".os/engine.py": [
-      "bac237136e89196303b5a92c4b5a36792a42fd8c"
+      "bac237136e89196303b5a92c4b5a36792a42fd8c",
+      "43efdf1f8b6271f90307868c486a50579fa32bcd"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540"
     ],
     ".os/upgrade.py": [
-      "b02cb5841cb06fe71994843ae60e0f459e197d38"
+      "b02cb5841cb06fe71994843ae60e0f459e197d38",
+      "019cc47636454d0117d43d3800524d707ec790aa"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc"
     ],
     ".gitignore": [
-      "110cb56982daa3818afbb83c42b9ac5d6a966009"
+      "110cb56982daa3818afbb83c42b9ac5d6a966009",
+      "039832c7eadaa3cab6876a2157fad883f702fd38"
     ],
     ".claude/hooks/keep-the-record.sh": [
       "35ba9345866878510b97c336aee5aa1bdc45048b"
@@ -171,15 +182,118 @@
       "0c9aede43c2b53e8b537f89833d0d2dbd3f40940"
     ],
     "personal": [
-      "5aad9709db6db5ba0c1954cdb62091bd8702a8de"
+      "5aad9709db6db5ba0c1954cdb62091bd8702a8de",
+      "8b0c1f3b8bac74f0624740032bb601d7e7b528a7"
     ],
     "ai": [
       "933e9315451ce0b6d4054b7d64c62dcc9a7dfe1f"
+    ],
+    "home": [
+      "3a95c7f3b79999085fe057715d853b728a999ca7"
+    ],
+    "food": [
+      "c8066323f460070bb1c8cc27465a1b292d1b75ff"
+    ],
+    "garden": [
+      "d666d97e8cb31ae6e4cf9810d634a894d695e84b"
+    ],
+    "health": [
+      "660bb2da624ca070ad9bd858e01cc781402ecf4b"
+    ],
+    "money": [
+      "819999f32d102dfeff18bcdfd11388c17bdb57ba"
+    ],
+    "general": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
     ]
   },
   "rules": [
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-09-29.1"
+  "release": "2026-09-30.1",
+  "extensions": {
+    "engineering": [
+      "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
+    ],
+    "writing": [
+      "b78b605de40d32e532b6535739caa99c31b2ceee",
+      "ff19399860461e91890aef661fd7b55c4027cf50"
+    ],
+    "research": [
+      "4f916b5b6d00383aadf51705fb7fb2a2e4dc3805"
+    ],
+    "business": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "product": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "design": [
+      "923da89e6615980de36c5359acb51e969a129882"
+    ],
+    "marketing": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "finance": [
+      "b7f9b4b0d5fc896e30b84597d02f3c7ed9bbdae7"
+    ],
+    "learning": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "operations": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "personal": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "ai": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "home": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "food": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "garden": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "health": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "money": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ],
+    "general": [
+      "97d170e1550eee4afc0af065b78cda302a97674c"
+    ]
+  },
+  "intent_keywords": {
+    "pushing": [
+      "fc092d415f5cd08c5ac69693b31ab5805fdcef4d"
+    ],
+    "holding": [
+      "18c3c38d55b96fe62b3b082e20cf2788bf60ab1a"
+    ],
+    "note": [
+      "04ba4a019f7770089b0de5e630fd3eff68414206",
+      "48d3f1dbcaf9ab0dfa1676240c2348501ad47a50"
+    ]
+  },
+  "intent_patterns": {
+    "pushing": [
+      "63d0a36ea6802771dc7b936c7679082482193a9b"
+    ],
+    "holding": [
+      "f43e817677fb4762a0656b26c38b64700e6378bd"
+    ],
+    "note": [
+      "4cf5311d959fae8949918d7b1257767b2d178f75",
+      "813d89c28a22694d2f7cd6de2de9f85c8a3af0f2"
+    ]
+  },
+  "taglines": [
+    "One folder for your notes, plans and files."
+  ]
 }

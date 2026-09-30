@@ -165,7 +165,12 @@ class Sandbox:
         items = fixtures.bulk(n)
         for marker, body, _ in items:
             name = marker.split("::", 1)[1] if "::" in marker else f"{marker.lower()}.md"
-            (self.root / "Notes" / name).write_text(body, encoding="utf-8")
+            # A file dropped in keeps its name, so a second pile can hold the
+            # same names: kept beside it, the way Finder's Keep Both does.
+            path, n = self.root / "Notes" / name, 2
+            while path.exists():
+                path, n = path.with_name(f"{Path(name).stem} {n}{Path(name).suffix}"), n + 1
+            path.write_text(body, encoding="utf-8")
         return items
 
     def locate(self, marker: str) -> Path | None:
@@ -1303,7 +1308,7 @@ def test_undo_never_throws_away_words_written_after_it(t: Case) -> None:
     # Nothing written since, either, in a note past a megabyte that sort named,
     # or in work whose name only changed its capitals: undo said both had been
     # written in, and kept a copy of each.
-    essay = root / "Notes" / "Long essay.md"
+    essay = root / "Notes" / "Untitled.md"      # named by the computer, so sort names it
     essay.write_text("# Long essay\n\n" + "A sentence about the sea and the harbour.\n" * 36_000)
     t.box.run("sort")
     t.ok(not essay.exists(), "sort gave the long note its name")
@@ -1890,6 +1895,524 @@ def test_a_subject_teaches_the_folder_its_words(t: Case) -> None:
 
 
 @test
+def test_a_new_subject_gets_a_folder_name_that_is_safe(t: Case) -> None:
+    """The name after `./os words --new` became the folder its things are
+    grouped in, exactly as typed. `content` hid every video note in
+    Work/Content, which ./os never looks in, and `wine~` hid them in a folder
+    ./os skips as a leftover; `Food/drink` made a folder in a
+    folder; `../outside` moved the notes out of this folder altogether. And
+    `./os words Garden "dahlias"` was refused for a subject that was there."""
+    words = t.box.root / ".os" / "words.json"
+    before = words.read_bytes()
+    t.box.run("new", "work", "Wedding")
+    for name, why in (("content", "where big files go"), ("Notes", "uses that name"),
+                      ("archive", "uses that name"), ("wedding", "Work/Wedding"),
+                      ("wine~", "leftover file"), ("wine.swp", "leftover file"),
+                      ("wine.card.md", "leftover file")):
+        said = t.box.run("words", "--new", name, "hive", expect=1).stderr
+        t.ok(why in said and "Pick another name" in said,
+             f"--new {name} is refused, saying why in plain words:\n{said}")
+    t.eq(words.read_bytes(), before, "and nothing was written")
+
+    # A group sort made itself can be shared, like one left in Notes by a
+    # subject taken back. Asking stopped with a traceback.
+    cellar = t.box.root / "Notes" / "Cellar"
+    cellar.mkdir(parents=True)
+    (cellar / ".category").write_text(json.dumps(
+        {"name": "Cellar", "trail": ["Cellar"], "auto": True}) + "\n")
+    kept = t.box.json("words", "--new", "cellar", "claret")
+    t.eq((kept["domain"], kept["made"]), ("cellar", True),
+         "a group sort made doesn't stop a subject of that name")
+
+    t.box.run("words", "--new", "../outside", "wine")
+    t.box.run("words", "--new", "Food/drink", "cocktail")
+    made = json.loads(words.read_text())["domains"]
+    labels = (made["outside"]["label"], made["food-drink"]["label"])
+    t.ok(all("/" not in label and "." not in label for label in labels),
+         f"a slash or dots never get into the folder name: {labels}")
+    ai = t.box.json("words", "--new", "AI & agents", "robot")
+    t.eq((ai["domain"], ai["made"]), ("ai", False),
+         "a name some subject already goes by is that subject")
+    t.eq(t.box.json("words", "Garden", "dahlias")["domain"], "garden",
+         "and a subject is found whatever its capitals")
+    t.box.run("words", "--new", "Bee keeping", "hive")
+    t.eq(t.box.json("words", "Bee keeping", "queen")["domain"], "bee-keeping",
+         "or its spaces")
+
+    # the payoff: once Notes fills up, the group stays inside Notes. Sort
+    # names each note as it files it, so `wine 0.md` is wine-0.md by then.
+    for n in range(13):
+        (t.box.root / "Notes" / f"wine {n}.md").write_text(
+            f"A good wine, number {n}: red, from the cellar.\n", encoding="utf-8")
+    t.box.run("sort")
+    t.ok(not (t.box.tmp / "outside").exists() and not (t.box.root / "outside").exists(),
+         "nothing is moved out of Notes, or out of this folder")
+    grouped = sorted(p.name for p in (t.box.root / "Notes" / "Outside").rglob("wine*.md"))
+    t.eq(len(grouped), 13, "every wine note is grouped under Notes/Outside")
+    t.eq(len(t.box.json("find", "cellar")), 13, "and found")
+
+
+@test
+def test_an_odd_textedit_file_never_stops_search(t: Case) -> None:
+    """One .rtf with `\\u99999999` in it made every ./os find stop with a
+    traceback, whatever was searched for, and every ./os sort on Linux. A
+    bare `\\u`, or `\\'00`, put an invisible NUL character onto the card,
+    which then counted as a binary file."""
+    b = "\\"
+    for odd in ("u99999999 here", "u-99999 here", "u here", "u0 here", "'00 here",
+                "'07 here", "u7 here"):
+        said = engine.rtf_words(b.join(["{", "rtf1", "ansi Odd file ", odd + "}"]))
+        t.ok(said.startswith("Odd file") and not re.search(r"[\x00-\x08\x0b-\x1f\x7f]", said),
+             f"{odd!r} is skipped, not a crash or a NUL: {said!r}")
+    (t.box.root / "Notes" / "Broken.rtf").write_text(
+        b.join(["{", "rtf1", "ansi Odd file ", "u99999999 here about potash}"]), encoding="ascii")
+    t.box.run("sort")
+    for word in ("potash", "garden"):
+        found = t.box.run("find", word, expect=None)
+        t.ok("Traceback" not in found.stderr, f"./os find {word} still works:\n{found.stderr[-600:]}")
+
+
+@test
+def test_words_added_to_a_textedit_card_are_found(t: Case) -> None:
+    """Search left out everything on an RTF's card from `## What it says`
+    down, not just the copied words. The sentence of what it is that
+    AGENTS.md asks for, added at the end of the card, was never found."""
+    b = "\\"
+    rtf = b.join(["{", "rtf1", "ansi{", "fonttbl", "f0 Helvetica;}\n",
+                  "f0", "fs24 Seed order: tomatoes and potash.", "\n}"])
+    kept = t.box.root / "Notes" / "seed-order.rtf"
+    kept.write_text(rtf, encoding="ascii")
+    t.box.run("sort")
+    card = kept.with_name(kept.name + ".card.md")
+    with card.open("a", encoding="utf-8") as fh:
+        fh.write("\nWhat it is: Mum's order from the Suttons catalogue.\n")
+    item = next(i for i in t.box.items() if (i["path"] or "").endswith(".rtf"))
+    t.eq([r["id"] for r in t.box.json("find", "suttons")], [item["id"]],
+         "a sentence added at the end of the card is found")
+    kept.write_text(rtf.replace("potash", "rhubarb"), encoding="ascii")
+    t.eq(t.box.json("find", "potash"), [], "while the card's copy of the file is still left out")
+    t.eq(len(t.box.json("find", "rhubarb")), 1, "and the file is read as it is now")
+
+
+@test
+def test_an_update_teaches_a_folder_that_a_recipe_is_a_note(t: Case) -> None:
+    """"recipe", "ingredients" and the kitchen amounts went into the words
+    that tell a note from work, but an update renewed only the subjects. A
+    folder that updated went on filing a lentil soup recipe as work."""
+    import upgrade
+    root = t.box.root
+    new = json.loads((root / ".os" / "words.json").read_text())["intent"]
+    # The note lists exactly as 2026-09-29.1 shipped them. Written out here,
+    # not worked out from today's words.json, so adding a note word later
+    # doesn't make this check fail for no reason and stop a release.
+    first = {"keywords": [
+        "notes", "notes on", "remind me", "reminder", "don't forget", "summary", "reference",
+        "definition", "explained", "overview", "cheat sheet", "cheatsheet", "tldr", "tl;dr",
+        "what is", "key ideas", "takeaways", "excerpt", "quote", "source:", "found this",
+        "worth knowing", "worth remembering", "remember that", "for reference", "turns out",
+        "the difference between", "how it works", "the trick is", "apparently", "according to",
+        "read that", "saw that", "idea:", "thought:", "interesting", "idea for", "what if",
+        "might be worth", "someday", "maybe", "note to self", "session log", "decision log",
+        "changelog", "retro", "retrospective", "standup", "quote:", "he said", "she said",
+        "they said", "someone said", "fyi"],
+        "patterns": [r"^#+\s*(what|how|why)\b", "https?://", r"^#+\s*\d{4}-\d{2}-\d{2}",
+                     "^\\s*[\\\"\u201c\u2018']", r"^\s*(good |great |favourite |favorite )?quote\b"]}
+    t.eq({key: upgrade.keywords_sha(first[key]) for key in first},
+         {"keywords": "04ba4a019f7770089b0de5e630fd3eff68414206",
+          "patterns": "4cf5311d959fae8949918d7b1257767b2d178f75"},
+         "(the lists above are the ones that release shipped)")
+
+    def old(w: dict) -> None:
+        w["intent"]["note"].update(keywords=list(first["keywords"]),
+                                   patterns=list(first["patterns"]))
+    _edit_json(root / ".os" / "words.json", old)
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda out: _edit_json(
+        out / ".os" / "words.json",
+        lambda w: w["intent"]["note"].update(keywords=new["note"]["keywords"],
+                                             patterns=new["note"]["patterns"])))
+    _edit_json(root / ".os" / "words.json",
+               lambda w: w["intent"]["pushing"]["keywords"].append("get round to"))
+
+    done = t.box.run("update", "--from", str(published))
+    intent = json.loads((root / ".os" / "words.json").read_text())["intent"]
+    t.eq((intent["note"]["keywords"], intent["note"]["patterns"]),
+         (new["note"]["keywords"], new["note"]["patterns"]),
+         f"lists nobody changed are the new ones\n{done.stdout}")
+    t.ok("get round to" in intent["pushing"]["keywords"], "one they changed stays theirs")
+    t.ok("telling a note from work" in done.stdout, "and it says so")
+    t.box.run("save", "Aunt May's lentil soup recipe. Ingredients: 250g red lentils, 1 onion. "
+              "Method: soften the onion, add lentils and stock, simmer 25 minutes.")
+    t.eq(t.box.carrying("Aunt May's lentil soup")["kind"], "note", "so a recipe is a note there too")
+    for key in upgrade.INTENT_LISTS:
+        t.ok(upgrade.keywords_sha(first[key])
+             in upgrade.shipped_hashes(SOURCE, f"intent_{key}").get("note", []),
+             f"and the note {key} the first release shipped are known as released")
+
+
+@test
+def test_find_reads_the_notes_inside_a_piece_of_work(t: Case) -> None:
+    """Search read a folder's page and nothing else, so a quote kept in a
+    note inside a piece of work was never found. What programs keep in there
+    (node_modules, .git) is still never read, and only so much of it. But a
+    folder called Content inside is theirs, not Work/Content; a second word
+    in the work's name kept the file's words from showing; and one folder
+    full of files used up the cap before the next folder was reached."""
+    t.box.run("new", "work", "Kitchen refit")
+    work = t.box.root / "Work" / "Kitchen Refit"
+    (work / "quotes").mkdir()
+    (work / "quotes" / "removals.md").write_text(
+        "Removals quote from Bristow and Sons: 450 pounds.\n", encoding="utf-8")
+    (work / "suppliers").mkdir()
+    (work / "suppliers" / "plumber.md").write_text("Plumber: Quarmby, Tuesdays.\n",
+                                                   encoding="utf-8")
+    (work / "Content").mkdir()
+    (work / "Content" / "tiler.txt").write_text("Tiler: Gumbleton\n", encoding="utf-8")
+    b = "\\"
+    (work / "tiles.rtf").write_text(b.join(["{", "rtf1", "ansi Tiles from Mandarin Stone.}"]),
+                                    encoding="ascii")
+    for skipped in ("node_modules/x", ".git", "venv/lib"):
+        (work / skipped).mkdir(parents=True)
+        (work / skipped / "notes.md").write_text("zorblax\n", encoding="utf-8")
+    hits = t.box.json("find", "bristow")
+    t.eq([(h["id"], h.get("file")) for h in hits],
+         [("Kitchen Refit", "Work/Kitchen Refit/quotes/removals.md")],
+         "a note inside is found, as the work it is in and the file it is in")
+    t.ok("in quotes/removals.md" in t.box.run("find", "bristow").stdout,
+         "and ./os find says which file")
+    t.eq([h["id"] for h in t.box.json("find", "mandarin")], ["Kitchen Refit"],
+         "a TextEdit note inside too")
+    t.eq(t.box.json("find", "zorblax"), [], "never what programs keep there")
+    t.eq([(h["id"], h.get("file")) for h in t.box.json("find", "gumbleton")],
+         [("Kitchen Refit", "Work/Kitchen Refit/Content/tiler.txt")],
+         "a folder of theirs called Content is read, as Work/Content is not")
+    both = t.box.json("find", "bristow kitchen")
+    t.eq([(h["id"], h.get("file"), "Bristow" in h["snippet"]) for h in both],
+         [("Kitchen Refit", "Work/Kitchen Refit/quotes/removals.md", True)],
+         "a word of its name as well still shows the words found and their file")
+    for n in range(60):
+        (work / "quotes" / f"quote {n:02}.md").write_text("A quote.\n", encoding="utf-8")
+    t.eq([h.get("file") for h in t.box.json("find", "quarmby")],
+         ["Work/Kitchen Refit/suppliers/plumber.md"],
+         "a full folder doesn't use up what is read before the next one")
+    os_ = engine.Zenith(t.box.root)
+    finder = engine.Finder(os_)
+    item = finder.by_id("kitchen-refit")
+    t.eq(len(finder._inside(item)), engine.Finder.INSIDE_FILES, "and only so many files")
+
+
+@test
+def test_the_examples_are_from_home_everywhere(t: Case) -> None:
+    """Help and "which one?" still said q3-okr-review and `marketing "ad
+    set"`; the demo showed the person's own boiler note after "find one
+    again"; its last line said any AI would do; and check named an RTF
+    taken back with undo by its first line of code."""
+    job = re.compile(r"okr|ad set|learning phase|marketing", re.I)
+    for command in ("hold", "show", "open", "edit", "rename", "close", "words"):
+        said = t.box.run("help", command).stdout
+        t.eq(job.findall(said), [], f"`./os help {command}` has home examples")
+    for args in (["show"], ["close"], ["hold"], ["rename"], ["words", "garden"]):
+        said = t.box.run(*args, expect=None).stderr
+        t.eq(job.findall(said), [], f"`./os {' '.join(args)}` asks with a home example")
+    import shlex
+    t.box.run("new", "work", "Fix the boiler")
+    for example in (engine.DETAIL["hold"][2] + engine.DETAIL["show"][2]
+                    + engine.DETAIL["close"][2]):
+        t.box.run(*shlex.split(example)[1:])
+
+    (t.box.root / "Notes" / "boiler.md").write_text(
+        "Boiler model: Worcester. Boiler pressure 1.5 bar.\n", encoding="utf-8")
+    t.box.run("sort")
+    demo = t.box.run("demo").stdout.split("\n")
+    found = demo[next(n for n, line in enumerate(demo) if "./os find boiler" in line) + 1]
+    t.ok("The boiler keeps cutting out" in found, f"the demo finds its own: {found!r}")
+    t.ok(not any("any AI" in line for line in demo), "and doesn't say any AI will do")
+
+    b = "\\"
+    outside = t.box.tmp / "pond.rtf"
+    outside.write_text(b.join(["{", "rtf1", "ansi", "ansicpg1252{", "fonttbl", "f0 Helvetica;}\n",
+                               "f0 Plants for the pond.}"]), encoding="ascii")
+    t.box.run("save", str(outside))
+    t.box.run("undo")
+    said = [i["message"] for i in t.box.json("check", expect=None)["issues"]
+            if i["code"] == "taken-back-capture"]
+    t.ok(said and "Plants for the pond" in said[0] and "rtf1" not in said[0],
+         f"check names it by what it says: {said}")
+
+
+@test
+def test_the_demo_in_a_full_folder_says_where_things_went(t: Case) -> None:
+    """With more than a dozen things in Work and Notes, sort groups the
+    demo's three by subject straight after filing them. Step 2 printed those
+    second moves as bare "sort →" lines, and called the kept-up garden work
+    to push, having read its phase off the path from before the move."""
+    for n in range(13):
+        t.box.run("new", "work", f"Paint room {n}")
+        (t.box.root / "Notes" / f"paint colour {n}.md").write_text(
+            f"Room {n} paint: Farrow and Ball, eggshell.\n", encoding="utf-8")
+    t.box.run("sort")
+    shown = t.box.run("demo", "--keep").stdout
+    lines = [line.strip() for line in
+             shown.split("Watch where they go.")[1].split("Find one again")[0].split("\n")
+             if "→" in line]
+    t.eq(len(lines), 3, f"one line for each of the three:\n{shown}")
+    t.ok(not any(line.startswith("sort") for line in lines), "and none says just sort")
+    for line in lines:
+        where = line.split("→", 1)[1].strip()
+        t.ok((t.box.root / where).exists(), f"each says where it is now: {line!r}")
+    garden = next(line for line in lines if "Garden" in line)
+    t.ok(garden.startswith("work you keep up"), f"the garden is kept up: {garden!r}")
+
+
+def _unsure(box: "Sandbox", words: str) -> bool:
+    """Save `words`; was it flagged as something ./os wasn't sure about?"""
+    said = box.run("save", words).stdout
+    item = box.carrying(words)
+    flagged = "needs-review" in (item["flags"] or [])
+    if flagged != ("wasn't sure" in said):
+        raise Failure(f"the flag and what save said disagree for {words!r}:\n{said}")
+    return flagged
+
+
+@test
+def test_a_plain_fact_is_not_called_a_guess(t: Case) -> None:
+    """Nearly every plain fact came back "I wasn't sure what this one was".
+
+    Only the note-or-work score decided it, and a fact has no cue either way,
+    so "Q3 revenue was 1.2m" was flagged with its subject plain to see, and
+    tidy's "I wasn't sure" list filled with everything a person wrote down.
+    Unsure is kept for when there is nothing to go on at all."""
+    t.box.run("words", "marketing", "zorblat")
+    t.ok(not _unsure(t.box, "The zorblat was blue on Tuesday"),
+         "a fact whose words name a subject is not a guess")
+    t.ok(not _unsure(t.box, "Q3 revenue was 1.2m, up 8 percent on Q2"),
+         "a work fact is not a guess either")
+    t.ok(not _unsure(t.box, "Turns out a zebra's stripes confuse the flies"),
+         "nor is one that reads as a note, whatever it is about")
+    t.ok(_unsure(t.box, "qwerty zxcvb"), "nothing to go on at all is still flagged")
+
+    # A folder still on an older words.json gives every .md to Writing on its
+    # file type alone. That is not a subject matching, so it stays a guess.
+    words = t.box.root / ".os" / "words.json"
+    spec = json.loads(words.read_text(encoding="utf-8"))
+    spec["domains"]["writing"].setdefault("extensions", []).extend([".md", ".txt"])
+    words.write_text(json.dumps(spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    t.ok(_unsure(t.box, "asdfgh jklpoi"), "a file type is not something to go on")
+    t.eq(len(t.box.json("tidy")["unsure"]), 2, "and tidy lists just those two")
+
+
+@test
+def test_a_note_no_subject_fits_is_filed_quietly(t: Case) -> None:
+    """Home notes all went under Writing, and a person could not add a subject.
+
+    Writing claimed every .md and .txt on its file type, so a shoe size and a
+    wifi password were both "writing", and `./os words garden "bulbs"` was
+    refused as "no domain called 'garden'". Taking the file types away left
+    `./os check` with one "has no subject set" line per note instead."""
+    t.box.run("save", "Sam's shoe size is 8")
+    t.box.run("new", "note", "Odds and ends")
+    for words in ("Sam's shoe size is 8", "Odds and ends"):
+        t.eq(t.box.carrying(words)["domain"], "general",
+             f"{words!r} goes under general, not writing")
+    quiet = [i for i in t.box.json("check", expect=None)["issues"] if i["code"] == "no-domain"]
+    t.eq(quiet, [], "and check has nothing to say about either")
+
+    # a subject of their own: refused without --new, so a typo can't make one
+    refused = t.box.run("words", "knitting", "purl", expect=1)
+    t.ok("--new" in refused.stderr, f"a refusal says how to make one:\n{refused.stderr}")
+    made = t.box.json("words", "--new", "Knitting", "purl", "cast on")
+    t.eq((made["domain"], made["made"], made["added"]), ("knitting", True, ["purl", "cast on"]),
+         "--new makes the subject and takes its words")
+    block = json.loads((t.box.root / ".os" / "words.json").read_text())["domains"]["knitting"]
+    t.eq((block["label"], block["keywords"], block["learned"]), ("Knitting", [], ["purl", "cast on"]),
+         "its words go where ./os words always puts them, never into a keywords list")
+    again = t.box.json("words", "--new", "knitting", "yarn")
+    t.eq((again["made"], again["added"]), (False, ["yarn"]), "made twice, it just takes the words")
+    t.box.run("save", "Cast on forty stitches then purl the second row")
+    t.eq(t.box.carrying("Cast on forty stitches")["domain"], "knitting",
+         "and what is saved about it files itself there")
+    t.box.run("new", "note", "Sock pattern", "--domain", "knitting")
+    t.box.run("words", "--new", "!!!", expect=1)
+
+
+@test
+def test_a_recipe_is_a_note_to_keep_not_work_to_push(t: Case) -> None:
+    """A lentil soup recipe was filed as work being pushed, then listed as
+    "not touched in a while": ", add lentils" read as an instruction to do."""
+    t.box.run("save", "Grandma's lentil soup recipe. Ingredients: 250g red lentils, 1 onion, "
+              "2 carrots, 1.2 litres stock. Method: soften the onion, add lentils and "
+              "stock, simmer 25 minutes, blend half.")
+    item = t.box.carrying("Grandma's lentil soup")
+    t.eq((item["kind"], item["bucket"]), ("note", "Notes"), "a recipe is a note")
+    # One that never says "recipe": its weights and spoons say it instead
+    t.box.run("save", "Banana bread: 3 ripe bananas, 75g melted butter, 1 egg, 150g sugar, "
+              "190g flour. Mash the bananas, stir in the butter, add the rest, bake 60 min.")
+    item = t.box.carrying("75g melted butter")
+    t.eq((item["kind"], item["bucket"]), ("note", "Notes"), "so is one that doesn't say so")
+    t.eq(t.box.json("tidy")["active"], [], "and nothing is on the go because of either")
+    t.box.run("save", "Order 5kg of seed potatoes and 2kg onion sets by Friday")
+    t.eq(t.box.carrying("seed potatoes")["kind"], "project",
+         "while a thing to do that has weights in it is still work")
+
+
+@test
+def test_words_in_a_textedit_file_can_be_found(t: Case) -> None:
+    """TextEdit saves in RTF unless told not to, and search couldn't read it.
+
+    `./os find tomatoes` said nothing matched for a note about tomatoes: the
+    file is kept as it is with a card, and the card said only "Asset card for
+    garden-notes.rtf". Its words are read now, onto the card and at search."""
+    b = "\\"
+    rtf = (b.join(["{", "rtf1", "ansi", "ansicpg1252{", "fonttbl", "f0", "fswiss Helvetica;}\n"
+                   "{", "colortbl;", "red255", "green255", "blue255;}\n{", "*", "expandedcolortbl;;}\n",
+                   "f0", "fs24 ", "cf0 Tomatoes need pinching out every week.", "\n"
+                   "The caf", "'e9 by the allotment sells potash.", "\n}"]))
+    note = t.box.root / "Notes" / "Garden notes.rtf"
+    note.write_text(rtf, encoding="ascii")
+    t.box.run("sort")
+    kept = next(p for p in (t.box.root / "Notes").rglob("*.rtf"))
+    t.eq(kept.read_text(encoding="ascii"), rtf, "the file itself is kept exactly as it was")
+    card = kept.with_name(kept.name + ".card.md").read_text(encoding="utf-8")
+    t.ok("Tomatoes need pinching out" in card, f"its card carries its words:\n{card}")
+    item = next(i for i in t.box.items() if (i["path"] or "").endswith(".rtf"))
+    t.eq((item["title"], item["domain"]), ("Garden notes", "garden"),
+         "it keeps the name it was saved under, and is filed by what it says")
+    hits = [r["id"] for r in t.box.json("find", "tomatoes")]
+    t.ok(item["id"] in hits, f"./os find reads it: {hits}")
+
+    # TextEdit goes on saving into the same file; search reads what it says now
+    kept.write_text(rtf.replace("sells potash", "sells rhubarb crowns"), encoding="ascii")
+    hits = [r["id"] for r in t.box.json("find", "rhubarb")]
+    t.eq(hits, [item["id"]], "a word written in after it was filed is found too")
+    t.eq(t.box.json("find", "potash"), [], "and one taken out is not")
+    # what reads it wherever textutil, the Mac's own reader, is not there
+    t.eq(engine.rtf_words(rtf),
+         "Tomatoes need pinching out every week.\nThe café by the allotment sells potash.",
+         "the formatting codes come out, and the words stay")
+    # An emoji is two \\u codes, one half each. Kept as two halves, the card
+    # could not be written, and sort stopped with a traceback every time.
+    said = engine.rtf_words(b.join(["{", "rtf1", "ansi{", "fonttbl", "f0 Helvetica;}\n",
+                                    "f0 Seed order: zucchini ", "uc0", "u55356 ", "u57157  x2 ",
+                                    "u-10179 lone", "\n}"]))
+    t.eq(said, "Seed order: zucchini \U0001F345 x2 \ufffdlone",
+         "an emoji comes back whole, and half of one as a stand-in")
+    t.ok(said.encode("utf-8"), "so it can be written onto a card")
+
+
+@test
+def test_a_textedit_note_with_a_picture_can_be_found(t: Case) -> None:
+    """With a photo pasted in, TextEdit saves a folder, `Name.rtfd`, with the
+    words in a TXT.rtf inside it. It was kept as "a folder of files" with a
+    card that said nothing, so `./os find rhubarb` missed it."""
+    b = "\\"
+    kept = t.box.root / "Notes" / "Garden with picture.rtfd"
+    kept.mkdir(parents=True)
+    (kept / "TXT.rtf").write_text(b.join(["{", "rtf1", "ansi{", "fonttbl", "f0 Helvetica;}\n",
+                                          "f0", "fs24 Rhubarb crowns go in by the shed.",
+                                          "\n}"]), encoding="ascii")
+    (kept / "shed.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    t.box.run("sort")
+    card = kept.with_name(kept.name + ".card.md")
+    t.ok(card.is_file() and "Rhubarb crowns" in card.read_text(encoding="utf-8"),
+         "its card carries the words from inside it")
+    t.ok((kept / "TXT.rtf").is_file(), "it keeps its name, .rtfd and all, so TextEdit still opens it")
+    item = next(i for i in t.box.items() if (i["path"] or "").endswith(".rtfd"))
+    t.eq([r["id"] for r in t.box.json("find", "rhubarb")], [item["id"]], "./os find reads it")
+    (kept / "TXT.rtf").write_text((kept / "TXT.rtf").read_text().replace("Rhubarb", "Leeks"))
+    t.eq([r["id"] for r in t.box.json("find", "leeks")], [item["id"]],
+         "and what it says now, not only what it said when it was filed")
+
+
+@test
+def test_the_first_things_shown_are_from_home_not_a_job(t: Case) -> None:
+    """The demo, help and the kept-up blueprint spoke like a software team:
+    a billing token refresh, a codebase kept green, "Keep the tests passing",
+    "every release". A nurse with a garden read it as a tool for coders."""
+    job = re.compile(r"token|codebase|staging|lint|billing|postgres|tests passing|"
+                     r"redesign|every release", re.I)
+    demo = t.box.run("demo").stdout
+    t.eq(job.findall(demo), [], "the demo is about home things")
+    t.ok("./os find boiler" in demo and "The boiler keeps cutting out" in demo,
+         "and it finds the one it says it will")
+    for command in ("new", "save", "find", "claim", "decide", "words"):
+        said = t.box.run("help", command).stdout
+        t.eq(job.findall(said), [], f"`./os help {command}` has home examples")
+    holding = (t.box.root / ".os" / "templates" / "holding.md").read_text(encoding="utf-8")
+    t.eq(job.findall(holding), [], "and so does the blueprint for something kept up")
+
+
+@test
+def test_the_help_examples_work_one_after_another(t: Case) -> None:
+    """`./os help new` made "Fix the boiler before winter", and then `./os
+    help claim` and `./os help decide` said `fix-the-boiler`, which is not its
+    name: typed in order, every one after the first said "nothing here is
+    called fix-the-boiler"."""
+    import shlex
+    started = next(e for e in engine.DETAIL["new"][2] if e.startswith("os new work "))
+    t.box.run(*shlex.split(started)[1:])
+    for example in engine.DETAIL["claim"][2] + engine.DETAIL["decide"][2]:
+        said = t.box.run(*shlex.split(example)[1:], expect=None)
+        t.eq(said.returncode, 0, f"`./{example}` works after `./{started}`:\n{said.stderr}")
+
+
+@test
+def test_a_subject_of_their_own_can_be_taken_back(t: Case) -> None:
+    """`./os undo` straight after `./os words --new beekeeping` left
+    beekeeping where it was, and quietly took back the save before it. And a
+    long name ran into its count in the list: "a-very-long-subject-name0 words"."""
+    t.box.run("save", "Took Rex out, forgot the poo bags again")
+    before = (t.box.root / ".os" / "words.json").read_bytes()
+    t.box.run("words", "--new", "a very long subject name that goes on and on", "hive", "queen bee")
+    listed = t.box.run("words").stdout
+    t.ok(re.search(r"a-very-long-subject-name\s+0 words\s+\+2 learned", listed),
+         f"a long name has room in the list:\n{listed}")
+    undone = t.box.run("undo").stdout
+    t.ok("'words'" in undone, f"undo says what it took back:\n{undone}")
+    t.eq((t.box.root / ".os" / "words.json").read_bytes(), before,
+         "the new subject and its words are gone, and nothing else changed")
+    t.ok(t.box.carrying("Took Rex out"), "and the save before it is still there")
+    t.box.run("words", "garden", "dahlias")
+    t.box.run("words", "garden", "dahlias")      # nothing new: not a step of its own
+    t.box.run("undo")
+    t.eq((t.box.root / ".os" / "words.json").read_bytes(), before,
+         "one that added nothing is skipped over, not undone in place of the last")
+
+
+@test
+def test_an_update_takes_writing_off_every_note(t: Case) -> None:
+    """Writing gave up .md and .txt, but an update only ever renewed a
+    subject's keywords. A folder that updated would have gone on filing every
+    note as writing on its file type, so the fix reached nobody who already
+    had the folder. File types are renewed the same way now: while still as
+    released."""
+    import upgrade
+    root = t.box.root
+    first = [".md", ".txt", ".rtf", ".docx"]       # what the first ./os release shipped
+    _edit_json(root / ".os" / "words.json",
+               lambda w: w["domains"]["writing"].update(extensions=list(first)))
+    _release(root, "2026-01-01.1")
+
+    def change(out: Path) -> None:
+        def words(w: dict) -> None:
+            w["domains"]["writing"]["extensions"] = [".docx"]
+            w["domains"]["design"]["extensions"].append(".xd")
+        _edit_json(out / ".os" / "words.json", words)
+    published = _publish(t, "2026-02-01.1", change)
+    _edit_json(root / ".os" / "words.json",
+               lambda w: w["domains"]["design"]["extensions"].append(".afdesign"))
+
+    done = t.box.run("update", "--from", str(published))
+    words = json.loads((root / ".os" / "words.json").read_text())["domains"]
+    t.eq(words["writing"]["extensions"], [".docx"],
+         f"a list of file types nobody changed is the new one\n{done.stdout}")
+    t.ok(".afdesign" in words["design"]["extensions"] and ".xd" not in words["design"]["extensions"],
+         "one they changed stays theirs")
+    t.ok("new words for writing" in done.stdout, "and it says which subjects it renewed")
+    t.ok(upgrade.keywords_sha(first) in upgrade.shipped_hashes(SOURCE, "extensions").get("writing", []),
+         "and the list the first release shipped is known as released, so it is renewed too")
+
+
+@test
 def test_the_vocabulary_is_a_command_like_any_other(t: Case) -> None:
     """Teaching the folder words has to be reachable without invoking python.
 
@@ -2309,8 +2832,9 @@ def test_check_finds_real_problems(t: Case) -> None:
     (t.box.root / ".claude" / "skills" / "review" / "SKILL.md").write_text(
         "---\nname: review\n---\n\nThis collides with a built-in and has no description.\n")
 
+    # One name in two folders is said (a hint: show asks which one is meant).
     codes = {i["code"] for i in t.box.json("check", expect=1)["issues"]}
-    for expected in ("duplicate-id", "skill-name-clash", "skill-no-description"):
+    for expected in ("same-name", "skill-name-clash", "skill-no-description"):
         t.ok(expected in codes, f"check detects {expected}")
 
     # --fix repairs the mechanical things without touching the judgement calls
@@ -2332,7 +2856,11 @@ def test_check_only_offers_the_fix_it_can_make(t: Case) -> None:
     could not fix it."""
     t.box.run("new", "work", "Kitchen refit")
     readme = next((t.box.root / "Work").rglob("README.md"))
-    t.ok("domain: unsorted" in readme.read_text(), "nothing matched, so it is unsorted")
+    # Nothing ./os makes says `unsorted` any more — a thing no subject fits
+    # goes under general — but an item made before then still does.
+    readme.write_text(re.sub(r"^domain: .*$", "domain: unsorted", readme.read_text(),
+                             count=1, flags=re.M))
+    t.ok("domain: unsorted" in readme.read_text(), "an item from before says it is unsorted")
     hint = next(i for i in t.box.json("check", expect=None)["issues"]
                 if i["code"] == "no-domain")
     t.ok("add a `domain:` line" not in hint["fix"], "it doesn't ask for a line that is there")
@@ -2905,7 +3433,7 @@ def test_it_does_not_quietly_eat_the_disk(t: Case) -> None:
 def test_every_kind_of_finding_stays_visible(t: Case) -> None:
     """Forty near-duplicates must not push a one-off warning off the screen."""
     for i in range(30):
-        (t.box.root / "Notes" / f"same-{i}.md").write_text(
+        (t.box.root / "Notes" / f"Untitled {i}.md").write_text(
             "# Client relationships\n\nReference material about the client.\n")
     t.box.run("sort")
     (t.box.root / "Notes" / ".DS_Store").write_text("")
@@ -2936,12 +3464,12 @@ def test_ignored_code_caches_are_not_clutter(t: Case) -> None:
     codes = lambda: [i["path"] for i in t.box.json("check", expect=None)["issues"]
                      if i["code"] == "clutter"]
     t.ok(any("__pycache__" in p for p in codes()),
-         "outside git, a cache folder is still reported")
-    if not shutil.which("git"):
-        return          # the rest needs git; a computer without it isn't broken
-    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+         "outside a code project, a cache folder is still reported")
+    # The project's own .gitignore, not the folder's: every folder now has a
+    # history whose .gitignore lists __pycache__/ (review, 2026-09-30).
+    (root / "Work" / "Bot" / ".gitignore").write_text("__pycache__/\n")
     t.ok(not any("__pycache__" in p for p in codes()),
-         "once git ignores it, it is the project's own business")
+         "once the project ignores it, it is the project's own business")
 
 
 @test
@@ -3044,7 +3572,10 @@ def test_two_things_cannot_quietly_share_one_name(t: Case) -> None:
 
     Copies, restores from a backup and hand edits can all leave two things
     called the same. Nothing here may pick one of them silently: the clash is
-    an error on the report, and both are still on disk afterwards."""
+    on the report, a command given the name asks which one, and both are
+    still on disk afterwards. It was an error whose fix, ./os sort, fixed
+    nothing, so ./os said "needs fixing" for good; the same name in two
+    folders is fine now (settled 2026-09-30), and said as a hint."""
     t.box.run("save", "Redesign the pricing page before the launch on the 14th")
     t.box.run("save", "Reference notes on postgres indexes")
     original = next(i for i in t.box.items() if i["kind"] == "project")
@@ -3058,15 +3589,19 @@ def test_two_things_cannot_quietly_share_one_name(t: Case) -> None:
     shutil.copy2(origin_spine, clash / "README.md")
 
     t.box.run("index")
-    codes = {i["code"] for i in t.box.json("check", expect=1)["issues"]}
-    t.ok("duplicate-id" in codes, "the clash is reported as an error, not swallowed")
+    issues = t.box.json("check", expect=None)["issues"]
+    same = [i for i in issues if i["code"] == "same-name"]
+    t.ok(same and same[0]["level"] == "hint", "the clash is reported, not swallowed")
+    shown = t.box.run("show", Path(original["path"]).name, expect=2)
+    t.ok(original["path"] in shown.stderr and "duplicates/" in shown.stderr,
+         f"and a command given the name asks which one:\n{shown.stderr}")
 
     # --fix repairs the mechanical; which of two things keeps a name is not that
-    t.box.run("check", "--fix", expect=1)
+    t.box.run("check", "--fix", expect=None)
     t.ok((clash / "README.md").exists(), "the copy is still there — nothing was deleted")
     t.ok(origin_spine.exists(), "and so is the original")
-    codes = {i["code"] for i in t.box.json("check", expect=1)["issues"]}
-    t.ok("duplicate-id" in codes, "--fix does not paper over a judgement call")
+    codes = {i["code"] for i in t.box.json("check", expect=None)["issues"]}
+    t.ok("same-name" in codes, "--fix does not paper over a judgement call")
 
     # and no file anywhere went back to claiming a number of its own
     for folder in ("Work", "Notes", "Archive"):
@@ -3397,14 +3932,183 @@ def test_sort_adopts_things_where_they_lie(t: Case) -> None:
     t.ok(not {"head", "heads", "index", "info"} & set(site["tags"]),
          f"and its tags are not read out of .git ({site['tags']})")
     t.ok("Shop Site" in t.box.run("show", "Shop Site").stdout, "it answers to its name")
-    party = t.box.root / "Notes" / "party-ideas.md"
-    t.ok(party.exists(), "a loose file is named after its file name, not its first line")
+    party = t.box.root / "Notes" / "party ideas.txt"
+    t.ok(party.exists(), "a loose file keeps its own name and ending, not its first line")
 
     t.box.run("undo")
     t.eq(files(shop), theirs[shop], "undo leaves the code project as it was")
     t.ok(not card.exists() and not (speech / "README.md").exists(),
          "and takes away what sort added")
     t.eq(files(speech), theirs[speech], "and the speech is still word for word")
+
+
+@test
+def test_what_an_older_version_filed_stays_filed(t: Case) -> None:
+    """What the released ./os filed is left exactly as it was after an update.
+
+    A redesign of sort read the owner's own folder, filed long before, as
+    things waiting: a Notes topic with its sources/, and the piece of work
+    holding a copy of the template, with a README in every folder of its
+    machinery/ and template/. Here is a folder
+    made by hand the way the released ./os leaves one, subjects grouped and
+    all. ./os, check and the brief say nothing is waiting or broken, sort
+    changes no byte, and find reaches what it did. A folder an older sort
+    named after a long title of its note keeps that title, and the words
+    only in it are still found (gate on a released folder, 2026-09-30)."""
+    root = t.box.root
+
+    def put(rel: str, text: str | bytes) -> None:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(text, bytes):
+            path.write_bytes(text)
+        else:
+            path.write_text(text, encoding="utf-8")
+
+    def head(title: str, kind: str, domain: str, status: str = "", more: str = "") -> str:
+        line = f"status: {status}\n" if status else ""
+        return (f"---\ntitle: {title}\ntype: {kind}\n{line}domain: {domain}\ntags: []\n"
+                f"created: 2026-08-27\nupdated: 2026-09-27\n{more}---\n\n")
+
+    def group(rel: str) -> None:
+        put(f"{rel}/.category", json.dumps({"name": Path(rel).name, "trail": [Path(rel).name],
+                                            "auto": True, "created": "2026-09-01",
+                                            "engine": "3.0.0"}, indent=2) + "\n")
+
+    # A piece of work that is a copy of another folder: every folder in it
+    # has a README of its own, and none is a piece of work or a note of ours.
+    work = "Work/starterkit"
+    put(f"{work}/README.md", head("starterkit", "work", "product", "pushing",
+                                  "summary: The starter folder other people download.\n")
+        + "# starterkit\n\n## Next action\n- [ ] Run the stranger test\n\n## Decisions\n"
+          "- 2026-09-01 · ship the os branch, not main\n\n## Log\n")
+    put(f"{work}/decisions.md", "# Decisions\n\n- 2026-09-01 · one folder, any AI\n")
+    put(f"{work}/.not-my-os", "This folder holds a copy of an OS folder.\n")
+    put(f"{work}/release.sh", "#!/bin/bash\necho release\n")
+    for part, words in (("machinery", "# The old layout\n\nWhat the template is built from.\n"),
+                        ("machinery/me", "# me/\n\nWho you are. Claude reads this first.\n"),
+                        ("machinery/notes", "# notes/\n\nWhat you look up later.\n"),
+                        ("machinery/notes/where-i-learn", "# where-i-learn/\n\nWho to trust.\n"),
+                        ("machinery/work/archive", "# archive/\n\nFinished projects.\n"),
+                        ("template", "# OS template\n\nDownload it and open it in Claude.\n"),
+                        ("template/work", "# work/\n\nOne folder per project.\n")):
+        put(f"{work}/{part}/README.md", words)
+    put(f"{work}/machinery/.claude/skills/learn/SKILL.md",
+        "---\nname: learn\ndescription: Pulls something in and files it.\n---\n\n# Learn\n")
+    put(f"{work}/template/me/who-i-am.md", "# Who I am\n\n<!-- fill this in -->\n")
+    # Work that grew folders of its own, one with a note's header of ours.
+    room = "Work/Redecorate the Spare Room"
+    put(f"{room}/README.md", head("Redecorate the spare room", "work", "home", "pushing")
+        + "# Redecorate the spare room\n\n## Decisions\n- 2026-09-01 · sage green, not grey\n")
+    put(f"{room}/Paint Samples/README.md", "# Paint samples\n\nFarrow & Ball tester pots.\n")
+    put(f"{room}/Paint Samples/sizes.txt", "Wall is 3.2m by 2.4m.\n")
+    put(f"{room}/Furniture/README.md", head("Furniture", "note", "home", "—")
+        + "# Furniture\n\nA single bed and a narrow wardrobe.\n")
+
+    # Notes, grouped by subject the way sort grouped them once there were
+    # more than twelve; the ones alone in their subject are in General.
+    for name in ("Product", "Finance", "Personal", "General"):
+        group(f"Notes/{name}")
+    for topic, claim in (("handing-it-over", "Diátaxis: four kinds of documentation"),
+                         ("os-folder-design", "the collector's fallacy")):
+        title = topic.replace("-", " ").capitalize()
+        put(f"Notes/Product/{topic}/what-i-think.md",
+            f"---\ntitle: {title}\ntype: note\ndomain: product\ntags: []\n"
+            f"created: 2026-08-27\nupdated: 2026-08-27\n---\n\n# {title}\n\n- {claim}.\n")
+        put(f"Notes/Product/{topic}/sources/README.md",
+            f"# {title} sources\n\nOne file per thing read. Don't rewrite what a source claimed.\n")
+        put(f"Notes/Product/{topic}/sources/2026-08-26-first.md",
+            f"# {claim} — https://example.org/{topic}\n\nDate:      2026-08-26\n"
+            f"From:      a write-up\nSubject:   {topic}\n\nThe claim:  {claim}.\n")
+        put(f"Notes/Product/{topic}/sources/2026-08-27-yt-second.md",
+            "---\ntitle: Onboarding with AI\nsource: video\ndate: 2026-08-27\n---\n\n"
+            "The claim: a newcomer reads the first screen and nothing else.\n")
+    put("Notes/Finance/council-tax-bill-2026.pdf", b"%PDF-1.4\n\x00\x01council\n")
+    put("Notes/Finance/council-tax-bill-2026.pdf.card.md",
+        head("Council Tax Bill 2026", "file", "finance", "—",
+             "source: council-tax-bill-2026.pdf\n") + "# Council Tax Bill 2026\n")
+    put("Notes/Finance/council-tax-is-band-c.md", head("Council tax is band C", "note", "finance", "—")
+        + "Council tax is band C, paid by direct debit on the 1st.\n")
+    put("Notes/Personal/About me/README.md",
+        "---\ntitle: About me\ntype: note\ndomain: personal\ntags: []\ncreated: 2026-08-27\n"
+        "updated: 2026-09-26\n---\n\n# About me\n\nSee [who-i-am.md](who-i-am.md).\n")
+    put("Notes/Personal/About me/who-i-am.md", "# Who I am\n\nI make the template.\n")
+    put("Notes/Personal/recipe-lemon-drizzle-cake.md", head("Recipe: lemon drizzle cake", "note",
+                                                            "personal", "—") + "225g butter.\n")
+    put("Notes/Personal/Holiday Snaps/IMG_4414.png", b"\x89PNG\r\n\x1a\n" + bytes(40))
+    put("Notes/Personal/Holiday Snaps.card.md", head("Holiday Snaps", "file", "personal", "—",
+                                                     "source: Holiday Snaps\n"))
+    # A folder of their notes that an older sort named after the long title
+    # of the first note in it, as it named every such folder.
+    long_title = ("★★★★★ (5/5) — “the” best — pizza — dough — I — have — ever — made — "
+                  "honestly — 72h cold ferment")
+    named = engine.folder_name(long_title, engine.slugify(long_title, 44))
+    put(f"Notes/Personal/{named}/best-dough.md",
+        head(f'"{long_title}"', "note", "personal") + "72 hours in the fridge.\n")
+    put(f"Notes/Personal/{named}/flour.md", "Tipo 00, 12% protein.\n")
+    put("Notes/General/where-i-learn/who-to-trust.md",
+        head("Where I learn", "note", "research") + "# Where I learn\n\nWho to trust, and why.\n")
+    put("Notes/General/boiler-manual.pdf", b"%PDF-1.4\n\x00\x01boiler\n")
+    put("Notes/General/boiler-manual.pdf.card.md",
+        head("Boiler manual", "file", "engineering", "—", "source: boiler-manual.pdf\n"))
+    put("Notes/General/thrown-away.md",
+        "---\ntitle: Thrown away\ntype: note\ndomain: learning\ntags: []\ncreated: 2026-08-27\n"
+        "updated: 2026-08-27\n---\n\n# Thrown away\n\nIdeas tried and dropped.\n")
+    put("Notes/General/Garden Notes/README.md", head("Garden Notes", "note", "garden", "—")
+        + "# Garden Notes\n")
+    put("Notes/General/Garden Notes/roses.txt", "Roses: prune in February.\n")
+
+    # Put away: by year, as close left it, and a file from the old layout.
+    put("Archive/2026/old-layout/projects.md", "# Projects\n\nEvery project in `work/`.\n")
+    put("Archive/2026/Work/Plan the Lisbon Trip/README.md",
+        head("Plan the Lisbon trip", "work", "personal", "archived",
+             "archived: 2026-09-01\nwas: pushing\norigin: Work/Plan the Lisbon Trip\n")
+        + "# Plan the Lisbon trip\n\n## Decisions\n- 2026-08-30 · fly from Bristol\n")
+    put("Archive/2026/Notes/bin-day-is-tuesday.md",
+        head("Bin day is Tuesday", "note", "writing", "archived",
+             "archived: 2026-09-01\nwas: —\norigin: Notes/Writing/bin-day-is-tuesday.md\n")
+        + "Bin day is Tuesday.\n")
+
+    def disk() -> dict:
+        return {str(p.relative_to(root)): p.read_bytes() for bucket in ("Work", "Notes", "Archive")
+                for p in sorted((root / bucket).rglob("*")) if p.is_file()}
+
+    before = disk()
+    status = t.box.run().stdout
+    for said in ("dropped in", "not filed", "fixing", "waiting"):
+        t.ok(said not in status, f"./os doesn't say {said!r}:\n{status}")
+    t.eq(t.box.json().get("unfiled"), [], "nothing is counted as waiting to be filed")
+    brief = t.box.run("brief").stdout
+    t.ok("broken" not in brief and "dropped in" not in brief, f"nor does the brief:\n{brief}")
+    issues = t.box.json("check", expect=None)["issues"]
+    loud = [f"{i['level']} {i['code']} {i['path']}" for i in issues if i["level"] != "hint"]
+    t.eq(loud, [], "check finds nothing wrong or out of reach")
+    t.ok("nothing waiting" in t.box.run("sort", "--dry-run").stdout, "sort --dry-run has nothing to do")
+    for n in (1, 2):
+        t.ok("nothing waiting" in t.box.run("sort").stdout, f"sort {n} has nothing to do")
+    after = disk()
+    t.eq(sorted(set(before) ^ set(after)), [], "sort moved, added and took away nothing")
+    t.eq([p for p in before if before[p] != after.get(p, before[p])], [],
+         "and changed no byte, in sources/ or anywhere else")
+
+    for words, where in (("diataxis", "Notes/Product/handing-it-over"),
+                         ("collector", "Notes/Product/os-folder-design"),
+                         ("who to trust", "Notes/General/where-i-learn"),
+                         ("council tax", "Notes/Finance/council-tax-is-band-c.md"),
+                         ("sage green", room),
+                         ("ship the os branch", work),
+                         ("cold ferment", f"Notes/Personal/{named}"),
+                         ("honestly", f"Notes/Personal/{named}")):
+        hits = [h["path"] for h in t.box.json("find", words, expect=None) or []]
+        t.ok(where in hits, f"find {words!r} still reaches {where} ({hits})")
+    items = {i["path"]: i for i in t.box.items()}
+    t.eq(items.get(f"Notes/Personal/{named}", {}).get("title"), long_title,
+         "the folder named after its note's title is still called that")
+    t.eq(items.get("Notes/General/where-i-learn", {}).get("title"), "Where I learn",
+         "as is a folder whose name is the title")
+    t.eq(items.get(work, {}).get("kind"), "project", "the copy of the template is one piece of work")
+    t.ok(not any(p.startswith(f"{work}/") for p in items),
+         "and nothing inside it is listed as a thing of its own")
 
 
 @test
@@ -3517,7 +4221,8 @@ def test_a_file_at_the_top_of_the_folder_gets_filed(t: Case) -> None:
     t.ok(not (t.box.root / "Receipt.png").exists(), "save files one from where it lies")
     t.box.run("sort")
     t.ok(not (t.box.root / "shopping list.md").exists(), "and sort files the rest")
-    t.ok((t.box.root / "Notes" / "shopping-list.md").exists(), "into the folder it belongs in")
+    t.ok((t.box.root / "Notes" / "shopping list.md").exists(),
+         "into the folder it belongs in, under its own name")
     for name in ("AGENTS.md", "CLAUDE.md", "os", "Icon\r", "Thumbs.db"):
         t.ok((t.box.root / name).exists(), f"what belongs at the top stays there ({name!r})")
     t.box.run("undo")
@@ -3684,6 +4389,36 @@ def test_files_never_lose_their_card(t: Case) -> None:
 
 
 @test
+def test_edit_opens_nothing_when_no_one_is_at_a_terminal(t: Case) -> None:
+    """`./os edit` handed the file to the Mac's `open`, or to $EDITOR,
+    whoever ran it. An AI has no screen, so the window landed on the
+    person's desk — and this suite runs `edit` too, so every `./os test`
+    opened a TextEdit window. With no terminal it now says where the file
+    is and opens nothing, the way `./os open` already did."""
+    t.box.run("new", "work", "Rebuild the onboarding flow", "--domain", "engineering")
+    ident = next(i["id"] for i in t.box.items() if i["title"] == "Rebuild the onboarding flow")
+
+    fake = t.box.tmp / "fake-bin"
+    fake.mkdir()
+    opened = t.box.tmp / "something-opened"
+    for name in ("open", "xdg-open", "fake-editor"):
+        (fake / name).write_text(f'#!/bin/sh\necho "$0 $*" >> "{opened}"\n')
+        (fake / name).chmod(0o755)
+    env = dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1",
+               PATH=f"{fake}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    for editor, how in (("", "no editor set"), (str(fake / "fake-editor"), "an editor set")):
+        env["EDITOR"] = env["VISUAL"] = editor
+        proc = subprocess.run([str(t.box.root / "os"), "edit", ident], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              cwd=str(t.box.root), env=env, timeout=60)
+        t.eq(proc.returncode, 0, f"`os edit` with {how} succeeds")
+        t.ok(not opened.exists(), f"`os edit` with {how} opens nothing when no one is at a terminal")
+        said = proc.stdout.strip().split("\n")[-1] if proc.stdout.strip() else ""
+        t.ok(said.endswith(".md") and Path(said).is_file(), f"and with {how} it says where the file is")
+
+
+@test
 def test_a_scanned_file_is_found_by_what_it_is(t: Case) -> None:
     """A card held only the file's name, so scan_0012.pdf, a tenancy
     agreement, was never found by "tenancy". Search reads the card, so the
@@ -3709,6 +4444,820 @@ def test_a_scanned_file_is_found_by_what_it_is(t: Case) -> None:
     t.ok((t.box.root / "Notes" / "tenancy-agreement.pdf.card.md").exists()
          and (t.box.root / "Notes" / "tenancy-agreement.pdf").exists(),
          "and a rename takes the card along")
+
+
+def _unreachable(box: "Sandbox") -> dict:
+    """What ./os check says nothing can reach, by its code."""
+    out: dict = {}
+    for issue in box.json("check", expect=None)["issues"]:
+        if issue["code"] in ("left-at-top", "passed-over", "work-inside-work", "too-far-in",
+                             "card-left-behind"):
+            out.setdefault(issue["code"], []).append(issue)
+    return out
+
+
+@test
+def test_every_file_in_a_folder_is_found_by_its_name(t: Case) -> None:
+    """Search read the words of text files and nothing else, so a folder of
+    PDFs, Notes/Taxes, or of Word files, Notes/School, was one thing whose
+    files no search found, the ones added later too, while sort said nothing
+    was waiting and check said all good (review, 2026-09-30)."""
+    notes = t.box.root / "Notes"
+    taxes, school = notes / "Taxes", notes / "School"
+    for folder, names in ((taxes, ("Self assessment 2024.pdf", "P60 2024.pdf")),
+                          (school, ("History essay.docx", "MathsNotes_week1.docx"))):
+        folder.mkdir(parents=True)
+        for name in names:
+            (folder / name).write_bytes(b"%PDF-1.4\n\x00\x01binary\n")
+    t.box.run("sort")
+    (taxes / "Council tax bill 2026.pdf").write_bytes(b"%PDF-1.4\n\x00\x01\n")
+    (school / "Biology").mkdir()
+    (school / "Biology" / "Cells diagram.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(40))
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "files added later are not waiting")
+
+    for words, folder, name in (("self assessment", taxes, "Self assessment 2024.pdf"),
+                                ("council", taxes, "Council tax bill 2026.pdf"),
+                                ("history", school, "History essay.docx"),
+                                ("maths notes", school, "MathsNotes_week1.docx"),
+                                ("cells", school, "Biology/Cells diagram.png")):
+        hits = t.box.json("find", words)
+        hit = next((h for h in hits if h["path"] == f"Notes/{folder.name}"), None)
+        t.ok(hit is not None, f"find {words!r} reaches Notes/{folder.name} ({hits})")
+        t.eq(hit and hit.get("file"), f"Notes/{folder.name}/{name}",
+             f"and says which file in it matched {words!r}")
+    shown = t.box.run("find", "council").stdout
+    t.ok("in Council tax bill 2026.pdf" in shown, f"the hit shows the file:\n{shown}")
+    t.eq(_unreachable(t.box), {}, "and check has nothing to say about any of it")
+
+    # Never the names inside a code project, nor in Work/Content.
+    app = t.box.root / "Work" / "Budget App"
+    (app / "src").mkdir(parents=True)
+    (app / "package.json").write_text("{}\n")
+    (app / "src" / "zebracrossing.js").write_text("export {}\n")
+    content = t.box.root / "Work" / "Content"
+    content.mkdir()
+    (content / "okapi footage.mov").write_bytes(b"\x00" * 64)
+    t.box.run("sort")
+    for word in ("zebracrossing", "okapi"):
+        t.ok(not any(h.get("file") for h in t.box.json("find", word, expect=None) or []),
+             f"{word!r} is not matched inside a code project or Work/Content")
+    t.eq(_unreachable(t.box), {}, "and check is still quiet")
+
+
+@test
+def test_check_names_what_nothing_can_reach(t: Case) -> None:
+    """One rule behind a run of holes each found alone: anything in Work or
+    Notes that neither ./os find nor the list reaches is named by ./os check,
+    with where it is and the command that fixes it (review, 2026-09-30)."""
+    work = t.box.root / "Work"
+    # Work moved into another piece of work's folder dropped off the list,
+    # while sort said nothing was waiting and check said all good.
+    t.box.run("new", "work", "Wedding")
+    t.box.run("new", "work", "Book the venue")
+    (work / "Wedding" / "Venue").mkdir()
+    (work / "Book the Venue").rename(work / "Wedding" / "Venue" / "Book the Venue")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "sort doesn't see it")
+    t.box.run("show", "book-the-venue", expect=1)
+    found = _unreachable(t.box).get("work-inside-work", [])
+    t.eq(len(found), 1, f"check names the hidden work ({found})")
+    t.ok(found and "Book the venue" in found[0]["message"] and "Wedding" in found[0]["message"]
+         and found[0]["path"] == "Work/Wedding/Venue/Book the Venue"
+         and found[0]["fix"].startswith("mv -n "),
+         f"naming both, where it is, and the command that brings it out ({found})")
+    # A piece of work's own folder is theirs to arrange, and work kept in
+    # another under the released ./os was called broken after an update,
+    # and moved out by --fix (review, 2026-09-30). Said, never moved.
+    t.ok(found and found[0]["level"] == "hint" and "fixing" not in t.box.run().stdout,
+         "said by check, and ./os doesn't call it broken")
+    t.box.run("check", "--fix", expect=None)
+    t.ok((work / "Wedding" / "Venue" / "Book the Venue" / "README.md").is_file()
+         and not (work / "Book the Venue").exists(), "--fix leaves it where they put it")
+    subprocess.run(["bash", "-c", found[0]["fix"]], cwd=str(t.box.root), check=True)
+    t.ok((work / "Book the Venue" / "README.md").is_file(), "the command puts it back at the top of Work")
+    t.ok("book the venue" in t.box.run("show", "book-the-venue").stdout.lower(), "show reaches it")
+    t.ok("Book the venue" in t.box.run().stdout, "and ./os lists it again")
+
+    # An older sort gave a Notes folder of typed notes a README of ours, so
+    # it is one thing. What goes in it later is found all the same.
+    recipes = t.box.root / "Notes" / "My Recipes"
+    recipes.mkdir(parents=True)
+    (recipes / "README.md").write_text(
+        "---\ntitle: My Recipes\ntype: note\nstatus: —\ndomain: food\ntags: [pizza]\n"
+        "created: 2026-09-01\nupdated: 2026-09-01\n---\n\n# My Recipes\n\n## In one line\n")
+    (recipes / "Pizza.md").write_text("500g flour, semolina\n")
+    t.box.run("sort")
+    (recipes / "Focaccia.md").write_text("rosemary and olive oil\n")
+    (recipes / "Oven manual.pdf").write_bytes(b"%PDF-1.4\n\x00\x01\n")
+    for word in ("rosemary", "focaccia", "oven", "semolina"):
+        t.ok(any(h["path"] == "Notes/My Recipes" for h in t.box.json("find", word)),
+             f"find {word} reaches what was added to it")
+
+    # Further in than search looks is named, with the one it's like.
+    photos = t.box.root / "Notes" / "Photos"
+    deep = photos.joinpath(*[f"level {n}" for n in range(1, 14)])
+    deep.mkdir(parents=True)
+    (deep / "Lost lighthouse.jpg").write_bytes(b"\xff\xd8\xff" + bytes(40))
+    (photos / "level 1" / "Harbour.jpg").write_bytes(b"\xff\xd8\xff" + bytes(40))
+    t.box.run("sort")
+    t.ok(any(h.get("file", "").endswith("Harbour.jpg") for h in t.box.json("find", "harbour")),
+         "a photo a folder down is found by its name")
+    far = _unreachable(t.box).get("too-far-in", [])
+    t.ok(len(far) == 1 and "Lost lighthouse.jpg" in far[0]["message"]
+         and far[0]["path"] == "Notes/Photos" and far[0]["fix"].startswith("mv "),
+         f"one thirteen folders down is named, with the command to bring it up ({far})")
+    # The command never lands on a file of the same name already there: a
+    # plain mv put the deep one over it, for good.
+    (photos / "Lost lighthouse.jpg").write_bytes(b"TOP-ONE")
+    (deep / "Lost lighthouse.jpg").write_bytes(b"DEEP-ONE")
+    cure = _unreachable(t.box)["too-far-in"][0]["fix"]
+    subprocess.run(["bash", "-c", cure], cwd=str(t.box.root), check=True)
+    t.eq((photos / "Lost lighthouse.jpg").read_bytes(), b"TOP-ONE",
+         f"the one already at the top is kept ({cure})")
+    t.eq((photos / "Lost lighthouse 2.jpg").read_bytes(), b"DEEP-ONE",
+         "and the deep one comes up beside it")
+    t.ok("too-far-in" not in _unreachable(t.box), "after which check is quiet")
+
+    # A name ./os passes over, sitting where a thing of theirs would be. One
+    # with nothing in it yet but what a Mac leaves is nothing of theirs.
+    (t.box.root / "Notes" / "Content" / "Drafts").mkdir(parents=True)
+    (t.box.root / "Notes" / "Content" / ".DS_Store").write_bytes(b"\0")
+    t.ok("passed-over" not in _unreachable(t.box), "a Content folder with nothing in it yet is left alone")
+    (t.box.root / "Notes" / "Content" / "Blog ideas.md").write_text("A post about compost.\n")
+    over = sorted(i["path"] for i in _unreachable(t.box).get("passed-over", []))
+    t.eq(over, ["Notes/Content"], "a Content folder in Notes")
+    t.box.run("check", "--fix", expect=None)
+    t.box.run("sort")
+    t.ok(t.box.json("find", "compost"), "--fix gives it a name sort files, and compost is found")
+    t.ok("passed-over" not in _unreachable(t.box), "and check stops saying so")
+    # Named after where it was, since a bare `Content 2` says nothing.
+    t.ok((t.box.root / "Notes" / "Notes Content" / "Blog ideas.md").is_file(),
+         f"called after the folder it was in ({sorted(p.name for p in (t.box.root / 'Notes').iterdir())})")
+
+
+@test
+def test_a_folder_dropped_at_the_top_is_filed(t: Case) -> None:
+    """Only files were taken from the top of the folder, so `My Recipes`
+    dragged in beside Work and Notes was never mentioned, sorted or found,
+    while check said all good (review, 2026-09-30)."""
+    top = t.box.root / "My Recipes"
+    top.mkdir()
+    (top / "Pizza.md").write_text("500g flour, semolina\n")
+    (top / "Chilli oil.md").write_text("Dried chillies and oil.\n")
+    # Set up ahead of time, with only what a Mac leaves in it: nothing yet.
+    (t.box.root / "Nothing yet" / "Later").mkdir(parents=True)
+    (t.box.root / "Nothing yet" / "Later" / ".DS_Store").write_bytes(b"\0")
+    t.ok("1 thing dropped in but not filed" in t.box.run().stdout, "./os says it's waiting")
+    left = _unreachable(t.box).get("left-at-top", [])
+    t.ok([i["path"] for i in left] == ["My Recipes"], f"check says where it is ({left})")
+    said = t.box.run("save", str(top), expect=1)
+    t.ok("./os sort files it" in said.stderr, f"save points at sort:\n{said.stderr}")
+    preview = t.box.run("sort", "--dry-run").stdout
+    t.ok("My Recipes" in preview and "Notes/My Recipes" in preview and top.is_dir(),
+         f"a preview says where it goes, and moves nothing:\n{preview}")
+    t.ok("✓" not in preview and "would" in preview,
+         f"and doesn't say it's done ({preview})")
+
+    t.box.run("sort")
+    kept = t.box.root / "Notes" / "My Recipes"
+    t.ok((kept / "Pizza.md").is_file() and not top.exists(), "into Notes under its own name")
+    paths = {i["path"] for i in t.box.items()}
+    t.ok("Notes/My Recipes" in paths, f"and filed there, as one thing ({sorted(paths)})")
+    t.ok(any(h["path"] == "Notes/My Recipes" for h in t.box.json("find", "semolina")),
+         "found by what it says")
+    t.ok("left-at-top" not in _unreachable(t.box), "check is quiet about it now")
+    t.ok((t.box.root / "Nothing yet" / "Later").is_dir(),
+         "a folder with nothing in it yet is left alone")
+    t.box.run("undo")
+    t.ok((top / "Pizza.md").is_file(), "and ./os undo puts it back at the top")
+
+    # One called Content too: only Work/Content is left alone, and one at the
+    # top was never mentioned, sorted or found.
+    shutil.rmtree(top)
+    (t.box.root / "Content").mkdir()
+    (t.box.root / "Content" / "compost-post.md").write_text("A post about compost.\n")
+    t.ok("1 thing dropped in but not filed" in t.box.run().stdout, "./os says it's waiting")
+    t.eq([i["path"] for i in _unreachable(t.box).get("left-at-top", [])], ["Content"],
+         "check says where it is")
+    t.box.run("sort")
+    # Notes/Content is a name ./os passes over, so it goes in beside it.
+    t.ok(not (t.box.root / "Content").exists()
+         and any(h["path"] == "Notes/Content 2" for h in t.box.json("find", "compost")),
+         "sort files it and find reaches it")
+
+
+@test
+def test_a_folder_they_made_keeps_its_name_and_every_note_in_it_is_found(t: Case) -> None:
+    """Two saved notes moved by hand into `mkdir Notes/Recipes`: sort renamed
+    the folder after the chilli oil note, ./os find pizza found nothing, and
+    check said all good. In Work the folder went to Notes, as the note in it
+    said `type: note` (stranger test, 2026-09-30). A folder they named keeps
+    the name, stays where they put it, and every note in it is found."""
+    root = t.box.root
+    notes = {}
+    for bucket, folder, said in (
+            ("Notes", "Recipes", ("Pizza dough: 500g flour, 325ml water, 10g salt, rest 24 hours",
+                                  "Chilli oil: warm 200ml oil and pour over chilli flakes")),
+            ("Work", "Kitchen", ("Quote from Harlow Joinery for the worktops: 2400 pounds",
+                                 "The tiler Gumbleton can start on the 14th"))):
+        (root / bucket / folder).mkdir(parents=True, exist_ok=True)
+        for words in said:
+            t.box.run("save", words)
+            saved = root / t.box.carrying(words.split(":")[0])["path"]
+            moved = root / bucket / folder / saved.name
+            saved.rename(moved)
+            notes[moved] = moved.read_bytes()
+    # One written by hand with a short header, first in the folder: its
+    # header is its own, and nothing is added to it.
+    focaccia = root / "Notes" / "Recipes" / "a-focaccia.md"
+    focaccia.write_text("---\ntitle: Focaccia\ndomain: food\n---\n\nOlive oil and rosemary.\n")
+    notes[focaccia] = focaccia.read_bytes()
+    t.box.run("sort")
+    t.ok(all(p.is_file() for p in notes), f"both folders keep their names and places "
+         f"({sorted(str(p.relative_to(root)) for b in ('Work', 'Notes') for p in (root / b).rglob('*'))})")
+    t.eq({p: p.read_bytes() for p in notes}, notes, "and not a note in them is rewritten")
+    for word, where in (("pizza", "Notes/Recipes"), ("chilli", "Notes/Recipes"),
+                        ("harlow", "Work/Kitchen"), ("gumbleton", "Work/Kitchen")):
+        hits = [h["path"] for h in t.box.json("find", word)]
+        t.eq(hits[:1], [where], f"./os find {word} finds it")
+    kitchen = next(i for i in t.box.items() if i["path"] == "Work/Kitchen")
+    t.eq((kitchen["title"], kitchen["kind"], kitchen["status"]), ("Kitchen", "project", "pushing"),
+         "the one in Work is work, under its own name")
+    t.ok("Kitchen" in t.box.run().stdout, "and on the list")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "sort has nothing more to do")
+    issues = t.box.json("check", expect=None)["issues"]
+    t.eq([i for i in issues if "Recipes" in i["path"] or "Kitchen" in i["path"]], [],
+         "and check has nothing to say about either")
+    # Renamed, the folder's name changes, and the notes in it keep theirs.
+    t.box.run("rename", "Recipes", "Family Recipes")
+    t.eq(sorted(p.read_bytes() for p in (root / "Notes" / "Family Recipes").glob("*.md")),
+         sorted(v for p, v in notes.items() if p.parent.name == "Recipes"),
+         "renamed, not a note in it is rewritten")
+    t.box.run("undo")
+
+    # Further in, the folder still keeps its name: the note inside
+    # Italian/ gave Cooking its title, and sort renamed it `risotto`.
+    t.box.run("save", "Risotto: toast the arborio rice, then add warm stock slowly")
+    saved = root / t.box.carrying("Risotto")["path"]
+    (root / "Notes" / "Cooking" / "Italian").mkdir(parents=True)
+    saved.rename(root / "Notes" / "Cooking" / "Italian" / saved.name)
+    t.box.run("sort")
+    t.ok((root / "Notes" / "Cooking" / "Italian" / saved.name).is_file(),
+         f"a folder with the note further in keeps its name too "
+         f"({sorted(p.name for p in (root / 'Notes').iterdir())})")
+    t.eq([h["path"] for h in t.box.json("find", "arborio")][:1], ["Notes/Cooking"],
+         "and the note is found")
+
+    # One an older sort filed, named after the note it reads through, with
+    # sources in it: nothing about it changes, and it keeps its title.
+    older = root / "Notes" / "handing-it-over"
+    (older / "sources").mkdir(parents=True)
+    (older / "what-i-think.md").write_text(
+        "---\ntitle: Handing it over\ntype: note\ndomain: product\ntags: []\n"
+        "created: 2026-08-27\nupdated: 2026-08-27\n---\n\n# Handing it over\n\nKeep it short.\n")
+    (older / "sources" / "talk.md").write_text("What a stranger keeps.\n")
+    before = {str(p.relative_to(older)): p.read_bytes() for p in older.rglob("*") if p.is_file()}
+    t.box.run("sort")
+    t.eq({str(p.relative_to(older)): p.read_bytes() for p in older.rglob("*") if p.is_file()},
+         before, "a folder filed before is left exactly as it was")
+    item = next(i for i in t.box.items() if i["path"] == "Notes/handing-it-over")
+    t.eq(item["title"], "Handing it over", "and keeps its title")
+
+    # Made by ./os new, a folder still follows its title when that changes.
+    t.box.run("new", "work", "Fix the shed door")
+    readme = root / "Work" / "Fix the Shed Door" / "README.md"
+    readme.write_text(readme.read_text().replace("title: Fix the shed door",
+                                                 "title: Mend the shed door"))
+    t.box.run("sort")
+    t.ok((root / "Work" / "Mend the Shed Door" / "README.md").is_file(),
+         "a folder ./os made is renamed when its title changes")
+
+
+@test
+def test_a_file_dropped_in_keeps_its_own_name_and_ending(t: Case) -> None:
+    """Sort renamed `Shopping List.txt` to shopping-list.md, and TextEdit,
+    saving it again, made a second copy (stranger test, 2026-09-30). A file
+    dropped in by hand keeps its name and its ending, and is found by what
+    it says; one the computer named is named after what it says."""
+    notes = t.box.root / "Notes"
+    shopping = notes / "Shopping List.txt"
+    shopping.write_text("eggs\nmilk\nsourdough starter\n")
+    (notes / "Garden Plan.rtf").write_text(r"{\rtf1\ansi Tomatoes by the south wall}")
+    lease = notes / "Lease notes.md"
+    lease.write_text("# Lease\n\nThe landlord is Mr Pemberton.\n")
+    (notes / "Untitled.txt").write_text("Quinces and medlars for the jelly\n")
+    t.box.run("sort")
+    t.ok(shopping.is_file() and lease.is_file() and (notes / "Garden Plan.rtf").is_file(),
+         f"each keeps its name and ending ({sorted(p.name for p in notes.iterdir())})")
+    t.ok(shopping.read_text().startswith("---\ntitle: Shopping List\n")
+         and shopping.read_text().endswith("eggs\nmilk\nsourdough starter\n"),
+         "a .txt takes its header inside, with every word of it kept")
+    t.ok((notes / "quinces-and-medlars-for-the-jelly.txt").is_file(),
+         "one the computer named is named after what it says, ending and all")
+    for word, where in (("sourdough", "Notes/Shopping List.txt"), ("tomatoes", "Notes/Garden Plan.rtf"),
+                        ("pemberton", "Notes/Lease notes.md")):
+        t.eq([h["path"] for h in t.box.json("find", word)][:1], [where], f"./os find {word} finds it")
+
+    # TextEdit saves it again under its name, without the header.
+    shopping.write_text("eggs\nmilk\nsourdough starter\nbutter\n")
+    t.box.run("sort")
+    t.eq(sorted(p.name for p in notes.glob("Shopping*")), ["Shopping List.txt"],
+         "saved again, it is still one file")
+    t.eq([h["path"] for h in t.box.json("find", "butter")][:1], ["Notes/Shopping List.txt"],
+         "with what was added found")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "and sort leaves it be after")
+
+    # One of the same name left at the top goes beside it, as Finder names it.
+    (t.box.root / "Shopping List.txt").write_text("birthday candles\n")
+    t.box.run("sort")
+    t.eq(sorted(p.name for p in notes.glob("Shopping*")), ["Shopping List 2.txt", "Shopping List.txt"],
+         "one of the same name from elsewhere is called Shopping List 2")
+    t.ok("nothing waiting" in t.box.run("sort").stdout
+         and (notes / "Shopping List 2.txt").is_file(), "and keeps that name")
+
+    # Words given to ./os save still get a tidy name.
+    t.box.run("save", "Remember the boiler service in October")
+    t.ok((notes / "remember-the-boiler-service-in-october.md").is_file(),
+         "words saved are named as they always were")
+
+
+@test
+def test_a_text_file_that_reads_like_work_keeps_its_name(t: Case) -> None:
+    """`To Do.txt` left at the top became Work/To Do/README.md, and one in
+    Notes the same, so the file TextEdit had open was gone (review,
+    2026-09-30). It goes into a folder of its name in Work, as it is, with
+    a page of ours beside it."""
+    root = t.box.root
+    words = ("Book the plumber for the boiler\nCall the council about the bins\n"
+             "Finish the tax return by Friday\n")
+    (root / "To Do.txt").write_text(words)
+    (root / "Notes" / "Things to do.txt").write_text(
+        "- [ ] Paint the fence\n- [ ] Fix the gate hinge\nNeed to get these done before the party.\n")
+    t.box.run("sort")
+    kept = root / "Work" / "To Do" / "To Do.txt"
+    t.eq(kept.read_text() if kept.is_file() else sorted(p.name for p in (root / "Work").rglob("*")),
+         words, "it keeps its name, its ending and every word, with nothing added")
+    t.ok((root / "Work" / "Things to do" / "Things to do.txt").is_file(), "so does one from Notes")
+    listed = t.box.run().stdout
+    t.ok("To Do" in listed and "Things to do" in listed, f"each is on the list as work:\n{listed}")
+    t.ok("Book the plumber for the boiler" in t.box.run("show", "To Do").stdout,
+         "with its first line as the next action")
+    t.eq([h["path"] for h in t.box.json("find", "hinge")][:1], ["Work/Things to do"],
+         "found by what it says")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "and sort leaves it be after")
+
+
+@test
+def test_a_programs_document_left_at_the_top_keeps_its_ending(t: Case) -> None:
+    """`Garden Plan.rtfd` left at the top was filed as Notes/garden-plan-rtfd,
+    which a Mac shows as a plain folder, and `Novel.scriv` got a README of
+    ours inside it (review, 2026-09-30). A blank copy has no Notes folder,
+    so the top is where TextEdit's Save puts a note with a picture in it."""
+    root, notes = t.box.root, t.box.root / "Notes"
+    b = "\\"
+    rtfd = root / "Garden Plan.rtfd"
+    rtfd.mkdir()
+    (rtfd / "TXT.rtf").write_text(b.join(["{", "rtf1", "ansi Tomatoes by the south wall.}"]))
+    (rtfd / "shed.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(40))
+    (root / "Novel.scriv" / "Files").mkdir(parents=True)
+    (root / "Novel.scriv" / "Files" / "version.txt").write_text("23\n")
+
+    def inside(folder: Path) -> dict:
+        return {str(p.relative_to(folder)): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+    was = {name: inside(root / name) for name in ("Garden Plan.rtfd", "Novel.scriv")}
+    t.box.run("sort")
+    for name, files in was.items():
+        t.ok((notes / name).is_dir() and (notes / f"{name}.card.md").is_file(),
+             f"{name} keeps its name and ending, with a card beside it "
+             f"({sorted(p.name for p in notes.iterdir())})")
+        t.eq(inside(notes / name) if (notes / name).is_dir() else {}, files,
+             f"and nothing in {name} is changed or added")
+    t.eq([h["path"] for h in t.box.json("find", "tomatoes")][:1], ["Notes/Garden Plan.rtfd"],
+         "./os find reads it")
+
+    # Saved again under its name, it goes beside it, as Finder names it.
+    rtfd.mkdir()
+    (rtfd / "TXT.rtf").write_text(b.join(["{", "rtf1", "ansi Leeks.}"]))
+    t.box.run("sort")
+    t.ok((notes / "Garden Plan 2.rtfd" / "TXT.rtf").is_file(), "the second is Garden Plan 2.rtfd")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "and sort leaves them be after")
+
+    # Dropped into Work, it is kept whole too: no page of ours goes in it.
+    (root / "Work" / "Song.band" / "Media").mkdir(parents=True)
+    (root / "Work" / "Song.band" / "Media" / "take1.aif").write_bytes(b"FORM" + bytes(40))
+    t.box.run("sort")
+    homes = [p for p in (root / "Work" / "Song.band", notes / "Song.band") if p.is_dir()]
+    t.ok(len(homes) == 1 and inside(homes[0]).keys() == {"Media/take1.aif"},
+         f"a GarageBand song gets nothing of ours inside it ({homes})")
+
+
+@test
+def test_a_folder_named_like_a_group_is_never_made_one(t: Case) -> None:
+    """Notes/Money, made by hand with two money notes in it: once Notes
+    grouped by subject, sort stopped on a disk error, moving Money into
+    itself, and left a group mark in it; the next sort filled it with their
+    other money notes as a group of its own (review, 2026-09-30). The
+    released ./os never hit it: it renamed such folders after a note."""
+    notes = t.box.root / "Notes"
+    t.box.run("save", "Council tax is 1840 a year")
+    t.box.run("save", "ISA allowance is 20k")
+    money = notes / "Money"
+    money.mkdir()
+    for p in list(notes.glob("council-*.md")) + list(notes.glob("isa-*.md")):
+        p.rename(money / p.name)
+    t.box.run("sort")
+    theirs = sorted(p.name for p in money.iterdir())
+    for words in ("Pension transfer value is 31k", "Mortgage fix ends in March 2027",
+                  "Energy bill: switched to Octopus, 120 a month",
+                  "Savings: emergency fund target 6 months", "Budget: groceries 400 a month",
+                  "Car insurance renewal is 540 this year",
+                  "Dentist: Dr Okafor, check-up every 6 months", "Running: 5k in 27 minutes",
+                  "Poem draft: the heron on the canal", "Novel chapter 3: lighthouse keeper",
+                  "Wifi password is on the router", "Houseplant care: water the fig weekly",
+                  "Tax code 1257L on my payslip"):
+        t.box.run("save", words)
+    got = t.box.run("sort", expect=None)
+    t.eq(got.returncode, 0, f"sort finishes\n{got.stdout}{got.stderr}")
+    t.ok(any((p / ".category").is_file() for p in notes.iterdir()), "Notes is grouped by subject")
+    t.ok(not (money / ".category").exists(), "their folder is never marked as a group of sort's")
+    t.eq(sorted(p.name for p in money.iterdir()), theirs, "and nothing of sort's goes in it")
+    t.ok("Notes/Money" in {i["path"] for i in t.box.items()}, "it stays where they made it")
+    t.ok("nothing waiting" in t.box.run("sort").stdout and not (money / ".category").exists(),
+         "and the next sort leaves it so")
+    t.ok(any(h["path"] == "Notes/Money" for h in t.box.json("find", "council")), "found as before")
+
+
+@test
+def test_a_readme_saying_what_a_folder_is_for_is_left_alone(t: Case) -> None:
+    """A README.md at the top of Notes or Work says what the folder is for,
+    like the old layout's notes/README.md. After an update ./os said it
+    needed fixing, --fix renamed it, and sort filed "# My notes" as work on
+    the go (review, 2026-09-30)."""
+    root = t.box.root
+    said = {root / "Notes" / "README.md": "# My notes\n\nEverything I want to look up later lives here.\n",
+            root / "Work" / "README.md": "# Work\n\nWhat I'm carrying right now.\n"}
+    for path, text in said.items():
+        path.write_text(text)
+    t.box.run("save", "The plumber's number is 0161 555 0100")
+    t.ok("fixing" not in t.box.run().stdout, "./os doesn't call either broken")
+    t.eq(_unreachable(t.box).get("passed-over", []), [], "check says nothing about them")
+    t.box.run("check", "--fix", expect=None)
+    t.box.run("sort")
+    t.eq({str(p): p.read_text() if p.is_file() else None for p in said},
+         {str(p): text for p, text in said.items()}, "--fix and sort leave both as they are")
+    titles = {i["title"] for i in t.box.items()}
+    t.ok("My notes" not in titles and "Work README" not in titles and "Notes README" not in titles,
+         f"and neither is filed as a thing of its own ({sorted(titles)})")
+
+
+@test
+def test_a_card_in_a_sources_folder_is_never_moved(t: Case) -> None:
+    """check --fix put a card left behind back beside its file even when
+    the card was in a sources/ folder, which nothing may change, and left
+    that folder empty (review, 2026-09-30)."""
+    notes = t.box.root / "Notes"
+    (notes / "Sleep" / "sources").mkdir(parents=True)
+    (notes / "Sleep" / "what-i-think.md").write_text(
+        "---\ntitle: Sleep\ntype: note\nstatus: —\ndomain: health\ntags: []\n"
+        "created: 2026-09-01\nupdated: 2026-09-01\n---\n\n# Sleep\n\nMorning light matters.\n")
+    card = notes / "Sleep" / "sources" / "walker.pdf.card.md"
+    text = ("---\ntitle: Walker paper\ntype: file\nstatus: —\ndomain: health\ntags: []\n"
+            "created: 2026-09-01\nsource: walker.pdf\n---\n\n# Walker paper\n\nAbout REM.\n")
+    card.write_text(text)
+    (notes / "Papers").mkdir()
+    (notes / "Papers" / "walker.pdf").write_bytes(b"%PDF-1.4\n\x00\x01\n")
+    t.box.run("sort")
+    left = _unreachable(t.box).get("card-left-behind", [])
+    t.ok(left and all(i["level"] == "hint" for i in left) and left[0]["fix"].startswith("cp -n "),
+         f"check says so, with a command that copies it, not one that moves it ({left})")
+    t.box.run("check", "--fix", expect=None)
+    t.eq(card.read_text() if card.is_file() else None, text, "--fix leaves it as it is, where it is")
+    subprocess.run(["bash", "-c", left[0]["fix"]], cwd=str(t.box.root), check=True)
+    t.ok((notes / "Papers" / "walker.pdf.card.md").is_file() and card.read_text() == text,
+         "the command puts a copy beside the paper and keeps the one in sources")
+    (card.parent / "gone.pdf.card.md").write_text(text.replace("walker", "gone"))
+    t.eq(_unreachable(t.box).get("card-left-behind", []), [],
+         "one whose file is nowhere is never offered for removal")
+
+
+@test
+def test_sort_says_where_things_land_and_a_preview_counts_the_same(t: Case) -> None:
+    """A preview said "1 folder brought in · 2 filed" where sort then said
+    "3 filed", and regrouping printed two notes of one name as landing on
+    the same Notes/Food/Shopping List.txt, when the second was given
+    another name, which the next sort made shopping-list.txt (review,
+    2026-09-30)."""
+    root, notes = t.box.root, t.box.root / "Notes"
+    top = root / "My Recipes"
+    top.mkdir()
+    (top / "Pizza.md").write_text("500g flour, semolina\n")
+    (top / "Chilli oil.md").write_text("Dried chillies and oil.\n")
+    (root / "Seed list.txt").write_text("Carrots, parsnips and beetroot for the spring.\n")
+    filed = [re.search(r"(\d+) filed", t.box.run("sort", *how).stdout) for how in (["--dry-run"], [])]
+    t.ok(all(filed) and filed[0].group(1) == filed[1].group(1),
+         f"the preview counts what sort then files ({[m and m.group(0) for m in filed]})")
+
+    for words in ("Pension transfer value is 31k", "Mortgage fix ends in March 2027",
+                  "Dentist: Dr Okafor, check-up every 6 months", "Running: 5k in 27 minutes",
+                  "Poem draft: the heron on the canal", "Novel chapter 3: lighthouse keeper",
+                  "Wifi password is on the router", "Houseplant care: water the fig weekly",
+                  "Sourdough starter: feed it every morning", "Roast chicken takes 90 minutes",
+                  "Tax code 1257L on my payslip", "Energy bill is 120 a month"):
+        t.box.run("save", words)
+    (notes / "Shopping List.txt").write_text("eggs\nmilk\nsourdough starter\nflour for bread\n")
+    t.box.run("sort")
+    first = next((p for p in notes.rglob("Shopping List.txt")), None)
+    t.ok(first is not None and first.parent != notes, f"it went into a group ({first})")
+    (notes / "Shopping List.txt").write_text("eggs\nmilk\nsourdough starter\nflour for bread\nbutter\n")
+    moves = t.box.json("sort")["moves"]
+    now = next(p for p in notes.rglob("Shopping*.txt") if "butter" in p.read_text())
+    t.ok(now.parent == first.parent and now != first, f"the second went beside it ({now})")
+    landed = [dst for what, src, dst in moves if what == "sort" and src == "Notes/Shopping List.txt"]
+    t.eq(landed, [str(now.relative_to(root))], "and sort says where it really went")
+    t.box.run("sort")
+    t.ok(now.is_file(), "the next sort keeps the name it was given there, not a lower-case one "
+                        f"({sorted(p.name for p in now.parent.iterdir())})")
+
+
+@test
+def test_one_name_in_two_folders_asks_which(t: Case) -> None:
+    """Pizza in Work and pizza.md in Notes: an error for good, whose fix,
+    ./os sort, changed nothing, and ./os show reached only the first. Now it
+    is a hint at most, and a command given the name asks which one, with
+    the command for each (settled 2026-09-30)."""
+    t.box.run("new", "work", "Pizza")
+    (t.box.root / "Notes" / "pizza.md").write_text(
+        "---\ntitle: Pizza\ntype: note\nstatus: —\ndomain: food\ntags: []\n"
+        "created: 2026-09-30\nupdated: 2026-09-30\n---\n\n# Pizza\n\nthin crust, semolina\n")
+    t.box.run("sort")
+    result = t.box.json("check", expect=0)
+    codes = {i["code"]: i for i in result["issues"]}
+    t.ok("duplicate-id" not in codes and "same-name" in codes
+         and codes["same-name"]["level"] == "hint", f"a hint, not an error ({codes})")
+    t.ok("fixing" not in t.box.run().stdout, "./os doesn't say it needs fixing")
+    t.ok("--fix" not in t.box.run("check").stdout, "and check doesn't offer --fix for it")
+
+    for verb in ("show", "open", "edit", "close", "hold", "rename"):
+        asked = t.box.run(verb, "pizza", *(["Pie"] if verb == "rename" else []), expect=2)
+        t.ok("2 things here are called pizza" in asked.stderr
+             and "Work/Pizza" in asked.stderr
+             and "Notes/pizza.md" in asked.stderr, f"{verb} asks which:\n{asked.stderr}")
+    t.ok((t.box.root / "Work" / "Pizza" / "README.md").exists()
+         and (t.box.root / "Notes" / "pizza.md").exists(), "nothing was changed")
+
+    asked = t.box.run("show", "pizza", expect=2).stderr
+    for line in asked.splitlines()[1:]:
+        command, where = line.strip().rsplit("   ", 1)
+        said = command.split(" ", 2)[2].strip().strip('"')
+        t.ok(where.strip() in t.box.run("show", said).stdout, f"{command} reaches {where.strip()}")
+    t.box.run("close", "Work/Pizza")
+    t.ok(not (t.box.root / "Work" / "Pizza").exists()
+         and (t.box.root / "Notes" / "pizza.md").exists(),
+         "the folder with the name picks the right one")
+    t.ok("Notes/pizza.md" in t.box.run("show", "pizza").stdout,
+         "and the name is one thing's again")
+
+
+@test
+def test_a_shared_name_is_printed_so_it_reaches_one_thing(t: Case) -> None:
+    """The front screen and the brief printed `./os show garden` beside the
+    Garden in Work while Notes had a Garden too, and that stopped with "which
+    one?". After a close, the `./os back website` printed brought out nothing
+    while a live Website was there, and `./os back Archive/Website` found
+    nothing either (review, 2026-09-30)."""
+    t.box.run("new", "work", "Garden")
+    (t.box.root / "Notes" / "Garden.md").write_text(
+        "---\ntitle: Garden\ntype: note\nstatus: —\ndomain: home\ntags: []\n"
+        "created: 2026-09-30\nupdated: 2026-09-30\n---\n\n# Garden\n\ntulips\n")
+    front = t.box.run().stdout
+    t.ok("./os show Work/Garden" in front and "./os show garden" not in front,
+         f"the front screen gives the name with its folder:\n{front}")
+    brief = t.box.run("brief").stdout
+    t.ok("[Work/Garden]" in brief and "[garden]" not in brief, f"and so does the brief:\n{brief}")
+    t.ok("GARDEN" in t.box.run("show", "Work/Garden").stdout.upper(), "which reaches it")
+
+    t.box.run("new", "work", "Website")
+    closed = t.box.run("close", "website").stdout
+    t.ok("./os back website" in closed, f"close says how to bring it back:\n{closed}")
+    t.box.run("new", "work", "Website")
+    t.box.run("back", "website")
+    t.ok(not any((t.box.root / "Archive").rglob("README.md"))
+         and (t.box.root / "Work" / "Website").is_dir(),
+         "and that brings out the one put away, not the live one")
+    t.box.run("close", "website")
+    t.box.run("back", "Archive/Website")
+    t.ok(not any((t.box.root / "Archive").rglob("README.md")),
+         "the folders it is in, in order, reach it too")
+
+    # Two dozen of one name: the first dozen, and how the rest are told apart.
+    # Sort never gives two things in one folder the same name, so these are
+    # a note called Ideas in each of 14 groups, marked the way sort marks one.
+    for n in range(14):
+        group = t.box.root / "Notes" / f"Client {n:02}"
+        group.mkdir()
+        (group / ".category").write_text(json.dumps(
+            {"name": group.name, "trail": [group.name], "auto": True}) + "\n")
+        (group / "ideas.md").write_text(
+            "---\ntitle: Ideas\ntype: note\nstatus: —\ndomain: business\ntags: []\n"
+            f"created: 2026-09-30\nupdated: 2026-09-30\n---\n\n# Ideas\n\nclient {n}\n")
+    asked = t.box.run("show", "ideas", expect=2).stderr
+    t.ok("14 things here are called ideas" in asked and asked.count("./os show") == 12
+         and "and 2 more" in asked, f"a dozen, and how many more:\n{asked}")
+    # The hint in check works out the commands for the three it shows, not
+    # for every copy: 200 of them made ./os take three seconds.
+    os_ = engine.Zenith(t.box.root)
+    calls = []
+    was = engine.Finder.qualified
+    engine.Finder.qualified = lambda self, *a, **k: calls.append(1) or was(self, *a, **k)
+    try:
+        engine.Doctor(os_).run()
+    finally:
+        engine.Finder.qualified = was
+    t.ok(len(calls) <= 3 * 3, f"check names three of each shared name ({len(calls)} worked out)")
+
+
+@test
+def test_notes_of_their_own_are_never_taken_for_hidden_work(t: Case) -> None:
+    """An Obsidian vault in Notes, one thing by its README, holding PARA
+    notes that say `type: area` / `status: active`: check called each one
+    work hidden in a folder, ./os said "2 things need fixing" on every run,
+    and check --fix moved them out of the vault into Work (review,
+    2026-09-30). Only work filed by ./os, inside a piece of work, is that."""
+    vault = t.box.root / "Notes" / "Second Brain"
+    (vault / "Areas").mkdir(parents=True)
+    (vault / ".obsidian").mkdir()
+    (vault / ".obsidian" / "app.json").write_text("{}\n")
+    (vault / "README.md").write_text("# My second brain\n")
+    for area in ("Health", "Finances"):
+        (vault / "Areas" / f"{area}.md").write_text(
+            f"---\ntype: area\nstatus: active\ncreated: 2024-03-01\n---\n\n# {area}\n")
+    t.box.run("sort")
+    # The same notes inside a piece of work of ours: still theirs.
+    t.box.run("new", "work", "Wedding")
+    shutil.copytree(vault / "Areas", t.box.root / "Work" / "Wedding" / "Areas")
+    t.eq(_unreachable(t.box).get("work-inside-work", []), [], "check says nothing about them")
+    t.ok("fixing" not in t.box.run().stdout, "nor does ./os")
+    t.box.run("check", "--fix", expect=None)
+    t.ok((vault / "Areas" / "Health.md").is_file()
+         and (t.box.root / "Work" / "Wedding" / "Areas" / "Health.md").is_file()
+         and not (t.box.root / "Work" / "Health.md").exists(),
+         "and check --fix leaves them where they are")
+
+
+@test
+def test_a_huge_folder_is_pointed_at_work_content_safely(t: Case) -> None:
+    """For a folder of more files than search matches the names of, check
+    said `mv "Notes/Phone Export" "Work/Content/"`. With no Work/Content yet,
+    that renamed the folder to Work/Content, its name gone, and left its card
+    behind in Notes (review, 2026-09-30)."""
+    export = t.box.root / "Notes" / "Phone Export"
+    for year in ("2020", "2021"):
+        (export / year).mkdir(parents=True)
+        for n in range(30):
+            (export / year / f"IMG_{n:04}.HEIC").write_bytes(b"\x00" * 16)
+    t.box.run("sort")
+    t.ok((t.box.root / "Notes" / "Phone Export.card.md").is_file(), "one thing, with a card")
+    os_ = engine.Zenith(t.box.root)
+    was = engine.Finder.NAMES_LOOKED
+    engine.Finder.NAMES_LOOKED = 20        # as if it held tens of thousands
+    try:
+        issues = engine.Doctor(os_).run()["issues"]
+    finally:
+        engine.Finder.NAMES_LOOKED = was
+    far = [i for i in issues if i["code"] == "too-far-in"]
+    t.ok(len(far) == 1 and far[0]["level"] == "hint", f"said, not counted as broken ({far})")
+    t.ok(not (t.box.root / "Work" / "Content").exists(), "there is no Work/Content yet")
+    cure = far[0]["fix"]          # the whole line, pasted as it is
+    subprocess.run(["bash", "-c", cure], cwd=str(t.box.root), check=True)
+    moved = t.box.root / "Work" / "Content" / "Phone Export"
+    t.ok((moved / "2021" / "IMG_0001.HEIC").is_file(), f"it keeps its name ({cure})")
+    t.ok((t.box.root / "Work" / "Content" / "Phone Export.card.md").is_file()
+         and not (t.box.root / "Notes" / "Phone Export.card.md").exists(),
+         "and its card goes with it")
+
+
+@test
+def test_a_big_piece_of_work_is_never_pointed_at_work_content(t: Case) -> None:
+    """For a piece of work with more files than search matches the names of,
+    check said to move the whole of it into Work/Content. Done, it was off
+    the list, and show and find lost its next action, log and notes, while
+    check said all good (review, 2026-09-30). It points at the big folder
+    inside it instead, or at nothing."""
+    t.box.run("new", "work", "Wedding video")
+    work = t.box.root / "Work" / "Wedding Video"
+    (work / "shot list.md").write_text("First dance, then the speeches.\n")
+    for folder in ("Frames", "Frames B"):
+        (work / "Exports" / folder).mkdir(parents=True)
+        for n in range(30):
+            (work / "Exports" / folder / f"frame_{n:04}.png").write_bytes(b"\x89PNG")
+    os_ = engine.Zenith(t.box.root)
+    was = engine.Finder.NAMES_LOOKED
+    engine.Finder.NAMES_LOOKED = 20        # as if it held tens of thousands
+    try:
+        issues = engine.Doctor(os_).run()["issues"]
+    finally:
+        engine.Finder.NAMES_LOOKED = was
+    far = [i for i in issues if i["code"] == "too-far-in"]
+    t.ok(len(far) == 1 and far[0]["level"] == "hint", f"said, not counted as broken ({far})")
+    cure = far[0]["fix"]
+    t.ok('"Work/Wedding Video"' not in cure and "Work/Wedding Video/Exports" in cure,
+         f"it points at the big folder in it, not the piece of work ({cure})")
+    subprocess.run(["bash", "-c", cure], cwd=str(t.box.root), check=True)
+    t.ok((work / "README.md").is_file() and (work / "shot list.md").is_file(),
+         "the piece of work stays where it is")
+    t.ok((t.box.root / "Work" / "Content" / "Wedding Video" / "Exports" / "Frames B"
+          / "frame_0001.png").is_file(), "and its exports go to Work/Content")
+    t.ok("Wedding video" in t.box.run().stdout, "still on the list")
+    t.eq([h["path"] for h in t.box.json("find", "speeches")][:1], ["Work/Wedding Video"],
+         "and found")
+
+
+@test
+def test_an_older_sorts_page_never_hides_notes(t: Case) -> None:
+    """Sort gave Notes/My Recipes a README of ours, so it is one thing, and
+    the words of only the first 40 notes in it are read: `spice45` was
+    "corrected" to spice35 and showed the wrong note, while check said
+    nothing (review, 2026-09-30). check says so. It is how sort filed it, so
+    it is said, not counted as broken, and nothing is moved or renamed."""
+    recipes = t.box.root / "Notes" / "My Recipes"
+    recipes.mkdir(parents=True)
+    page = ("---\ntitle: My Recipes\ntype: note\nstatus: —\ndomain: food\ntags: []\n"
+            "created: 2026-09-01\nupdated: 2026-09-01\nsummary: thin crust\n---\n\n"
+            "# My Recipes\n\nthin crust\n\n## In one line\n\n## What it says\n")
+    (recipes / "README.md").write_text(page)
+    for n in range(1, 45):
+        (recipes / f"Recipe {n:02}.md").write_text(f"spice{n:02} and more words\n")
+    (recipes / "Zucchini fritters.md").write_text("spice45 and more words\n")
+    t.box.run("sort")
+    before = sorted(str(p.relative_to(t.box.root)) for p in (t.box.root / "Notes").rglob("*"))
+    far = [i for i in _unreachable(t.box).get("too-far-in", []) if i["path"] == "Notes/My Recipes"]
+    t.ok(len(far) == 1 and far[0]["level"] == "hint" and "past the 40" in far[0]["message"]
+         and "Notes/My Recipes/Recipe" in far[0]["message"], f"check says so ({far})")
+    t.ok("fixing" not in t.box.run().stdout, "and ./os doesn't count it as broken")
+    t.box.run("check", "--fix", expect=None)
+    t.box.run("sort")
+    t.eq(sorted(str(p.relative_to(t.box.root)) for p in (t.box.root / "Notes").rglob("*")),
+         before, "nothing is moved or renamed")
+    t.eq((recipes / "README.md").read_text(), page, "and its page is as it was")
+    hits = t.box.json("find", "zucchini")
+    t.eq([(h["path"], h.get("file")) for h in hits][:1],
+         [("Notes/My Recipes", "Notes/My Recipes/Zucchini fritters.md")],
+         "each note in it is still found by its name, the last one too")
+
+
+@test
+def test_a_card_left_behind_goes_back_beside_its_file(t: Case) -> None:
+    """A saved PDF dragged into a folder in Finder leaves its card behind,
+    and the card holds the only words search reads for it: `worcester`
+    found nothing, while check said all good (review, 2026-09-30)."""
+    outside = t.box.tmp / "scan0042.pdf"
+    outside.write_bytes(b"%PDF-1.4\n\x00\x01\n")
+    t.box.run("save", str(outside))
+    notes = t.box.root / "Notes"
+    with (notes / "scan0042.pdf.card.md").open("a") as fh:
+        fh.write("\nBoiler warranty certificate from Worcester Bosch\n")
+    t.ok(t.box.json("find", "worcester"), "found by its card")
+    (notes / "Taxes").mkdir()
+    for name in ("P60 2024.pdf", "Self assessment.pdf"):
+        (notes / "Taxes" / name).write_bytes(b"%PDF-1.4\n\x00\n")
+    t.box.run("sort")
+    (notes / "scan0042.pdf").rename(notes / "Taxes" / "scan0042.pdf")
+    t.eq(t.box.json("find", "worcester", expect=None), [], "moved, what its card says is lost")
+    left = _unreachable(t.box).get("card-left-behind", [])
+    t.ok(len(left) == 1 and left[0]["path"] == "Notes/scan0042.pdf.card.md"
+         and "Notes/Taxes" in left[0]["message"] and left[0]["fix"].startswith("./os check --fix"),
+         f"check says where it went, and the fix ({left})")
+    t.ok("1 thing needs fixing" in t.box.run().stdout, "./os counts it")
+    t.box.run("check", "--fix", expect=None)
+    t.ok((notes / "Taxes" / "scan0042.pdf.card.md").is_file(), "--fix puts it beside its file")
+    hits = t.box.json("find", "worcester")
+    t.ok(hits and hits[0].get("file", hits[0]["path"]).endswith("Taxes/scan0042.pdf"),
+         f"and it is found again, as that file ({hits})")
+    t.box.run("undo")
+    t.ok((notes / "scan0042.pdf.card.md").is_file(), "./os undo puts it back")
+
+    # Into a Notes folder sort filed as one thing: the card is read in there.
+    t.box.run("check", "--fix", expect=None)
+    (notes / "Recipes").mkdir()
+    (notes / "Recipes" / "Pizza.md").write_text("flour\n")
+    (notes / "Recipes" / "Soup.md").write_text("leeks\n")
+    t.box.run("sort")
+    manual = t.box.tmp / "manual.pdf"
+    manual.write_bytes(b"%PDF-1.4\n\x00\n")
+    t.box.run("save", str(manual))
+    with (notes / "manual.pdf.card.md").open("a") as fh:
+        fh.write("\nOven manual from Neff\n")
+    (notes / "manual.pdf").rename(notes / "Recipes" / "manual.pdf")
+    t.box.run("check", "--fix", expect=None)
+    hits = t.box.json("find", "neff")
+    t.ok([(h["path"], h.get("file")) for h in hits] == [("Notes/Recipes", "Notes/Recipes/manual.pdf")],
+         f"a card put back beside its file is found again, as that file ({hits})")
+
+    # One whose file is gone for good is said, and nothing is moved.
+    (notes / "Taxes" / "scan0042.pdf").unlink()
+    gone = _unreachable(t.box).get("card-left-behind", [])
+    t.ok(len(gone) == 1 and gone[0]["level"] == "hint", f"a card with no file is a hint ({gone})")
+    t.ok("fixing" not in t.box.run().stdout, "not something to fix")
 
 
 @test
@@ -3737,7 +5286,7 @@ def test_two_things_can_share_a_title(t: Case) -> None:
     Different words under one title, so this is the near-duplicate case and not
     the plain duplicate-content one: three files saying exactly the same thing
     are a different finding, reported elsewhere."""
-    for n, name in enumerate(("one.md", "two.md", "three.md")):
+    for n, name in enumerate(("Untitled.md", "Untitled 2.md", "Untitled 3.md")):
         (t.box.root / "Notes" / name).write_text(
             f"# Same Title Here\n\nReference material, written out {n} times.\n")
     t.box.run("sort")
@@ -3957,8 +5506,7 @@ def test_taxonomy_is_teachable(t: Case) -> None:
     (t.box.root / "Notes" / "mystery.md").write_text(
         "# Zorblat rollout\n\nNotes on the flimbus configuration for northwind. Reference material.\n")
     t.box.run("sort")
-    item = next(i for i in t.box.items() if "zorblat" in i["path"].lower()
-                or "Zorblat" in (i["title"] or ""))
+    item = next(i for i in t.box.items() if i["path"] == "Notes/mystery.md")
     t.eq(item["domain"], "northwind", "the new domain was learned and applied")
 
 
@@ -4021,11 +5569,17 @@ def test_holds_up_at_three_hundred_items(t: Case) -> None:
 
 @test
 def test_a_fresh_copy_dates_itself(t: Case) -> None:
-    """A template built one day and opened another must not arrive pre-dated."""
+    """The first command in a new copy makes it theirs, and leaves their dates alone.
+
+    It used to re-date every file in Work/, Notes/ and Archive/ to today. The
+    blank folder ships none, so the only files it ever touched were the
+    person's own: a note from 2019 dropped in before the first ./os came out
+    saying today, and undo couldn't put it back (stranger test, 2026-09-30).
+    `./os setup` in a used folder did the same, and emptied ./os last."""
     import datetime
     today = datetime.date.today().strftime("%Y-%m-%d")
 
-    # pretend this is a freshly downloaded copy carrying last year's dates
+    # a copy nobody has opened yet, with somebody's old notes already in it
     state = t.box.root / ".os" / "state.json"
     data = json.loads(state.read_text())
     data["fresh"] = True
@@ -4036,33 +5590,34 @@ def test_a_fresh_copy_dates_itself(t: Case) -> None:
     (seeded / "README.md").write_text(engine.compose(
         {"title": "Seeded area", "type": "area", "status": "active",
          "domain": "operations", "tags": ["seed"], "created": "2020-01-01",
-         "updated": "2020-01-01"}, "# Seeded area\n\nShipped with the template.\n"))
-    seeded_note = t.box.root / "Notes" / "seeded-note.md"
-    seeded_note.write_text(engine.compose(
-        {"title": "Seeded note", "type": "note", "status": "—",
-         "domain": "operations", "tags": ["seed"], "created": "2020-01-01",
-         "updated": "2020-01-01"}, "# Seeded note\n\nShipped with the template.\n"))
+         "updated": "2020-01-01"}, "# Seeded area\n\nBrought in by hand.\n"))
+    old_note = t.box.root / "Notes" / "From Obsidian" / "starlings.md"
+    old_note.parent.mkdir(parents=True)
+    old_note.write_text("---\ntitle: Starling murmurations\ncreated: 2019-03-04\n"
+                        "updated: 2021-11-20\ntags: [birds]\n---\n\n"
+                        "Seen over Brighton pier, 2019.\n")
+    before = old_note.read_text()
 
     proc = t.box.run("status")
-    t.ok("dated today" in proc.stdout or "Welcome" in proc.stdout,
-         "the first command announces that the copy was initialised")
+    t.ok("Welcome" in proc.stdout, "the first command says the copy is theirs now")
+    t.eq(old_note.read_text(), before, "a note they brought keeps its own dates")
+    meta, _ = engine.parse_frontmatter((seeded / "README.md").read_text())
+    t.eq((meta["created"], meta["updated"]), ("2020-01-01", "2020-01-01"),
+         "and so does work they brought")
 
     seeded_item = next(i for i in t.box.items() if i["id"] == "seeded-area")
     t.eq(seeded_item["status"], "holding",
          "a pre-merge `type: area` item is read as held, not put on the go")
-
-    meta, _ = engine.parse_frontmatter((seeded / "README.md").read_text())
-    t.eq(meta["created"], today, "seeded content is re-dated to today")
-    t.eq(meta["updated"], today, "and its updated stamp too")
-    note_meta, _ = engine.parse_frontmatter(seeded_note.read_text())
-    t.eq(note_meta["created"], today, "a seeded note is re-dated too")
-    t.ok(not json.loads(state.read_text()).get("fresh"), "the fresh flag was cleared")
+    after = json.loads(state.read_text())
+    t.ok(not after.get("fresh"), "the fresh flag was cleared")
+    t.eq(after.get("installed"), today, "and the day it was installed is written down")
 
     # and it does not fire twice
     second = t.box.run("status")
-    t.ok("dated today" not in second.stdout, "initialisation happens exactly once")
+    t.ok("Welcome" not in second.stdout, "initialisation happens exactly once")
 
     # setup is explicit, idempotent, and can name an owner
+    t.box.run("save", "Remember to call the plumber about the leak")
     t.box.run("setup", "--owner", "Sam", "--name", "Studio")
     config = json.loads((t.box.root / ".os" / "config.json").read_text())
     t.eq(config["owner"], "Sam", "setup records the owner")
@@ -4070,6 +5625,1243 @@ def test_a_fresh_copy_dates_itself(t: Case) -> None:
     t.box.run("setup")
     t.eq(json.loads((t.box.root / ".os" / "config.json").read_text())["owner"], "Sam",
          "running setup again keeps what was already set")
+    t.eq(old_note.read_text(), before, "setup in a used folder re-dates nothing")
+    later = json.loads(state.read_text())
+    t.ok(later.get("history"), "and keeps what ./os last reads")
+    t.eq(later.get("installed"), today, "and the day it was installed")
+
+
+@test
+def test_a_textedit_card_made_on_a_mac_holds_no_control_characters(t: Case) -> None:
+    """On a Mac, sort copies an RTF's words onto its card from textutil,
+    which turns `\\u0` into a NUL and `\\'07` into a bell. The card then
+    counted as a binary file (`file` said data, grep said "Binary file
+    matches"), where the same RTF on Linux gave a clean one (review,
+    2026-09-30). A page break stays a break."""
+    b = "\\"
+    rtf = t.box.root / "Notes" / "Jam.rtf"
+    rtf.write_text(b.join(["{", "rtf1", "ansi Plum jam: ", "u0 ?sugar and ", "'07pectin, ",
+                           "u12 ?boil ", "u27 ?hard.", "page Pour into jars.}"]), encoding="ascii")
+    said = engine.rtf_text(rtf)
+    t.ok(not re.search(r"[\x00-\x08\x0b-\x1f\x7f]", said),
+         f"the words read out of it hold no control character: {said!r}")
+    t.ok(re.search(r"hard\.\s*\n\s*Pour into jars", said),
+         f"and the words either side of a page break don't run together: {said!r}")
+    t.box.run("sort")
+    card = rtf.with_name(rtf.name + ".card.md").read_bytes()
+    t.ok(not re.search(rb"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", card),
+         f"so its card is text, not a binary file: {card[-160:]!r}")
+    t.ok(b"pectin" in card and b"Pour into jars" in card, "and the words are on it")
+
+
+@test
+def test_a_subject_written_into_a_header_never_hides_what_it_groups(t: Case) -> None:
+    """`./os words --new` refuses a subject whose folder ./os would skip, but
+    a header written by hand never asked. 14 video projects marked `domain:
+    content` were grouped into Work/Content, where ./os never looks: ./os
+    said nothing was started, find found nothing, and check said all good
+    (review, 2026-09-30). `food/drink` made a folder inside a folder. And
+    `--new wine.rtfd` grouped notes in what a Mac opens as one TextEdit file."""
+    root = t.box.root
+    for n in range(14):
+        folder = root / "Work" / f"Film Video {n}"
+        folder.mkdir(parents=True)
+        (folder / "README.md").write_text(engine.compose(
+            {"title": f"Film video {n}", "type": "work", "status": "pushing",
+             "domain": "content" if n < 7 else "food/drink", "tags": ["video"],
+             "created": "2026-09-01", "updated": "2026-09-01"},
+            f"# Film video {n}\n\nShoot and cut the clip about plum jam, part {n}.\n"))
+    t.box.run("sort")
+    hidden = list((root / "Work" / "Content").rglob("README.md"))
+    t.eq(hidden, [], "nothing is grouped into Work/Content, which ./os never looks in")
+    works = [i for i in t.box.items() if i["path"].startswith("Work/")]
+    t.eq(len(works), 14, "every one is still on the list")
+    t.eq(len(t.box.json("find", "plum jam")), 14, "and found")
+    t.ok(not (root / "Work" / "Food").exists(), "a slash makes no folder inside a folder")
+    for name in ("wine.rtfd", "wine.rtf"):
+        said = t.box.run("words", "--new", name, "merlot", expect=1).stderr
+        t.ok("one document" in said and "Pick another name" in said,
+             f"--new {name} is refused, saying why:\n{said}")
+
+
+@test
+def test_a_tag_never_names_a_folder_that_hides_what_is_in_it(t: Case) -> None:
+    """The group inside a crowded subject is named after a tag, and nothing
+    asked whether ./os would skip it. 14 video projects tagged `content`
+    went into Work/General/Content, where ./os never looks; the same sort
+    then took General away, with every one of them in it, as empty. Undo
+    couldn't bring them back and check said all good (review, 2026-09-30)."""
+    root = t.box.root
+    for n in range(14):
+        folder = root / "Work" / f"Film Video {n}"
+        folder.mkdir(parents=True)
+        (folder / "README.md").write_text(engine.compose(
+            {"title": f"Film video {n}", "type": "work", "status": "pushing",
+             "domain": "content", "tags": ["content", "video"],
+             "created": "2026-09-01", "updated": "2026-09-01"},
+            f"# Film video {n}\n\nShoot and cut the clip about plum jam, part {n}.\n"))
+    t.box.run("sort")
+    left = sorted(p.parent.name for p in (root / "Work").rglob("README.md"))
+    t.eq(len(left), 14, f"all 14 are still on disk: {left}")
+    t.eq(list((root / "Work").rglob("Content")), [], "none went into a Content folder")
+    t.eq(len([i for i in t.box.items() if i["path"].startswith("Work/")]), 14,
+         "and every one is still on the list")
+    t.eq(len(t.box.json("find", "plum jam")), 14, "and found")
+
+
+@test
+def test_sort_never_takes_away_a_group_with_anything_still_in_it(t: Case) -> None:
+    """A group sort made was taken away with rmtree once `ignored()` saw
+    nothing in it. A folder ./os skips counts as nothing to that, so a group
+    holding only a Content folder went, and all that was in it (review,
+    2026-09-30). Now only its own mark and what a computer leaves go."""
+    root = t.box.root
+    group = root / "Notes" / "Garden"
+    (group / "Content").mkdir(parents=True)
+    (group / engine.CATEGORY_MARKER).write_text(json.dumps(
+        {"name": "Garden", "trail": ["Garden"], "auto": True}))
+    (group / "Content" / "tomato footage.mp4").write_bytes(b"\0" * 64)
+    (group / "old plan.md~").write_text("the plan before the frost\n")
+    empty = root / "Notes" / "Kitchen"
+    empty.mkdir(parents=True)
+    (empty / engine.CATEGORY_MARKER).write_text(json.dumps(
+        {"name": "Kitchen", "trail": ["Kitchen"], "auto": True}))
+    (empty / ".DS_Store").write_bytes(b"\0\0\0\1Bud1")
+    t.box.run("sort")
+    t.ok((group / "Content" / "tomato footage.mp4").is_file(), "what ./os skips is still there")
+    t.ok((group / "old plan.md~").is_file(), "and so is a file named like a leftover")
+    t.ok(not empty.exists(), "a group with nothing but its mark in it still goes")
+
+
+@test
+def test_a_save_a_crash_left_empty_is_put_back_by_check_fix(t: Case) -> None:
+    """git doesn't make sure its newest files reach the disk, so a crash in a
+    checkpoint most often leaves the save's own file empty, and the files
+    of what it took in. The checkpoint and every brief said the history had
+    lost track of its last save and to run ./os check --fix; but check only
+    read the save's name, said all good, and --fix did nothing, so no
+    checkpoint was ever kept again (review, 2026-09-30)."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    _run_with(t.box, env)
+    t.box.run("save", "Remember to service the boiler in October")
+    _run_with(t.box, env, "checkpoint", "the boiler")
+    before = _git_in(root, "rev-parse", "HEAD~1").stdout.strip()
+    head = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    tree = _git_in(root, "rev-parse", "HEAD^{tree}").stdout.strip()
+    rel = next(n for n in _git_in(root, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                                  "HEAD").stdout.split() if not n.startswith(".os/"))
+    blob = _git_in(root, "rev-parse", f"HEAD:{rel}").stdout.strip()
+    theirs = {p: p.read_bytes() for bucket in ("Work", "Notes")
+              for p in (root / bucket).rglob("*") if p.is_file()}
+    for sha in (head, tree, blob):                   # what the crash left
+        part = root / ".git" / "objects" / sha[:2] / sha[2:]
+        part.chmod(0o644)
+        part.write_bytes(b"")
+
+    status = t.box.run().stdout
+    t.ok("needs fixing" in status and "./os check --fix" in status,
+         f"./os says something needs fixing\n{status}")
+    check = t.box.run("check", expect=1).stdout
+    t.ok("lost track of its last save" in check, f"and ./os check says what\n{check}")
+    fixed = t.box.run("check", "--fix", expect=None).stdout
+    t.ok("history back on its last save" in fixed, f"--fix puts it back\n{fixed}")
+    t.eq(_git_in(root, "rev-parse", "HEAD").stdout.strip(), before,
+         "on the last save git's own record names that can still be read")
+    t.eq({p: p.read_bytes() for p in theirs}, theirs, "and no file of theirs changed")
+    kept = _run_with(t.box, env, "checkpoint", "after the crash")
+    t.ok("kept" in kept.stdout, f"once put back, checkpoints carry on\n{kept.stdout}")
+    t.eq(_git_in(root, "show", f"HEAD:{rel}").stdout, (root / rel).read_text(),
+         "with every file in it whole")
+    t.ok("lost track" not in t.box.run("brief").stdout, "and the brief stops saying it")
+    tidy = _git_in(root, "gc", "-q")
+    t.eq(tidy.returncode, 0, f"and git can still tidy it up\n{tidy.stderr}")
+
+
+def _crashed_mid_checkpoint(t: Case, emptied: str) -> tuple:
+    """A folder with two saves and a note, then a crash in a checkpoint that
+    left one of git's files empty: `emptied` picks which, from what the
+    last save holds (`tree`), or from what a checkpoint cut off had taken
+    in (`taken in`). Gives the root, the environment and the note."""
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    _run_with(t.box, env)
+    t.box.run("save", "Remember to service the boiler in October")
+    _run_with(t.box, env, "checkpoint", "the boiler")
+    rel = next(n for n in _git_in(root, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                                  "HEAD").stdout.splitlines() if n.startswith("Notes/"))
+    with (root / rel).open("a") as note:
+        note.write("\nThe engineer's number is on the fridge.\n")
+    if emptied == "tree":
+        sha = _git_in(root, "rev-parse", "HEAD^{tree}").stdout.strip()
+    else:
+        _git_in(root, "add", "-A")
+        sha = _git_in(root, "rev-parse", f":{rel}").stdout.strip()
+    part = root / ".git" / "objects" / sha[:2] / sha[2:]
+    part.chmod(0o644)
+    part.write_bytes(b"")                            # what the crash left
+    return root, env, rel
+
+
+@test
+def test_a_crash_that_empties_what_the_last_save_holds_is_put_right(t: Case) -> None:
+    """A crash can leave the last save whole and the list of what it holds
+    empty. Every checkpoint after said "nothing has changed since the last
+    one" and kept nothing, even after an edit, while ./os check and --fix
+    both said all good (review, 2026-09-30)."""
+    if engine.History.no_git():
+        return
+    root, env, rel = _crashed_mid_checkpoint(t, "tree")
+    after = _run_with(t.box, env, "checkpoint", "after the crash", expect=1).stdout
+    t.ok("nothing has changed" not in after and "./os check --fix" in after,
+         f"the checkpoint doesn't say nothing changed, and says what puts it right\n{after}")
+    check = t.box.run("check", expect=1).stdout
+    t.ok("lost track of its last save" in check, f"./os check says so\n{check}")
+    t.ok("./os check --fix" in t.box.run("brief").stdout, "and so does the brief")
+    t.box.run("check", "--fix", expect=None)
+    kept = _run_with(t.box, env, "checkpoint", "after the fix").stdout
+    t.ok("kept" in kept, f"once put right, the edit is kept\n{kept}")
+    t.eq(_git_in(root, "show", f"HEAD:{rel}").stdout, (root / rel).read_text(),
+         "and can be read back")
+    tidy = _git_in(root, "gc", "-q")
+    t.eq(tidy.returncode, 0, f"and git can still tidy it up\n{tidy.stderr}")
+
+
+@test
+def test_a_crash_while_a_checkpoint_took_files_in_is_put_right(t: Case) -> None:
+    """A crash while a checkpoint took the files in can leave git's copies of
+    them empty, and its list naming them. The next checkpoint took them as
+    written, and kept a save that could never be read back, while ./os
+    check said all good (review, 2026-09-30)."""
+    if engine.History.no_git():
+        return
+    root, env, rel = _crashed_mid_checkpoint(t, "taken in")
+    status = t.box.run().stdout
+    t.ok("./os check --fix" in status, f"./os says something needs fixing\n{status}")
+    after = _run_with(t.box, env, "checkpoint", "after the crash", expect=1).stdout
+    t.ok("crash" in after and "./os check --fix" in after,
+         f"the checkpoint keeps nothing it couldn't read back, and says why\n{after}")
+    check = t.box.run("check", expect=1).stdout
+    t.ok("history empty" in check, f"./os check says so\n{check}")
+    fixed = t.box.run("check", "--fix", expect=None).stdout
+    t.ok("cleared what a crash left empty" in fixed, f"--fix puts it right\n{fixed}")
+    t.eq(_git_in(root, "log", "--format=%s", "-1").stdout.strip(), "the boiler",
+         "keeping the last save, which was whole")
+    kept = _run_with(t.box, env, "checkpoint", "after the fix").stdout
+    t.ok("kept" in kept, f"then the edit is kept\n{kept}")
+    t.eq(_git_in(root, "show", f"HEAD:{rel}").stdout, (root / rel).read_text(),
+         "and can be read back")
+    t.ok("crash" not in t.box.run("brief").stdout, "and the brief stops saying it")
+
+
+@test
+def test_a_crash_during_the_first_save_is_finished_by_check_fix(t: Case) -> None:
+    """A crash during the very first save, which takes in the whole folder,
+    left no save to go back to. With the branch never written, ./os and
+    check said all good, and every checkpoint failed on git's words about an
+    empty file; with it emptied, --fix could only point at git fsck, which
+    found nothing (review, 2026-09-30). There is nothing in it to lose, so
+    check --fix makes that save again, and no file of theirs changes."""
+    if engine.History.no_git():
+        return
+    for branch in ("never written", "emptied"):
+        _as_downloaded(t.box)
+        shutil.rmtree(t.box.root / ".git", ignore_errors=True)
+        root, env = t.box.root, _nameless(t.box)
+        # git's own tidy-up packs things away after a save, in the background.
+        Path(env["GIT_CONFIG_GLOBAL"]).write_text("[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n")
+        _run_with(t.box, env)
+        (root / "Notes").mkdir(exist_ok=True)
+        (root / "Notes" / "boiler.md").write_text(
+            "---\ntitle: Boiler\ntype: note\nstatus: —\ndomain: home\ntags: []\n"
+            "created: 2026-09-30\nupdated: 2026-09-30\n---\n\nThe engineer is Dave.\n")
+        git = root / ".git"
+        for part in (git / "objects").glob("??/*"):          # what the crash left
+            part.chmod(0o644)
+            part.write_bytes(b"")
+        (git / "index").write_bytes(b"")
+        ref = git / (git / "HEAD").read_text().split(":", 1)[1].strip()
+        if branch == "never written":
+            ref.unlink()
+            shutil.rmtree(git / "logs")
+        else:
+            ref.write_bytes(b"")
+            for record in (git / "logs").rglob("*"):
+                if record.is_file():
+                    record.write_bytes(b"")
+        theirs = {p: p.read_bytes() for bucket in ("Work", "Notes") if (root / bucket).is_dir()
+                  for p in (root / bucket).rglob("*") if p.is_file()}
+
+        status = t.box.run().stdout
+        t.ok("./os check --fix" in status, f"{branch}: ./os says something needs fixing\n{status}")
+        check = t.box.run("check", expect=1).stdout
+        t.ok("first save" in check, f"{branch}: ./os check says what\n{check}")
+        after = _run_with(t.box, env, "checkpoint", expect=1).stdout
+        t.ok("./os check --fix" in after, f"{branch}: so does a checkpoint\n{after}")
+        fixed = t.box.run("check", "--fix", expect=None).stdout
+        t.ok("finished this folder's first history save" in fixed, f"{branch}: --fix finishes it\n{fixed}")
+        t.eq(_git_in(root, "show", "HEAD:Notes/boiler.md").stdout,
+             (root / "Notes" / "boiler.md").read_text(), f"{branch}: with their files in it")
+        t.eq({p: p.read_bytes() for p in theirs}, theirs, f"{branch}: and no file of theirs changed")
+        brief = t.box.run("brief").stdout
+        t.ok("crash" not in brief and "check --fix" not in brief,
+             f"{branch}: the brief stops saying it\n{brief}")
+        (root / "Notes" / "boiler.md").write_text("The engineer is Dave, 0161 555 0101.\n")
+        kept = _run_with(t.box, env, "checkpoint", "after the fix").stdout
+        t.ok("kept" in kept, f"{branch}: and checkpoints carry on\n{kept}")
+        t.eq(_git_in(root, "fsck").returncode, 0, f"{branch}: with nothing in it broken")
+        for part in git.rglob("*"):
+            part.chmod(0o755 if part.is_dir() else 0o644)
+
+
+@test
+def test_a_garbled_list_of_what_git_took_in_is_made_again(t: Case) -> None:
+    """A crash can garble .git/index. Every checkpoint after it failed with
+    "bad signature 0x00000000", and every brief said so, while ./os check
+    said all good (review, 2026-09-30). It holds nothing that isn't in the
+    files and the last save, so the checkpoint makes it again."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    _run_with(t.box, env)
+    (root / ".git" / "index").write_bytes(bytes(100))       # what the crash left
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Notes" / "boiler.md").write_text("# Boiler\n\nService it in October.\n")
+    kept = _run_with(t.box, env, "checkpoint", "after the crash")
+    t.ok("kept" in kept.stdout, f"the checkpoint is kept\n{kept.stdout}")
+    t.eq(_git_in(root, "show", "HEAD:Notes/boiler.md").stdout, "# Boiler\n\nService it in October.\n",
+         "with what changed in it")
+    brief = t.box.run("brief").stdout
+    t.ok("didn't work" not in brief and "signature" not in brief, f"and the brief is clear\n{brief}")
+
+
+@test
+def test_saves_on_a_branch_of_their_own_make_a_clone_theirs(t: Case) -> None:
+    """A git clone of the template was counted theirs only by the saves on the
+    branch open at the time. With their saves on a branch of their own, every
+    brief and checkpoint still said  rm -rf .git , which would throw those
+    saves away (review, 2026-09-30)."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root = t.box.root
+    _cloned(root)
+    t.box.run()
+    _git_in(root, "checkout", "-q", "-b", "mine")
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Notes" / "boiler.md").write_text("# Boiler\n\nService it in October.\n")
+    _git_in(root, "add", "-A")
+    _git_in(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
+    _git_in(root, "checkout", "-q", "-")
+    brief = t.box.run("brief").stdout
+    t.ok("rm -rf" not in brief, f"saves on another branch make it theirs\n{brief}")
+    said = t.box.run("checkpoint", expect=1).stdout
+    t.ok("rm -rf" not in said, f"and a checkpoint doesn't offer to throw them away\n{said}")
+
+
+@test
+def test_a_checkpoint_waits_for_the_first_run_to_finish(t: Case) -> None:
+    """A checkpoint made while the first run was still taking everything in
+    took git's lock away from under it, failed with git's own words, and
+    those words sat in every brief after (review, 2026-09-30). The first run
+    holds ./os's lock now, so the checkpoint waits its turn."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    (root / "Notes").mkdir()
+    (root / "Notes" / "boiler.md").write_text("# Boiler\n\nService it in October.\n")
+    slow = t.box.tmp / "slow-git"
+    slow.write_text('#!/bin/sh\nfor a in "$@"; do [ "$a" = add ] && sleep 3; done\n'
+                    'exec git "$@"\n')
+    slow.chmod(0o755)
+    first = subprocess.Popen(
+        [str(root / "os")], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", ZENITH_GIT=str(slow),
+                 ZENITH_HISTORY_WAIT="30", **env))
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and _git_in(
+                root, "config", "--get", engine.History.MARK).stdout.strip() != "true":
+            time.sleep(0.05)
+        during = _run_with(t.box, env, "checkpoint", "at the same time", expect=None)
+    finally:
+        first.communicate(timeout=60)
+    t.eq(during.returncode, 0, f"the checkpoint works\n{during.stdout}\n{during.stderr}")
+    saves = _git_in(root, "log", "--reverse", "--format=%s").stdout.splitlines()
+    t.eq(saves[:1], ["The folder as it was first opened"],
+         "after the first run has made the first save")
+    t.ok("didn't work" not in t.box.run("brief").stdout, "and the brief has nothing to say about it")
+
+
+@test
+def test_a_git_of_their_own_still_decides_about_its_caches(t: Case) -> None:
+    """The owner settled on 2026-09-29 that ./os check leaves __pycache__
+    alone when git ignores it: a code project's check had listed eighteen as
+    junk. Made to report strays in the history ./os keeps, it listed them
+    again in a folder that is a code project with a git of its own (review,
+    2026-09-30). Their git says what's theirs; the .gitignore of the history
+    ./os keeps was written by ./os, so there a project file says it."""
+    if engine.History.no_git():
+        return
+    root = t.box.root
+    _git_in(root, "init", "-q")
+    for cache in (root / "src" / "__pycache__", root / "tests" / "__pycache__",
+                  root / "Work" / "Bot" / "src" / "__pycache__"):
+        cache.mkdir(parents=True)
+        (cache / "x.pyc").write_text("")
+    (root / "pyproject.toml").write_text("[project]\nname = 'bot'\n")
+
+    def caches() -> list:
+        return [i["path"] for i in t.box.json("check", expect=None)["issues"]
+                if i["code"] == "clutter" and "__pycache__" in i["path"]]
+    t.eq(caches(), [], "a code project with a git of its own that ignores them: none reported")
+    (root / "pyproject.toml").unlink()
+    t.eq(caches(), [], "nor with no project file, while their own git ignores them")
+    _git_in(root, "config", engine.History.MARK, "true")
+    t.eq(sorted(caches()), ["Work/Bot/src/__pycache__", "src/__pycache__", "tests/__pycache__"],
+         "in the history ./os keeps, one outside a code project is reported")
+    (root / "pyproject.toml").write_text("[project]\nname = 'bot'\n")
+    t.eq(caches(), [], "and this folder with a project file of its own is a code project")
+
+
+@test
+def test_the_setup_screen_the_demo_and_the_download_name_an_ai_that_runs_commands(t: Case) -> None:
+    """The first screen stopped saying any AI would do, but `./os setup` still
+    said "claude — or any AI", and the line under the name in `./os help`,
+    which the first screen points at, said "Any AI can use it." A chat-only
+    app like ChatGPT can't run ./os (review, 2026-09-30). The demo's last
+    line was 86 wide, and wrapped in a Terminal window as it opens. And
+    `./os decide` asked with "we ship Meta first", a job's example."""
+    setup = " ".join(t.box.run("setup").stdout.split())
+    t.ok("any AI" not in setup and "or another AI that can run commands here" in setup,
+         f"setup names an AI that can run commands\n{setup[-300:]}")
+    demo = t.box.run("demo").stdout.splitlines()
+    t.eq([line for line in demo if len(line) > 80], [], "no line of the demo is wider than 80")
+    t.ok(any("another AI that can run commands here" in line for line in demo),
+         "and its last line says it the same way")
+    t.box.run("new", "work", "Fix the boiler")
+    said = t.box.run("decide", "fix-the-boiler", expect=1).stderr
+    t.ok("Meta" not in said and "not another repair" in said,
+         f"decide asks with an example from home\n{said}")
+
+
+@test
+def test_the_download_ships_no_subject_of_this_folders_own(t: Case) -> None:
+    """A subject made here with `./os words --new` has no words but the ones
+    it learned, which never ship: it went out as a name alone, one of this
+    folder's own. And the download said "Any AI can use it." under its name
+    in `./os help`. Only the workshop has the script, so a copy skips this."""
+    script = next(iter(sorted((SOURCE / "Work").glob("*/release-os.sh"))), None)
+    if script is None:
+        return
+    root = t.box.root
+    ours = root / "Work" / script.parent.name / script.name
+    ours.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(script, ours)
+    t.box.run("words", "--new", "wine", "merlot", "claret")
+    out = t.box.tmp / "blank"
+    proc = subprocess.run(["bash", str(ours), "build", str(out)], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=dict(os.environ, NO_COLOR="1"),
+                          timeout=300)
+    t.eq(proc.returncode, 0, f"it builds\n{proc.stdout[-600:]}\n{proc.stderr[-600:]}")
+    shipped = json.loads((out / ".os" / "words.json").read_text())["domains"]
+    t.ok("wine" not in shipped, "a subject made here with --new doesn't ship")
+    t.ok("general" in shipped and "garden" in shipped,
+         "the subjects that come with it do, general too, which has no words on purpose")
+    line = json.loads((out / ".os" / "config.json").read_text()).get("tagline", "")
+    t.ok(line and "any ai" not in line.lower(), f"the line under its name in ./os help: {line!r}")
+
+
+@test
+def test_an_update_renews_the_line_under_the_name_still_as_released(t: Case) -> None:
+    """The first release put "Any AI can use it." under the folder's name in
+    `./os help`, and an update kept theirs whatever it said, so no release
+    could ever take it back. One still as released takes the new one; one
+    they wrote themselves stays."""
+    root = t.box.root
+    config = root / ".os" / "config.json"
+    _edit_json(config, lambda c: c.update(tagline="One folder for your work. Any AI can use it."))
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda out: _edit_json(
+        out / ".os" / "config.json", lambda c: c.update(tagline="One folder for your notes.")))
+    done = t.box.run("update", "--from", str(published))
+    t.eq(json.loads(config.read_text())["tagline"], "One folder for your notes.",
+         f"a line still as released is the new one\n{done.stdout}")
+    t.ok("a new line under its name" in done.stdout, "and the update says so")
+    _edit_json(config, lambda c: c.update(tagline="Sam's things, kept tidy."))
+    newer = _publish(t, "2026-03-01.1", lambda out: _edit_json(
+        out / ".os" / "config.json", lambda c: c.update(tagline="Something newer.")),
+        base=published)
+    t.box.run("update", "--from", str(newer))
+    t.eq(json.loads(config.read_text())["tagline"], "Sam's things, kept tidy.",
+         "one they wrote themselves stays theirs")
+
+
+@test
+def test_a_release_remembers_the_line_under_the_name(t: Case) -> None:
+    """An update renews the line under the folder's name only while it is
+    one some release wrote, and only the first release's was listed. So a
+    folder that took this release's line kept it for good, whatever a later
+    release said (review, 2026-09-30). Each release records its own."""
+    root = t.box.root
+    config = root / ".os" / "config.json"
+    line = "One folder for your notes, plans and files."
+    _edit_json(config, lambda c: c.update(tagline=line))
+    _release(root, "2026-01-01.1")
+    shipped = json.loads((root / ".os" / "shipped.json").read_text())
+    t.ok(line in shipped.get("taglines", []), "the line it shipped is recorded")
+    published = _publish(t, "2026-02-01.1", lambda out: _edit_json(
+        out / ".os" / "config.json", lambda c: c.update(tagline="Something newer.")))
+    done = t.box.run("update", "--from", str(published))
+    t.eq(json.loads(config.read_text())["tagline"], "Something newer.",
+         f"so the next release can change it\n{done.stdout}")
+
+
+@test
+def test_an_update_that_stops_partway_keeps_a_hard_linked_claude_md_linked(t: Case) -> None:
+    """A CLAUDE.md made with `ln` from AGENTS.md was linked to the new
+    AGENTS.md only at the very end of an update. One that stopped partway had
+    swapped AGENTS.md already, and run again, as it says to, CLAUDE.md was no
+    longer the same file: it got "@AGENTS.md" put on top of the old rules,
+    and check was quiet. The preview said it would be left as it was, and
+    the real run linked it again (review, 2026-09-30)."""
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        return          # nothing is read-only to the computer's owner
+    import hashlib
+    root = t.box.root
+    shipped = json.loads((root / ".os" / "shipped.json").read_text())
+    old_rules = "# How to work in this folder\n\nThe old rules, from an older release.\n"
+    skill = root / ".claude" / "skills" / "save" / "SKILL.md"
+    old_skill = "---\nname: save\ndescription: Save it.\n---\n\nAn older release's save.\n"
+    for rel, text in (("AGENTS.md", old_rules), (".claude/skills/save/SKILL.md", old_skill)):
+        (root / rel).write_text(text)
+        shipped["files"].setdefault(rel, []).append(hashlib.sha1(text.encode()).hexdigest())
+    (root / ".os" / "shipped.json").write_text(json.dumps(shipped))
+    (root / "CLAUDE.md").unlink(missing_ok=True)
+    os.link(root / "AGENTS.md", root / "CLAUDE.md")
+
+    def update(*more: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root), *more],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=180)
+    preview = update("--dry-run")
+    t.ok("would keep CLAUDE.md — it's a link to AGENTS.md, so it would be linked to the new one"
+         in preview.stdout, f"the preview says what the real run does\n{preview.stdout[-800:]}")
+    skill.parent.chmod(0o555)
+    try:
+        stopped = update()
+    finally:
+        skill.parent.chmod(0o755)
+    t.eq(stopped.returncode, 1, f"the update stops partway\n{stopped.stdout[-800:]}")
+    t.ok("The old rules" not in (root / "AGENTS.md").read_text(), "after AGENTS.md was the new one")
+    t.ok((root / "CLAUDE.md").samefile(root / "AGENTS.md"),
+         "and CLAUDE.md is still the same file as it, even so")
+    finished = update()
+    t.eq(finished.returncode, 0, f"run again, it finishes\n{finished.stdout[-800:]}")
+    claude = (root / "CLAUDE.md").read_text()
+    t.ok((root / "CLAUDE.md").samefile(root / "AGENTS.md") and "@AGENTS.md" not in claude
+         and "The old rules" not in claude,
+         f"with CLAUDE.md still AGENTS.md, and no stale copy under a pointer\n{claude[:300]}")
+
+
+@test
+def test_a_release_remembers_the_words_that_tell_a_note_from_work(t: Case) -> None:
+    """An update renews the words that tell a note from work only while a
+    folder's are a list some release wrote, so each release has to record
+    its own. Nothing checked that it did: without it, a release's new note
+    words, like "recipe", would never reach anyone who updated after the
+    next one (review, 2026-09-30)."""
+    import upgrade
+    root = t.box.root
+    words = root / ".os" / "words.json"
+    _edit_json(words, lambda w: w["intent"]["note"]["keywords"].append("jam jar"))
+    _release(root, "2026-01-01.1")
+    note = json.loads(words.read_text())["intent"]["note"]
+    shipped = json.loads((root / ".os" / "shipped.json").read_text())
+    t.ok(upgrade.keywords_sha(note["keywords"]) in shipped["intent_keywords"]["note"],
+         "the note words it shipped are recorded")
+    t.ok(upgrade.keywords_sha(note["patterns"]) in shipped["intent_patterns"]["note"],
+         "and so are the patterns")
+
+
+@test
+def test_a_history_that_lost_its_last_save_is_never_deleted(t: Case) -> None:
+    """A crash while saving can leave the file naming the last save empty. A
+    checkpoint read that as "nothing saved yet", deleted the whole history and
+    started again: every earlier checkpoint gone, with the record that could
+    have found them, and it said "started this folder's history" (review,
+    2026-09-30)."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    _run_with(t.box, env)
+    t.box.run("save", "Remember to service the boiler in October")
+    _run_with(t.box, env, "checkpoint", "the boiler")
+    last = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    branch = _git_in(root, "symbolic-ref", "HEAD").stdout.strip()
+    t.ok(len(last) in (40, 64) and branch.startswith("refs/heads/"), "two saves to lose")
+
+    (root / ".git" / branch).write_text("")          # what the crash left
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Notes" / "after.md").write_text("# After\n\nWritten after the crash.\n")
+    lost = _run_with(t.box, env, "checkpoint", "after the crash", expect=1)
+    t.ok("lost track of its last save" in lost.stdout and "started" not in lost.stdout,
+         f"it says what happened, and starts nothing\n{lost.stdout}")
+    t.ok("./os check --fix" in lost.stdout,
+         f"with the one line that puts it back\n{lost.stdout}")
+    t.ok(_git_in(root, "cat-file", "-e", last + "^{commit}").returncode == 0,
+         "every save is still in the history")
+    t.ok(len((root / ".git" / "logs" / "HEAD").read_text().splitlines()) == 2,
+         "and so is git's record of them")
+    t.ok("lost track of its last save" in t.box.run("brief").stdout,
+         "the brief says so too, for as long as it's true")
+    # Only Claude Code reads the brief: ./os said nothing, and ./os check
+    # said "all good" (review, 2026-09-30).
+    status = t.box.run().stdout
+    t.ok("needs fixing" in status and "./os check --fix" in status,
+         f"./os says something needs fixing\n{status}")
+    check = t.box.run("check", expect=1).stdout
+    t.ok("lost track of its last save" in check, f"and ./os check says what\n{check}")
+
+    # the line it gave, and the checkpoint after it follows on
+    fixed = t.box.run("check", "--fix", expect=None).stdout
+    t.ok("history back on its last save" in fixed, f"--fix puts it back\n{fixed}")
+    t.eq((root / ".git" / branch).read_text().strip(), last, "on the save it last had")
+    kept = _run_with(t.box, env, "checkpoint", "after the crash")
+    t.ok("kept" in kept.stdout, f"once put back, checkpoints carry on\n{kept.stdout}")
+    t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "3",
+         "from the save before the crash")
+    t.ok("lost track" not in t.box.run("brief").stdout, "and the brief stops saying it")
+
+    # the file gone altogether, while git's record of the branch has its saves
+    last = _git_in(root, "rev-parse", "HEAD").stdout.strip()
+    (root / ".git" / branch).unlink()
+    (root / ".git" / "packed-refs").unlink(missing_ok=True)
+    gone = _run_with(t.box, env, "checkpoint", expect=1)
+    t.ok("lost track" in gone.stdout and "./os check --fix" in gone.stdout,
+         f"is lost too, not a history to start again\n{gone.stdout}")
+    t.ok(_git_in(root, "cat-file", "-e", last + "^{commit}").returncode == 0,
+         "and everything in it is still there")
+    t.box.run("check", "--fix", expect=None)
+    t.eq(_git_in(root, "rev-parse", "HEAD").stdout.strip(), last, "and --fix puts that back too")
+    t.ok("lost track" not in t.box.run("check", expect=None).stdout, "after which all is well")
+
+
+@test
+def test_checkpoint_is_listed_and_the_brief_says_why_there_is_no_history(t: Case) -> None:
+    """./os checkpoint wasn't in the main help, and `./os commit` and `./os
+    history` pointed at a list without it. In Claude Code the first run is the
+    start-of-chat check's `./os brief --json`, which prints nothing else, so
+    nobody heard there was no git, a git clone, or a bigger history around
+    the folder (review, 2026-09-30)."""
+    listed = t.box.run("help").stdout
+    t.ok("os checkpoint" in listed and "hand edits" in listed,
+         f"the main help lists checkpoint, and what it's for\n{listed}")
+    # Kept to 42 lines by making two of them 109 and 105 long, which an
+    # 80-wide terminal broke in the middle (review, 2026-09-30).
+    widest = max(listed.splitlines(), key=len)
+    t.lte(len(widest), 90, f"and no line of it is wider than before\n{widest}")
+    for guess in ("commit", "history"):
+        said = t.box.run(guess, expect=1).stderr
+        t.ok("./os checkpoint" in said, f"./os {guess} points at it\n{said}")
+        t.ok("help checkpoint" in t.box.run("help", guess, expect=1).stdout,
+             f"and so does ./os help {guess}")
+
+    def told(extra: dict | None = None) -> str:
+        proc = _run_with(t.box, extra or {}, "brief", "--json")
+        return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    _as_downloaded(t.box)
+    brief = told({"ZENITH_GIT": str(t.box.tmp / "no-git-here")})
+    t.ok("first visit" in brief.lower() and "no git" in brief,
+         f"no git: the first brief says so\n{brief}")
+    if engine.History.no_git():
+        return
+    root = t.box.root
+
+    # the template's own history, from a git clone
+    _as_downloaded(t.box)
+    _cloned(root)
+    brief = told()
+    t.ok("came with the download" in brief and "rm -rf .git && ./os checkpoint" in brief,
+         f"a git clone: the first brief gives the way to start their own\n{brief}")
+    shutil.rmtree(root / ".git")
+
+    # a bigger history around the folder, in an everyday brief
+    _as_downloaded(t.box)
+    _git_in(t.box.tmp, "init", "-q")
+    first = t.box.run().stdout
+    t.ok("Welcome" in first and "./os checkpoint --here" in first,
+         f"a bigger history: the first run gives the next step\n{first}")
+    t.box.run("save", "Remember to service the boiler in October")
+    brief = told()
+    t.ok("On the go" in brief or "Nothing being pushed" in brief, "the everyday brief")
+    t.ok("bigger folder's history" in brief and "./os checkpoint --here" in brief,
+         f"a bigger history: the brief gives the next step\n{brief}")
+    around = t.box.run("checkpoint", expect=1).stdout
+    t.ok("./os checkpoint --here" in around, f"and so does a checkpoint\n{around}")
+    here = _run_with(t.box, _nameless(t.box), "checkpoint", "--here")
+    t.ok("started" in here.stdout and (root / ".git").is_dir(),
+         f"--here starts one for this folder alone\n{here.stdout}")
+    t.ok(_git_in(t.box.tmp, "rev-parse", "HEAD").returncode != 0,
+         "and nothing went into the bigger one")
+    t.ok("nothing has changed" in t.box.run("checkpoint").stdout,
+         "after that, checkpoints are kept there without asking again")
+    t.ok("checkpoint --here" not in told(), "and the brief stops saying it")
+
+
+@test
+def test_two_words_to_decide_or_rename_ask_without_offering_the_same_command(t: Case) -> None:
+    """With Van and Van Insurance both here, `./os rename van "Insurance"` was
+    refused, and the fix it offered for Van was that same command. Made to
+    never ask, `./os decide Kitchen Renovation`, its decision forgotten,
+    wrote "Renovation" under Kitchen. A bare -- was written into the
+    decision or the new name, and `./os close -- garden` was told to try
+    `./os close "-- garden"` (review, 2026-09-30)."""
+    for name in ("Van", "Van Insurance", "Kitchen", "Kitchen Renovation", "Garden", "Shed"):
+        t.box.run("new", "work", name)
+    root = t.box.root
+    readme = lambda name: (root / "Work" / name / "README.md").read_text()
+    before = t.box.tree()
+    said = t.box.run("decide", "Kitchen", "Renovation", expect=2).stderr
+    t.ok('./os decide "Kitchen Renovation" "what was decided"' in said,
+         f"two words that make another name still ask\n{said}")
+    said = t.box.run("rename", "van", "Insurance", expect=2).stderr
+    offered = './os rename van -- "Insurance"'
+    t.ok('./os rename "van Insurance" "the new name"' in said and offered in said,
+         f"and the way offered for the first isn't the same command\n{said}")
+    t.eq(t.box.tree(), before, "nothing was written or renamed")
+
+    t.box.run("rename", "van", "--", "Insurance")
+    t.ok((root / "Work" / "Insurance").is_dir() and (root / "Work" / "Van Insurance").is_dir(),
+         "the way it offers works, instead of asking again")
+    t.box.run("decide", "kitchen", "--", "Renovation")
+    t.ok("· Renovation" in readme("Kitchen") and "· --" not in readme("Kitchen"),
+         "and a -- is where the name ends, never part of the decision")
+    t.box.run("decide", "Kitchen Renovation", "--", "we", "tile", "the", "floor")
+    t.ok("· we tile the floor" in readme("Kitchen Renovation"),
+         f"whatever follows it\n{readme('Kitchen Renovation')}")
+    t.box.run("decide", "Kitchen", "Renovation", "--", "we", "grout", "it")
+    t.ok("· we grout it" in readme("Kitchen Renovation"), "and the words before it are the name")
+    t.box.run("decide", "--", "shed", "-3 degrees is too cold for paint")
+    t.ok("· -3 degrees is too cold for paint" in readme("Shed"), "a -- before the name too")
+    t.box.run("rename", "garden", "--", "Back Garden")
+    t.ok("title: Back Garden\n" in readme("Back Garden"), "or the new name")
+
+    t.box.run("close", "--", "back-garden")
+    t.ok(not (root / "Work" / "Back Garden").exists(), "a name after -- is the name")
+    said = t.box.run("close", "--", "insurance", "now", expect=2).stderr
+    t.ok('"-- ' not in said and "./os close insurance" in said,
+         f"and words after it are refused without the --\n{said}")
+
+
+@test
+def test_stray_caches_are_still_litter_in_a_folder_with_a_history(t: Case) -> None:
+    """The check left __pycache__ alone whenever git ignored it, meaning a
+    code project's own. Every folder now has a history whose .gitignore lists
+    __pycache__/, so none was ever reported or swept again (review,
+    2026-09-30). A code project's own is still its business."""
+    if engine.History.no_git():
+        return
+    root = t.box.root
+    _git_in(root, "init", "-q")
+    # The history ./os keeps, whose .gitignore is ours. One they keep
+    # themselves ignoring it is their choice (see the check after dates_itself).
+    _git_in(root, "config", engine.History.MARK, "true")
+    stray = root / "Notes" / "__pycache__"
+    stray.mkdir(parents=True)
+    (stray / "a.pyc").write_text("")
+    bot = root / "Work" / "Bot"
+    (bot / "src" / "__pycache__").mkdir(parents=True)
+    (bot / "src" / "__pycache__" / "x.pyc").write_text("")
+    (bot / "pyproject.toml").write_text("[project]\nname = 'bot'\n")
+    found = [i["path"] for i in t.box.json("check", expect=None)["issues"]
+             if i["code"] == "clutter"]
+    t.ok(any("Notes/__pycache__" in p for p in found),
+         f"a stray one is reported, history or not\n{found}")
+    t.ok(not any("Bot" in p for p in found), "a code project's own isn't")
+    t.box.run("check", "--fix", expect=None)
+    t.ok(not stray.exists() and (bot / "src" / "__pycache__").exists(),
+         "--fix sweeps the stray one and leaves the project's")
+
+
+@test
+def test_a_file_named_like_a_password_stays_out_of_the_history(t: Case) -> None:
+    """`./os help checkpoint` said files named like a password stay out, and
+    Notes/passwords.txt went into the history, where it stays even after the
+    file is deleted (review, 2026-09-30). A note named after its title still
+    goes in."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    _run_with(t.box, env)
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Notes" / "passwords.txt").write_text("wifi: hunter2\n")
+    (root / "Notes" / "Router Password.pdf").write_bytes(b"%PDF-1.4\n")
+    (root / "Notes" / "how-to-change-a-password.md").write_text("# How\n\nSettings.\n")
+    proc = _run_with(t.box, env, "checkpoint")
+    kept = _git_in(root, "ls-files").stdout.split("\n")
+    t.ok("Notes/passwords.txt" not in kept and "Notes/Router Password.pdf" not in kept,
+         f"files named like a password are left out\n{kept}")
+    t.ok("Notes/how-to-change-a-password.md" in kept, "a note about one isn't")
+    t.ok("passwords.txt" in proc.stdout, f"and it says what it left out\n{proc.stdout}")
+
+
+@test
+def test_the_checks_ignore_a_history_around_the_temp_folder(t: Case) -> None:
+    """Someone whose temp folder sits inside a git history (a home folder kept
+    in git) had three history checks fail in ./os test, about nothing they had
+    done: git looked above each check's folder and found theirs (review,
+    2026-09-30)."""
+    if engine.History.no_git():
+        return
+    home = t.box.tmp / "home"
+    (home / "tmp").mkdir(parents=True)
+    _git_in(home, "init", "-q")
+    env = {k: v for k, v in os.environ.items() if k != "GIT_CEILING_DIRECTORIES"}
+    env.update(TMPDIR=str(home / "tmp"), NO_COLOR="1")
+    proc = subprocess.run([sys.executable, str(t.box.root / ".os" / "tests" / "run.py"),
+                           "-k", "names_like_keys", "-j", "1"], cwd=str(t.box.root), env=env,
+                          capture_output=True, text=True, timeout=300)
+    t.ok(proc.returncode == 0 and "1/1 passed" in proc.stdout,
+         f"a history check passes there\n{proc.stdout[-2000:]}{proc.stderr[-1000:]}")
+
+
+@test
+def test_a_git_clone_they_have_saved_in_is_theirs(t: Case) -> None:
+    """Every brief in a git clone of the template said their changes weren't
+    going in its history, and to  rm -rf .git  to keep their own, even after
+    they had saved their own work in it: the command would have thrown those
+    saves away (review, 2026-09-30). Once it holds anything of theirs, it's
+    theirs."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root = t.box.root
+    _cloned(root)
+    t.box.run()
+    t.ok("rm -rf .git" in t.box.run("brief").stdout, "a clone as downloaded still says it")
+    t.box.run("save", "Remember to service the boiler in October")
+    _git_in(root, "add", "-A")
+    _git_in(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
+    brief = t.box.run("brief").stdout
+    t.ok("rm -rf" not in brief and "download" not in brief,
+         f"once they've saved in it, the brief says nothing of the kind\n{brief}")
+    said = t.box.run("checkpoint", expect=1).stdout
+    t.ok("didn't start" in said and "rm -rf" not in said,
+         f"and a checkpoint leaves it to them, like any history of theirs\n{said}")
+    t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "2", "and adds nothing")
+
+
+@test
+def test_a_first_start_that_failed_is_not_promised_again(t: Case) -> None:
+    """A first start that failed left the brief saying "the first ./os
+    checkpoint starts it", and every checkpoint then failed the same way,
+    with git's "fatal: adding files failed", which names no file (review,
+    2026-09-30). Now each says why, naming the file, until a save works."""
+    if engine.History.no_git() or not hasattr(os, "geteuid") or os.geteuid() == 0:
+        return          # nothing is unreadable to the computer's owner
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    locked = root / "Notes" / "locked.txt"
+    locked.parent.mkdir(exist_ok=True)
+    locked.write_text("mine\n")
+    locked.chmod(0)
+    try:
+        first = _run_with(t.box, env)
+        t.ok("couldn't start" in first.stdout and "Notes/locked.txt" in first.stdout,
+             f"the first run names the file\n{first.stdout}")
+        brief = t.box.run("brief").stdout
+        t.ok("ouldn't start" in brief and "Notes/locked.txt" in brief
+             and "checkpoint  starts it" not in brief,
+             f"the brief says why, and promises nothing\n{brief}")
+        again = _run_with(t.box, env, "checkpoint", expect=1)
+        t.ok("Notes/locked.txt" in again.stdout, f"so does a checkpoint\n{again.stdout}")
+        t.ok("lost track" not in t.box.run("check", expect=None).stdout,
+             "a history with nothing in it yet hasn't lost anything")
+    finally:
+        locked.chmod(0o644)
+    t.ok("started" in _run_with(t.box, env, "checkpoint").stdout, "once it can be read")
+    t.ok("ouldn't" not in t.box.run("brief").stdout, "and the brief stops saying it")
+
+    # a later checkpoint that fails is said too, until one works
+    locked.write_text("mine, changed\n")
+    locked.chmod(0)
+    try:
+        _run_with(t.box, env, "checkpoint", expect=1)
+        brief = t.box.run("brief").stdout
+        t.ok("didn't work" in brief and "Notes/locked.txt" in brief,
+             f"the brief says the last one didn't work\n{brief}")
+    finally:
+        locked.chmod(0o644)
+    _run_with(t.box, env, "checkpoint")
+    t.ok("didn't work" not in t.box.run("brief").stdout, "and stops once one does")
+
+
+@test
+def test_the_history_line_is_said_once_and_only_while_it_is_true(t: Case) -> None:
+    """The brief ended its history line with a full stop, so `./os checkpoint
+    --here.`, copied as it stood, was refused; a first `./os brief` in a
+    terminal said the line twice; and a bigger history that already keeps
+    this folder's files was told every session that it kept none, and
+    offered --here, which would have hidden them from it (review,
+    2026-09-30)."""
+    _as_downloaded(t.box)
+    brief = _run_with(t.box, {"ZENITH_GIT": str(t.box.tmp / "no-git-here")}, "brief").stdout
+    t.eq(brief.count("no git"), 1, f"a first brief says it once\n{brief}")
+    if engine.History.no_git():
+        return
+    root = t.box.root
+    _as_downloaded(t.box)
+    _git_in(t.box.tmp, "init", "-q")
+    t.box.run()
+    brief = t.box.run("brief").stdout
+    t.ok("./os checkpoint --here" in brief and "--here." not in brief,
+         f"a command ends the line, with nothing after it\n{brief}")
+
+    who = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    _git_in(t.box.tmp, "add", "-A")
+    _git_in(t.box.tmp, *who, "commit", "-q", "-m", "my home, kept by me")
+    brief = t.box.run("brief").stdout
+    t.ok("bigger folder" not in brief and "--here" not in brief,
+         f"a bigger history that keeps these files is somebody's plan\n{brief}")
+    said = t.box.run("checkpoint", expect=1).stdout
+    t.ok("kept in the history of a bigger folder" in said and "--here" not in said,
+         f"a checkpoint says to save there\n{said}")
+    t.ok(not (root / ".git").exists(), "and starts nothing of its own")
+
+
+def _run_with(box: "Sandbox", extra: dict, *args: str, expect: int | None = 0) -> subprocess.CompletedProcess:
+    """`box.run`, with more set in the environment."""
+    env = dict(os.environ, ZENITH_HOME=str(box.root), NO_COLOR="1", **extra)
+    proc = subprocess.run([str(box.root / "os"), *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", cwd=str(box.root), env=env,
+                          timeout=180)
+    if expect is not None and proc.returncode != expect:
+        raise Failure(f"`os {' '.join(args)}` exited {proc.returncode}, expected {expect}\n"
+                      f"--- stdout ---\n{proc.stdout[-2500:]}\n--- stderr ---\n{proc.stderr[-2500:]}")
+    return proc
+
+
+def _git_in(where: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(where), *args], capture_output=True, text=True)
+
+
+def _cloned(root: Path) -> None:
+    """Make the folder look like a fresh `git clone` of the template: its
+    files saved once, and a copy of that on the template's own page."""
+    who = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    _git_in(root, "init", "-q")
+    _git_in(root, "add", "-A")
+    _git_in(root, *who, "commit", "-q", "-m", "the template")
+    _git_in(root, "remote", "add", "origin", "https://github.com/zidery333/os-template.git")
+    _git_in(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
+# Every check's folder is in the temp folder. Someone whose temp folder sits
+# inside a git history (a home folder kept in git) had history checks fail in
+# ./os test, about nothing they had done: git looked above the check's own
+# folder and found theirs (review, 2026-09-30). So git looks no higher than
+# the temp folder, in the checks and in every ./os they run.
+_CEILING = str(Path(tempfile.gettempdir()).resolve())
+if _CEILING not in os.environ.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep):
+    os.environ["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(
+        [_CEILING, *filter(None, os.environ.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep))])
+
+
+def _as_downloaded(box: "Sandbox") -> None:
+    """Make the box a copy nobody has opened: no folders yet, and fresh."""
+    for bucket in ("Work", "Notes", "Archive"):
+        shutil.rmtree(box.root / bucket, ignore_errors=True)
+    (box.root / ".os" / "state.json").write_text(
+        json.dumps({"fresh": True, "counters": {}, "undo": [], "history": []}))
+
+
+@test
+def test_the_first_run_starts_a_history_hand_edits_can_go_back_to(t: Case) -> None:
+    """./os undo only reverses what ./os did. A line deleted from About me by
+    hand was gone for good: there was no history, /wrapup never saved, and
+    ./os help said every change could be undone (stranger test, 2026-09-30)."""
+    said = t.box.run("help").stdout
+    t.ok("every change can be undone" not in said, "help no longer promises too much")
+    t.ok("every move ./os makes can be undone" in said, "it promises what's true")
+    wrapup = t.box.root / ".claude" / "skills" / "wrapup" / "SKILL.md"
+    if not in_their_words(wrapup, t.box):
+        text = wrapup.read_text()
+        t.ok("./os checkpoint" in text and "safe to close" in text,
+             "/wrapup keeps a checkpoint and says when it's safe to close")
+    if engine.History.no_git():
+        return          # the rest needs git; a computer without it isn't broken
+
+    _as_downloaded(t.box)
+    root = t.box.root
+    (root / "Work" / "Content").mkdir(parents=True)
+    (root / "Work" / "Content" / "holiday.mov").write_bytes(b"\0" * 2048)
+    (root / ".env").write_text("SECRET=hunter2\n")
+    # No git name set, as on a new computer: the save must not fail for it.
+    blank = t.box.tmp / "no-name.gitconfig"
+    blank.write_text("")
+    nameless = {"GIT_CONFIG_GLOBAL": str(blank), "GIT_CONFIG_NOSYSTEM": "1"}
+    _run_with(t.box, nameless)
+    t.ok((root / ".git").is_dir(), "the first ./os starts the folder's history")
+    t.ok(_git_in(root, "rev-parse", "HEAD").returncode == 0, "with a first save in it")
+    t.ok("@localhost" in _git_in(root, "log", "-1", "--format=%ae").stdout,
+         "made with a stand-in name when git has none")
+
+    t.box.run("save", "About me: nurse on night shifts, likes short answers")
+    about = next(p for bucket in ("Notes", "Work") for p in (root / bucket).rglob("*.md")
+                 if "night shifts" in p.read_text())
+    proc = _run_with(t.box, nameless, "checkpoint", "the first day")
+    t.ok("kept" in proc.stdout, f"a checkpoint says it kept them\n{proc.stdout}")
+    kept = _git_in(root, "ls-files").stdout
+    t.ok(about.relative_to(root).as_posix() in kept, "what they saved is in the history")
+    t.ok("holiday.mov" not in kept, "footage in Work/Content is left out")
+    t.ok(".env" not in kept.split("\n"), "and so is a file of secrets")
+
+    # the stranger's step: a line taken out by hand, which undo can't reach
+    about.write_text(about.read_text().replace("night shifts", "day shifts"))
+    t.ok(_git_in(root, "restore", "--", about.relative_to(root).as_posix()).returncode == 0
+         and "night shifts" in about.read_text(),
+         "a hand edit after a checkpoint can be taken back to it")
+    t.ok("nothing has changed" in t.box.run("checkpoint").stdout,
+         "with nothing new, a checkpoint says so")
+
+
+@test
+def test_a_history_is_only_started_and_kept_where_it_belongs(t: Case) -> None:
+    """No git is no reason to stop, and a history ./os didn't start is not its
+    to write in: the template's own from a git clone, one the person keeps,
+    or a bigger one around this folder, which every save would take whole."""
+    _as_downloaded(t.box)
+    root = t.box.root
+    first = _run_with(t.box, {"ZENITH_GIT": str(t.box.tmp / "no-git-here")})
+    t.ok("Welcome" in first.stdout and "no git" in first.stdout,
+         f"with no git the first run goes on, and says so in one line\n{first.stdout}")
+    t.ok(not (root / ".git").exists(), "and starts nothing")
+    none = _run_with(t.box, {"ZENITH_GIT": str(t.box.tmp / "no-git-here")},
+                     "checkpoint", expect=1)
+    t.ok("no git" in none.stdout, "a checkpoint says why it can't")
+    if engine.History.no_git():
+        return
+
+    # a bigger history around this folder
+    _as_downloaded(t.box)
+    _git_in(t.box.tmp, "init", "-q")
+    t.box.run()
+    t.ok(not (root / ".git").exists(), "no history is started inside another one")
+    around = t.box.run("checkpoint", expect=1)
+    t.ok("bigger folder" in around.stdout, f"a checkpoint leaves it alone\n{around.stdout}")
+    t.ok(_git_in(t.box.tmp, "rev-parse", "HEAD").returncode != 0,
+         "and nothing was saved into it")
+    shutil.rmtree(t.box.tmp / ".git")
+
+    # one the person keeps themselves, and the template's own from a git clone
+    _git_in(root, "init", "-q")
+    theirs = t.box.run("checkpoint", expect=1)
+    t.ok("didn't start" in theirs.stdout, f"theirs is left alone\n{theirs.stdout}")
+    t.ok(_git_in(root, "rev-parse", "HEAD").returncode != 0, "nothing was saved into it")
+    shutil.rmtree(root / ".git")
+    _cloned(root)
+    cloned = t.box.run("checkpoint", expect=1)
+    t.ok("came with the download" in cloned.stdout and "rm -rf .git" in cloned.stdout,
+         f"the template's own is left alone, with the way to start their own\n{cloned.stdout}")
+    t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "1",
+         "nothing was saved into that either")
+
+
+@test
+def test_words_after_a_name_are_refused(t: Case) -> None:
+    """`./os done shop "sold out, finished"` put Shop away and the words went
+    nowhere; `./os close Kitchen Renovation`, unquoted, put away Kitchen
+    (stranger test, 2026-09-30). Words after the name now stop the run, the
+    way an option it doesn't know does, and it shows the right form."""
+    for name in ("Kitchen", "Kitchen Renovation", "Garden"):
+        t.box.run("new", "work", name)
+    before = t.box.tree()
+
+    wrong = t.box.run("close", "Kitchen", "Renovation", expect=2)
+    t.ok('./os close "Kitchen Renovation"' in wrong.stderr,
+         f"it shows the name in quotes\n{wrong.stderr}")
+    t.eq(wrong.stdout, "", "nothing is reported as though it had run")
+    said = t.box.run("close", "Garden", "it", "is", "done", "now", expect=2).stderr
+    t.ok("one name" in said and "./os close garden" in said,
+         f"words that aren't a name: it shows just the name\n{said}")
+    for verb in ("hold", "push", "show", "open", "edit", "claim", "release", "back"):
+        t.box.run(verb, "kitchen", "check the seals every spring", expect=2)
+    t.eq(t.box.tree(), before, "nothing was put away, flipped or written")
+
+    t.box.run("close", "Kitchen Renovation")
+    live = {i["title"] for i in t.box.items() if i["bucket"] == "Work"}
+    t.ok("Kitchen" in live and "Kitchen Renovation" not in live,
+         "in quotes, the one meant is put away")
+    t.box.run("claim", "kitchen", "--as", "the tiling")
+    t.box.run("decide", "kitchen", "we tile the floor")
+    t.ok("we tile the floor" in (t.box.root / "Work" / "Kitchen" / "README.md").read_text(),
+         "decide still takes its words after the name")
+
+
+@test
+def test_decide_and_rename_ask_where_an_unquoted_name_ends(t: Case) -> None:
+    """decide and rename take words after the name, so they can't refuse them;
+    but `./os decide Kitchen Renovation "we tile the floor"` wrote "Renovation
+    we tile the floor" under Kitchen, and rename called Kitchen "Renovation
+    Kitchen Refit" (review, 2026-09-30)."""
+    for name in ("Kitchen", "Kitchen Renovation"):
+        t.box.run("new", "work", name)
+    before = t.box.tree()
+    said = t.box.run("decide", "Kitchen", "Renovation", "we tile the floor", expect=2).stderr
+    t.ok('./os decide "Kitchen Renovation" "we tile the floor"' in said,
+         f"it shows the name in quotes\n{said}")
+    t.ok('./os decide kitchen "Renovation we tile the floor"' in said,
+         f"and the other way to read it\n{said}")
+    said = t.box.run("rename", "Kitchen", "Renovation", "Kitchen Refit", expect=2).stderr
+    t.ok('./os rename "Kitchen Renovation" "Kitchen Refit"' in said, said)
+    t.box.run("rename", "Kitchen", "Renovation", expect=2)
+    t.eq(t.box.tree(), before, "nothing was written or renamed")
+
+    t.box.run("decide", "Kitchen Renovation", "we tile the floor")
+    t.box.run("decide", "kitchen", "we", "keep", "the", "old", "sink")
+    t.ok("we tile the floor" in (t.box.root / "Work" / "Kitchen Renovation" / "README.md")
+         .read_text(), "quoted, it goes to the one meant")
+    t.ok("we keep the old sink" in (t.box.root / "Work" / "Kitchen" / "README.md").read_text(),
+         "and words that make no other name are still taken as they are")
+    t.box.run("rename", "Kitchen Renovation", "Kitchen Refit")
+    t.ok((t.box.root / "Work" / "Kitchen Refit").is_dir(), "rename in quotes works")
+
+
+def _nameless(box: "Sandbox") -> dict:
+    """The environment of a computer where git has no name set."""
+    blank = box.tmp / "no-name.gitconfig"
+    blank.write_text("")
+    return {"GIT_CONFIG_GLOBAL": str(blank), "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+@test
+def test_a_code_project_with_its_own_git_leaves_the_history_working(t: Case) -> None:
+    """A code project in Work set up with its own git, nothing saved in it yet,
+    made `git add` fail for the whole folder: no history on the first run, and
+    every checkpoint after said git's own words and kept nothing (review,
+    2026-09-30). Its files are in its own history, so they're left out here."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    shop = root / "Work" / "Shop Site"
+    shop.mkdir(parents=True)
+    _git_in(shop, "init", "-q")
+    (shop / "index.html").write_text("<h1>Shop</h1>\n")
+    _run_with(t.box, env)
+    t.ok(_git_in(root, "rev-parse", "HEAD").returncode == 0,
+         "the first run starts the history all the same")
+    blog = root / "Work" / "Blog"
+    (blog / "src").mkdir(parents=True)
+    (blog / "src" / "app.js").write_text("console.log('hi')\n")
+    _git_in(blog, "init", "-q")
+    _git_in(blog, "add", "-A")
+    _git_in(blog, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "first")
+    t.box.run("save", "Remember to renew the shop's web address in March")
+    proc = _run_with(t.box, env, "checkpoint", "the shop")
+    t.ok("kept" in proc.stdout and "Work/Shop Site has a git history of its own" in proc.stdout
+         and "Work/Blog" in proc.stdout, f"a checkpoint keeps the rest, and says so\n{proc.stdout}")
+    kept = _git_in(root, "ls-files", "-s").stdout
+    t.ok("Shop Site" not in kept and "Blog" not in kept,
+         f"neither project's files go into this history\n{kept}")
+    saved = next(p for bucket in ("Notes", "Work") for p in (root / bucket).rglob("*.md")
+                 if "renew the shop" in p.read_text(errors="replace"))
+    t.ok(saved.relative_to(root).as_posix() in kept, "what they saved is in it")
+
+
+@test
+def test_names_like_keys_stay_out_of_the_history(t: Case) -> None:
+    """Only .gitignore kept secrets out: service-account.json, api-keys.txt and
+    credentials.json went into the history, and stay there after the file is
+    deleted (review, 2026-09-30). Main's nightly save leaves those names out."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root, env = t.box.root, _nameless(t.box)
+    _run_with(t.box, env)
+    site = root / "Work" / "Shop Site"
+    site.mkdir(parents=True)
+    for name in ("service-account.json", "api-keys.txt", "credentials.json", "id_ed25519",
+                 "client_secret_123.json"):
+        (site / name).write_text("hunter2\n")
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Notes" / "Secret Santa.md").write_text("# Secret Santa\n\nNames in a hat.\n")
+    proc = _run_with(t.box, env, "checkpoint")
+    kept = _git_in(root, "ls-files").stdout.split("\n")
+    for name in ("service-account.json", "api-keys.txt", "credentials.json", "id_ed25519",
+                 "client_secret_123.json"):
+        t.ok(f"Work/Shop Site/{name}" not in kept, f"{name} is left out")
+    t.ok("Notes/Secret Santa.md" in kept, "a note that only mentions a secret is kept")
+    t.ok("look like keys or passwords" in proc.stdout and "api-keys.txt" in proc.stdout,
+         f"and it says what it left out\n{proc.stdout}")
+
+
+@test
+def test_a_first_run_cut_off_is_finished_by_the_next_checkpoint(t: Case) -> None:
+    """The start-of-chat check stops everything at 15 seconds. A first run
+    killed while git took in what was there left git's lock behind, and every
+    checkpoint failed on it; stopped more gently, the next one said "67 files
+    changed since the last one" when there was none (review, 2026-09-30)."""
+    if engine.History.no_git():
+        return
+    root, env = t.box.root, _nameless(t.box)
+    (root / "Notes" / "boiler.md").write_text("# Boiler\n\nService it in October.\n")
+
+    # killed hard: marked as ./os's, nothing saved, the lock left behind
+    _git_in(root, "init", "-q")
+    _git_in(root, "config", "zenith.history", "true")
+    (root / ".git" / "index.lock").write_text("")
+    proc = _run_with(t.box, env, "checkpoint")
+    t.ok("started this folder's history" in proc.stdout, f"it starts again\n{proc.stdout}")
+    t.ok(_git_in(root, "rev-parse", "HEAD").returncode == 0, "and saves")
+    t.ok(not (root / ".git" / "index.lock").exists(), "with the lock gone")
+
+    # stopped more gently: everything taken in, nothing saved
+    shutil.rmtree(root / ".git")
+    _git_in(root, "init", "-q")
+    _git_in(root, "config", "zenith.history", "true")
+    _git_in(root, "add", "-A")
+    proc = _run_with(t.box, env, "checkpoint")
+    t.ok("since the last one" not in proc.stdout and "started" in proc.stdout,
+         f"no talk of a last one when there wasn't one\n{proc.stdout}")
+
+    # a lock left by a checkpoint stopped partway, in a history with saves in it
+    lock = root / ".git" / "index.lock"
+    lock.write_text("")
+    (root / "Notes" / "boiler.md").write_text("# Boiler\n\nService it in November.\n")
+    busy = _run_with(t.box, env, "checkpoint", expect=1)
+    t.ok("busy" in busy.stdout and "Another git" not in busy.stdout,
+         f"a new one: it says so plainly, and leaves it\n{busy.stdout}")
+    t.ok(lock.exists(), "a lock that may be in use is left alone")
+    old = time.time() - engine.Lock.STALE_AFTER - 60
+    os.utime(lock, (old, old))
+    t.ok("kept" in _run_with(t.box, env, "checkpoint").stdout,
+         "one older than any run of ./os is cleared, and the checkpoint kept")
+
+    # a first run given more than it can take in, in time
+    shutil.rmtree(root / ".git")
+    _as_downloaded(t.box)
+    slow = t.box.tmp / "slow-git"
+    slow.write_text('#!/bin/sh\nfor a in "$@"; do [ "$a" = add ] && exec sleep 30; done\n'
+                    'exec git "$@"\n')
+    slow.chmod(0o755)
+    started = time.time()
+    first = _run_with(t.box, {**env, "ZENITH_GIT": str(slow), "ZENITH_HISTORY_WAIT": "1"})
+    t.ok(time.time() - started < 12, "the first run doesn't wait on git past its time")
+    t.ok("Welcome" in first.stdout and "first  ./os checkpoint" in first.stdout,
+         f"it says the history starts at the first checkpoint\n{first.stdout}")
+    # Left as it is, not deleted: ./os never deletes a .git (review, 2026-09-30).
+    t.ok(_git_in(root, "rev-parse", "HEAD").returncode != 0, "and saves nothing yet")
+    t.ok("started" in _run_with(t.box, env, "checkpoint").stdout,
+         "which then starts it")
 
 
 @test
@@ -4138,6 +6930,339 @@ def test_help_exists_for_every_command(t: Case) -> None:
     for typo, want in (("delete", "close"), ("remember", "save"), ("organise", "sort")):
         proc = t.box.run(typo, expect=1)
         t.ok(want in proc.stderr, f"`os {typo}` points at `os {want}`")
+
+
+@test
+def test_a_claude_or_gemini_md_linked_to_agents_md_passes_the_check(t: Case) -> None:
+    """A CLAUDE.md made as a link to AGENTS.md holds the same rules word for
+    word, and `./os check` called it out of step. Its fix, "put `@AGENTS.md`
+    on its first line", done through the link, wrote onto AGENTS.md itself:
+    the harm an update avoids by leaving a link alone. GEMINI.md wasn't
+    looked at at all."""
+    root = t.box.root
+
+    def drift() -> list:
+        return [i for i in t.box.json("doctor")["issues"] if i["code"] == "rules-drift"]
+
+    for name in ("CLAUDE.md", "GEMINI.md"):
+        (root / name).unlink(missing_ok=True)
+        (root / name).symlink_to("AGENTS.md")
+    t.eq(drift(), [], "a link to AGENTS.md is not called out of step")
+    # Made with `ln` and no -s it's the same file too, and was still told to
+    # put the pointer on its first line: into AGENTS.md itself.
+    (root / "CLAUDE.md").unlink()
+    os.link(root / "AGENTS.md", root / "CLAUDE.md")
+    t.eq(drift(), [], "and nor is a hard link to it")
+
+    elsewhere = t.box.tmp / "rules-from-somewhere-else.md"
+    elsewhere.write_text("Be brief.\n")
+    (root / "GEMINI.md").unlink()
+    (root / "GEMINI.md").symlink_to(elsewhere)
+    found = drift()
+    t.eq([i["path"] for i in found], ["GEMINI.md"], "a link that leads somewhere else is")
+    t.ok(bool(found) and "Gemini CLI" in found[0]["message"] and "don't write into it" in found[0]["fix"],
+         f"and the fix doesn't say to write into the link\n{found}")
+    t.eq(elsewhere.read_text(), "Be brief.\n", "the check itself changes nothing")
+    (root / "GEMINI.md").unlink()
+    os.link(elsewhere, root / "GEMINI.md")
+    found = drift()
+    t.ok(bool(found) and "don't write into it" in found[0]["fix"],
+         f"nor for a hard link to somewhere else\n{found}")
+
+    (root / "GEMINI.md").unlink()
+    (root / "GEMINI.md").write_text("Answer me in Spanish.\n")
+    found = drift()
+    t.eq([i["path"] for i in found], ["GEMINI.md"], "a GEMINI.md of their own without the pointer is too")
+    t.ok(bool(found) and "put `@AGENTS.md` on its first line" in found[0]["fix"],
+         f"and there the pointer goes on its first line\n{found}")
+
+
+@test
+def test_an_update_preview_says_what_it_does_to_claude_and_gemini_md(t: Case) -> None:
+    """`./os update --dry-run` said nothing about GEMINI.md, and the real run
+    then added one. A CLAUDE.md of their own was the same: the preview left
+    out the pointer the real run put on top of it."""
+    root = t.box.root
+
+    def update(*extra: str) -> list:
+        done = subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root), *extra],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+        t.eq(done.returncode, 0, f"the update runs\n{done.stdout[-1200:]}{done.stderr[-800:]}")
+        return done.stdout.splitlines()
+
+    (root / "GEMINI.md").unlink(missing_ok=True)
+    (root / "CLAUDE.md").write_text("Answer me in Spanish.\n")
+    preview = update("--dry-run")
+    t.ok(any("would add" in ln and "GEMINI.md" in ln for ln in preview),
+         "the preview says GEMINI.md would be added\n" + "\n".join(preview))
+    t.ok(any("would point CLAUDE.md at AGENTS.md" in ln for ln in preview),
+         "and that CLAUDE.md would be pointed at the rules")
+    t.ok(not (root / "GEMINI.md").exists() and (root / "CLAUDE.md").read_text() == "Answer me in Spanish.\n",
+         "and changes neither")
+    done = update()
+    t.ok(any("added" in ln and "GEMINI.md" in ln for ln in done), "the real run does what the preview said")
+    t.ok(any("fixed" in ln and "CLAUDE.md" in ln for ln in done), "to both")
+
+    (root / "GEMINI.md").unlink()
+    (root / "GEMINI.md").symlink_to("AGENTS.md")
+    t.ok(any("would keep GEMINI.md — it's a link" in ln for ln in update("--dry-run")),
+         "a link is named in the preview too")
+
+
+@test
+def test_the_first_screen_and_the_skill_list_name_an_ai_that_runs_commands(t: Case) -> None:
+    """After setup, the first screen ended "open this folder in any AI and just
+    talk", the misreading the README had fixed: a chat-only app like ChatGPT
+    can't run ./os. And the list of skills opened "Extras for Claude Code",
+    which told every other AI the skills weren't for it."""
+    said = " ".join(t.box.run().stdout.split())
+    t.ok("any AI" not in said, f"the first screen doesn't say any AI will do\n{said[-400:]}")
+    t.ok("claude or another AI that can run commands here" in said,
+         f"it names Claude Code, or an AI that can run commands\n{said[-400:]}")
+    t.box.run("index", "--quiet")
+    catalog = (t.box.root / ".claude" / "CATALOG.md").read_text()
+    t.ok("Extras for Claude Code" not in catalog and "Skills any AI here can use." in catalog,
+         f"the list of skills says any AI here can use them\n{catalog[:400]}")
+
+
+@test
+def test_a_job_something_already_does_is_not_called_done_by_hand(t: Case) -> None:
+    """A note saying "a scheduled task on the Mac does this every week on its
+    own now", with its three steps, was listed by `./os tidy` as done by hand
+    every time, and a skill was offered for it. Then "my scheduled tasks do
+    this" and "this is automated now" still were, and one "automatically"
+    inside a step hid a job they said they do by hand."""
+    notes = t.box.root / "Notes"
+    steps = "\n1. Plug in the drive\n2. Copy the photo library over\n3. Eject the drive\n"
+    done_for_them = {
+        "Photo backup": "A scheduled task on the Mac does this every week on its own now; I never touch it.",
+        "Film backup": "My Scheduled Tasks do this every week now; I never touch it.",
+        "Game backup": "This is automated now, every week. I never touch it.",
+    }
+    for title, said in done_for_them.items():
+        (notes / f"{title}.md").write_text(f"# {title}\n\n{said}\n" + steps)
+    (notes / "Music backup.md").write_text(
+        "# Music backup\n\nEvery week I do this myself.\n" + steps.replace("photo", "music"))
+    (notes / "Weekly invoices.md").write_text(
+        "# Weekly invoices\n\nEvery week I do this myself.\n\n1. Export the invoices from the bank\n"
+        "2. Upload them to the app, which emails the client automatically\n3. Tick them off in the sheet\n")
+    t.box.run("sort")
+    flagged = {r["title"] for r in t.box.json("tidy")["routines"]}
+    for title in done_for_them:
+        t.ok(title not in flagged, f"{title}, which something already does, is not listed ({flagged})")
+    t.ok("Music backup" in flagged, f"the same steps done by hand every week are still spotted ({flagged})")
+    t.ok("Weekly invoices" in flagged, f"and so is one whose step says the app does a part of it ({flagged})")
+    said = t.box.run("tidy").stdout
+    t.ok("DONE BY HAND EVERY TIME?" in said, f"and the list asks, since words can't tell\n{said}")
+
+
+@test
+def test_agents_md_says_to_keep_a_checkpoint(t: Case) -> None:
+    """`./os checkpoint` keeps the folder as it is, so a hand edit can be taken
+    back, and AGENTS.md never named it: an AI ending a session didn't keep
+    one, and one told "undo can't recover hand edits" gave up there."""
+    agents = t.box.root / "AGENTS.md"
+    if in_their_words(agents, t.box):
+        return
+    text = agents.read_text()
+    rules = " ".join(text.split())
+    t.ok("A hand edit can go back to the last `./os checkpoint`" in rules,
+         "rule 1 says a hand edit can go back to the last checkpoint")
+    t.ok('Then `./os sort`. Then `./os checkpoint "<what changed>"`.' in rules,
+         "a session ends with one, after ./os sort")
+    t.ok('\n./os checkpoint "..."' in text, "and it's in the list of commands")
+    t.ok("checkpoint" in engine.COMMANDS, "which is a real command")
+
+
+@test
+def test_a_first_visit_asks_what_they_are_into(t: Case) -> None:
+    """The first chat asked "what are you working on", the question taken out
+    of setup on 2026-08-27: asked first, work shapes everything after it like a
+    workplace, and this folder is meant as a home. Nothing asked how they like
+    their answers either, so every session after it guessed."""
+    brief = t.box.run("brief").stdout
+    said = " ".join(brief.split())
+    t.ok("first visit" in said.lower(), f"this is the first-visit brief\n{brief}")
+    t.ok("working on" not in said, f"it doesn't ask what they're working on\n{brief}")
+    t.ok("on their mind" in said and "they're into" in said,
+         "it asks what's on their mind, or what they're into")
+    t.ok('"Nothing yet" is a fine answer' in said, "and nothing yet is a fine answer")
+    t.ok("how they like their answers" in said.lower()
+         and './os new note "About me" --domain personal' in said,
+         "how they like answers is asked once, and it goes in About me with their name")
+    agents = t.box.root / "AGENTS.md"
+    if not in_their_words(agents, t.box):
+        rules = " ".join(agents.read_text().split())
+        t.ok("what they're working on" not in rules and "what they're into" in rules,
+             "AGENTS.md asks the same first question")
+        t.ok('"nothing yet" is fine' in rules, "and says nothing yet is fine there too")
+
+
+@test
+def test_the_hooks_still_run_when_os_has_lost_its_run_permission(t: Case) -> None:
+    """A copy whose ./os lost its run permission (a cloud drive, some unzippers)
+    made the session hook stop before its own "could not run" line: Claude
+    started knowing nothing, and nothing said why. The hooks run ./os through
+    bash now, which also puts the permission back."""
+    root = t.box.root
+    hooks = root / ".claude" / "hooks"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root), NO_COLOR="1")
+
+    def hook(name: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(hooks / name)], input="{}", capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=env, timeout=120)
+
+    (root / "os").chmod(0o644)
+    started = hook("session-start.sh")
+    t.eq(started.returncode, 0, "the session starts")
+    t.ok(started.stdout.strip(), "and the session hook is not silent")
+    told = json.loads(started.stdout)["hookSpecificOutput"]["additionalContext"]
+    t.ok("first visit" in told.lower(), f"the AI is handed the real brief\n{told}")
+    t.ok(os.access(root / "os", os.X_OK), "and ./os can be run again afterwards")
+
+    (root / "os").chmod(0o644)
+    dirty = root / ".os" / ".dirty"
+    dirty.write_text("")
+    t.eq(hook("settle.sh").returncode, 0, "the hook after a reply runs too")
+    t.ok(not dirty.exists(), "and rebuilds the list instead of leaving it for later")
+
+
+@test
+def test_gemini_is_pointed_at_the_same_rules(t: Case) -> None:
+    """Gemini CLI reads GEMINI.md and not AGENTS.md, so someone using it got
+    none of the rules. A download has one line pointing at AGENTS.md, as
+    CLAUDE.md does, and an update gives that line to a folder without it."""
+    root = t.box.root
+    gemini = root / "GEMINI.md"
+    if as_downloaded():
+        t.ok(gemini.is_file() and gemini.read_text().startswith("@AGENTS.md"),
+             "a download has a GEMINI.md that brings in AGENTS.md")
+
+    def update() -> subprocess.CompletedProcess:
+        done = subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+        t.eq(done.returncode, 0, f"the update runs\n{done.stdout[-1200:]}{done.stderr[-800:]}")
+        return done
+
+    gemini.unlink(missing_ok=True)
+    said = update().stdout
+    t.eq(gemini.read_text() if gemini.is_file() else "", "@AGENTS.md\n",
+         "a folder with no GEMINI.md is given one")
+    t.ok("GEMINI.md" in said, f"and the update says so\n{said}")
+    gemini.write_text("Answer me in Spanish.\n")
+    update()
+    update()
+    text = gemini.read_text()
+    t.ok(text.startswith("@AGENTS.md") and "Answer me in Spanish." in text,
+         f"one of their own points at the rules and keeps their line\n{text}")
+    t.eq(text.count("@AGENTS.md"), 1, "once, however many updates run")
+
+
+@test
+def test_an_update_leaves_a_linked_claude_or_gemini_md_alone(t: Case) -> None:
+    """A GEMINI.md made as a link to AGENTS.md, a usual way to point Gemini CLI
+    at the rules, was written through by an update: "@AGENTS.md" went on top
+    of AGENTS.md itself, which then brought itself in and matched no release,
+    so every later update set the new rules aside for a merge by hand. And the
+    update still said "your rules below it are kept". A link is theirs now,
+    and is left as it is."""
+    root = t.box.root
+    for name in ("GEMINI.md", "CLAUDE.md"):
+        (root / name).unlink(missing_ok=True)
+        (root / name).symlink_to("AGENTS.md")
+    done = subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root)],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    t.eq(done.returncode, 0, f"the update runs\n{done.stdout[-1200:]}{done.stderr[-800:]}")
+    rules = (root / "AGENTS.md").read_text()
+    t.ok(rules.startswith("# "), f"AGENTS.md still starts with its own heading\n{rules[:200]}")
+    t.eq(rules.count("@AGENTS.md"), 0, "and never brings itself in")
+    for name in ("GEMINI.md", "CLAUDE.md"):
+        t.ok((root / name).is_symlink(), f"{name} is still their link")
+        t.ok(f"{name} — it's a link" in done.stdout, f"and the update says it left {name} alone")
+
+    # Made with `ln` and no -s, CLAUDE.md is AGENTS.md under a second name. The
+    # update swapped AGENTS.md for the new one, so CLAUDE.md kept the old rules,
+    # got "@AGENTS.md" on top, and Claude Code read both the new rules and a
+    # stale copy of the old. Here AGENTS.md is an older release's, so it's replaced.
+    import hashlib
+    old_rules = "# How to work in this folder\n\nThe old rules, from an older release.\n"
+    (root / "AGENTS.md").write_text(old_rules)
+    shipped = json.loads((root / ".os" / "shipped.json").read_text())
+    shipped["files"].setdefault("AGENTS.md", []).append(hashlib.sha1(old_rules.encode()).hexdigest())
+    (root / ".os" / "shipped.json").write_text(json.dumps(shipped))
+    (root / "CLAUDE.md").unlink()
+    os.link(root / "AGENTS.md", root / "CLAUDE.md")
+    preview = subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root), "--dry-run"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    t.ok("would keep CLAUDE.md — it's a link" in preview.stdout,
+         f"a preview says a hard-linked CLAUDE.md is kept\n{preview.stdout[-1200:]}")
+    done = subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root)],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    t.eq(done.returncode, 0, f"the update runs\n{done.stdout[-1200:]}{done.stderr[-800:]}")
+    rules = (root / "AGENTS.md").read_text()
+    t.ok("The old rules" not in rules and rules.startswith("# "), "AGENTS.md is the new one")
+    t.ok((root / "CLAUDE.md").samefile(root / "AGENTS.md"),
+         f"and CLAUDE.md is still the same file as it, not a stale copy\n{(root / 'CLAUDE.md').read_text()[:300]}")
+    t.ok("CLAUDE.md — it's a link to AGENTS.md, and now to the new one" in done.stdout,
+         f"and the update says so\n{done.stdout[-1200:]}")
+
+
+@test
+def test_every_ai_is_told_where_the_skills_are(t: Case) -> None:
+    """AGENTS.md told every AI to write skills and never said where they live,
+    and `./os new skill` said "type /name", which only Claude Code knows. Any
+    other AI never used one, however well it fitted what was asked."""
+    root = t.box.root
+    agents = root / "AGENTS.md"
+    if not in_their_words(agents, t.box):
+        rules = agents.read_text()
+        t.ok("`.claude/skills/<name>/SKILL.md`" in rules and "`.claude/CATALOG.md`" in rules,
+             "AGENTS.md says where a skill lives and where they are all listed")
+        # The list itself opens "Extras for Claude Code", which told any other
+        # AI the skills weren't for it.
+        t.ok("any AI can use one" in " ".join(rules.split()), "and that any AI can use them")
+    made = t.box.run("new", "skill", "Weekly Plant Watering").stdout
+    t.ok((root / ".claude" / "skills" / "weekly-plant-watering" / "SKILL.md").is_file(),
+         "a new skill is where AGENTS.md says")
+    t.ok("/weekly-plant-watering" in (root / ".claude" / "CATALOG.md").read_text(), "and it is listed")
+    t.ok("ask your AI for it by name" in " ".join(made.split()),
+         f"and any AI can be asked for it, not only Claude Code\n{made}")
+
+
+@test
+def test_the_feedback_page_is_read_before_it_goes(t: Case) -> None:
+    """Each snag is kept word for word, and `./os snag --export` put one naming
+    a doctor and a court date into the page to send, then said only "hand that
+    file to whoever maintains this template". Now it says to read it first,
+    and AGENTS.md has the AI leave anything personal out of a snag."""
+    t.box.run("snag", "sort filed a shopping list in Work instead of Notes")
+    out = " ".join(t.box.run("snag", "--export").stdout.split())
+    t.ok("read it before you send it" in out, f"the export ends by saying to read it first\n{out}")
+    agents = t.box.root / "AGENTS.md"
+    if not in_their_words(agents, t.box):
+        t.ok("nothing personal: no names, subjects or note text" in " ".join(agents.read_text().split()),
+             "and AGENTS.md keeps snags free of anything personal")
+
+
+@test
+def test_a_preference_is_kept_and_a_hobby_is_not_homework(t: Case) -> None:
+    """"From now on…" and "I prefer…" were not among the words that bring in
+    the save skill, so a preference said once could go unwritten. And /learn
+    asked everyone what they'd do with a subject, even one they only like."""
+    root = t.box.root
+    save = root / ".claude" / "skills" / "save" / "SKILL.md"
+    if save.is_file() and not in_their_words(save, t.box):
+        meta, body = engine.parse_frontmatter(save.read_text())
+        for words in ("from now on", "I prefer", "always", "stop doing"):
+            t.ok(words in str(meta.get("description")), f"the save skill is used on \"{words}\"")
+        t.ok("straight into About me" in " ".join(body.split()), "and sends those to About me")
+    learn = root / ".claude" / "skills" / "learn" / "SKILL.md"
+    if learn.is_file() and not in_their_words(learn, t.box):
+        t.ok("for using, or for liking?" in learn.read_text(), "/learn asks which kind it is first")
+    shape = (root / ".os" / "templates" / "learning.md").read_text()
+    for heading in ("## Why I'm learning this", "## Practice"):
+        t.ok("For using only" in shape.split(heading, 1)[1][:80],
+             f"a learning note's {heading} is only for something to use")
 
 
 @test
@@ -4441,8 +7566,12 @@ def test_names_in_any_language_survive(t: Case) -> None:
     names = " ".join(p.name for p in t.box.root.rglob("*") if p.is_file())
     t.ok("設計" in names, "Japanese characters were kept in the filename")
     t.ok("проект" in names or "2026" in names, "Cyrillic was kept or sensibly transliterated")
-    t.ok("cafe-resume" in names, "accents transliterate to clean ASCII")
+    t.ok("café-résumé.md" in engine.nfc(names), "accents are kept in a name somebody gave")
     t.eq([p for p in t.box.root.rglob("*untitled*")], [], "nothing collapsed to 'untitled'")
+    # Words given to ./os save are named by this folder, in plain letters.
+    t.box.run("save", "Crème brûlée for the café: burn the sugar at the table")
+    t.ok(any(p.name.startswith("creme-brulee-for-the-cafe")
+             for p in t.box.root.rglob("*.md")), "accents transliterate to clean ASCII")
     t.box.run("check", expect=None)
 
 
@@ -4565,6 +7694,20 @@ def test_the_release_builds_a_blank_folder(t: Case) -> None:
     t.ok("./os snag --export" in readme and "Discord" in readme,
          "the README says where to send what went wrong")
     t.ok("xcode-select --install" in readme, "and what a Mac needs first")
+    # The number of checks is counted by the build and put in place of a
+    # marker. Nothing read it: with that step broken, the download said
+    # "passes all @CHECKS@ of its own checks" and every check still passed.
+    t.ok("@CHECKS@" not in readme, "the README has no marker left in it")
+    t.ok(f"passes all {len(TESTS)} of its own checks" in readme,
+         f"and gives the real number of checks, {len(TESTS)}")
+    t.ok("bash os" in readme and "cd ~/os && claude" in readme,
+         "it says what to type when ./os won't run, and next time")
+    # mv into a ~/os that's already there puts the download inside it, and
+    # the next step finds no ./os. Said after the mv, the warning came too late.
+    warn, move = readme.find("Already have a `~/os`?"), readme.find("mv ~/Downloads/os-template-os ~/os")
+    t.ok(0 <= warn < move, "the README warns about an existing ~/os before the mv, not after")
+    t.ok("can run it too" not in readme and "nobody has tried them yet" in readme,
+         "and doesn't claim Codex or Gemini CLI were tried")
 
     # A shipped skill missing here stops the build; it used to go out without it.
     decide = root / ".claude" / "skills" / "decide"
@@ -4913,7 +8056,8 @@ def test_a_title_cannot_write_its_own_front_matter(t: Case) -> None:
     meta, _ = engine.parse_frontmatter(hit.read_text(encoding="utf-8"))
     t.eq(meta.get("type"), "note",
          f"the file is what it was made as (got {meta.get('type')!r})")
-    t.eq(meta.get("domain"), "unsorted", "and the injected subject did not take")
+    t.eq(meta.get("domain"), engine.catch_all(engine.Zenith(t.box.root).taxonomy),
+         "and the injected subject did not take: it is where nothing matched")
     t.ok("\n" not in str(meta.get("title", "")), "the title is one line")
     t.ok("type: work" in str(meta.get("title", "")), "with every word of it kept")
 

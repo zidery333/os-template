@@ -1,6 +1,6 @@
 ---
 name: save
-description: Write something down into this folder and file it — a thought, a link, a quote, a file, a half-formed idea. Use whenever the user says remember this, save this, note that, write this down, jot this down, don't let me forget, or drops something mid-conversation that shouldn't be lost.
+description: Write something down into this folder and file it — a thought, a link, a quote, a file, a half-formed idea. Use whenever the user says remember this, save this, note that, write this down, jot this down, don't let me forget, from now on, I prefer, always, stop doing, or drops something mid-conversation that shouldn't be lost.
 argument-hint: [what to save]
 allowed-tools: Bash(./os:*), Bash(${CLAUDE_PROJECT_DIR}/os:*), Read, Edit
 ---
@@ -40,6 +40,10 @@ about how they want answers, is not a note of its own. It is one line in their
 About me note — `./os open "About me"` says where that is, and
 `./os new note "About me" --domain personal` makes one if there is none. Every
 session starts with its first lines, so what matters most goes near the top.
+
+"From now on…", "I prefer…", "always…" and "stop doing…" are the same thing:
+how they want things done. Each goes straight into About me as one line in their
+words, with no question first. It is not a note, a task or a settings change.
 
 ## Rules
 

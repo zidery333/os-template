@@ -15,7 +15,7 @@ updated: {{DATE}}
      if one shows up and you mean to chase it, ./os push this. -->
 
 ## How often
-<!-- Weekly, monthly, every release. -->
+<!-- Weekly, monthly, every spring. -->
 
 ## Where it stands
 <!-- How it's going right now. Replace this each time; it isn't a history. -->

@@ -45,6 +45,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -52,6 +53,7 @@ import tempfile
 import time
 import unicodedata
 import zipfile
+import zlib
 from pathlib import Path
 
 ENGINE_VERSION = "3.0.0"
@@ -589,6 +591,148 @@ def read_ends(path: Path, each: int = 60_000) -> str:
     head = head[:cut + 1] if cut >= 0 else head + "\n"
     tail = re.sub(r"\r\n?", "\n", tail)
     return head + tail[tail.find("\n") + 1:]
+
+
+#: Files kept exactly as they are, with a card, whose words can still be read
+#: out from under their formatting. TextEdit saves in RTF unless told not to,
+#: so on a Mac this is how most notes written outside this folder arrive; once
+#: a picture is pasted in, it saves an .rtfd instead, a folder with the words
+#: in a TXT.rtf inside it. See `words_file`.
+WORDS_INSIDE = {".rtf", ".rtfd"}
+#: The heading on such a file's card that its words are copied in under.
+CARD_WORDS = "## What it says"
+#: And the line the copy ends with. Search reads the file itself, so it leaves
+#: out only what sits between the two: anything written on the card after it,
+#: like the one sentence of what it is AGENTS.md asks for, is still searched.
+CARD_WORDS_END = "<!-- end of the copied words — anything of your own goes below -->"
+#: RTF groups that hold settings rather than words: fonts, colours, pictures.
+_RTF_SETTINGS = {
+    "fonttbl", "colortbl", "expandedcolortbl", "stylesheet", "info", "pict",
+    "header", "headerl", "headerr", "footer", "footerl", "footerr", "listtable",
+    "listoverridetable", "rsidtbl", "generator", "filetbl", "revtbl", "themedata",
+    "colorschememapping", "latentstyles", "datastore", "xmlnsdecl", "object",
+    "fldinst", "nonshppict", "private"}
+_RTF_SAYS = {"par": "\n", "line": "\n", "row": "\n", "sect": "\n\n", "page": "\n\n",
+             "tab": "\t", "cell": "\t", "emdash": "—", "endash": "–", "bullet": "•",
+             "lquote": "‘", "rquote": "’", "ldblquote": "“", "rdblquote": "”"}
+_RTF_TOKEN = re.compile(r"\\([a-zA-Z]{1,32})(-?\d{1,10})? ?|\\'([0-9a-fA-F]{2})|\\(.)"
+                        r"|([{}])|[\r\n]+|([^\\{}\r\n]+)", re.S)
+#: Characters that are not words and that no note should hold; tab and new line stay.
+_RTF_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def rtf_words(raw: str) -> str:
+    """The words of an RTF document, with its formatting codes taken out.
+
+    Read as it sits on disk, a TextEdit note about tomatoes is a font table
+    and then `\\f0\\fs24 \\cf0 Tomatoes need…`, so its card said only "Asset
+    card for garden-notes.rtf" and `./os find tomatoes` found nothing. Plain
+    Python, so a folder on Linux reads it the same as one on a Mac."""
+    out: list[str] = []
+    outer: list[tuple[bool, int]] = []
+    hidden, uc, owed = False, 1, 0      # a settings group; letters owed after \u
+    for m in _RTF_TOKEN.finditer(raw):
+        word, arg, byte, symbol, brace, text = m.groups()
+        if brace == "{":
+            outer.append((hidden, uc))
+            owed = 0
+        elif brace == "}":
+            hidden, uc = outer.pop() if outer else (hidden, uc)
+            owed = 0
+        elif text is not None or byte is not None:
+            piece = text if byte is None else bytes([int(byte, 16)]).decode("cp1252", "replace")
+            if owed:     # the stand-in written after a \u letter, for old readers
+                cut = min(owed, len(piece))
+                piece, owed = piece[cut:], owed - cut
+            if not hidden:
+                out.append(piece)
+        elif symbol is not None:
+            if symbol == "*":
+                hidden = True
+            elif not hidden:
+                out.append({"\n": "\n", "\r": "\n", "~": " ", "-": "", "_": "-"}.get(symbol, symbol))
+        elif word in _RTF_SETTINGS:
+            hidden = True
+        elif word == "uc":
+            uc = int(arg or 1)
+        elif word == "u":
+            # A letter by its number, or nothing when it has none that is a
+            # letter. `\u99999999` stopped every ./os find with a traceback,
+            # for whatever was searched, because one odd .rtf was in the
+            # folder; and a bare `\u` put an invisible NUL onto the card.
+            if arg is None:
+                continue
+            n = int(arg) + (65536 if int(arg) < 0 else 0)
+            if not hidden and 0 < n < 0x110000:
+                out.append(chr(n))
+            owed = uc
+        elif word in _RTF_SAYS and not hidden:
+            out.append(_RTF_SAYS[word])
+    # An emoji is written as two \u codes, one half of it each. Read one at a
+    # time they stayed two halves, which can't be written to a file at all: a
+    # card for a seed order with a 🍅 in it stopped `./os sort` with a
+    # traceback, every time it was run. Put back together here; a half on its
+    # own becomes a �.
+    said = "".join(out).encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    # Nor a control character, however it came: `\'00` put a NUL onto the
+    # card, which then counted as a binary file and not a note at all.
+    said = _RTF_CONTROL.sub("", said)
+    lines = [line.rstrip() for line in said.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def rtf_text(path: Path, limit: int = 2_000_000) -> str:
+    """The words in an RTF file, or "" when there are none to be had.
+
+    On a Mac, textutil reads it exactly as TextEdit wrote it; anywhere else,
+    or if textutil fails, `rtf_words` does. Only for filing a file, which
+    happens once: search reads with `rtf_words` alone, since starting a
+    program for every note on every search would make it crawl."""
+    if sys.platform == "darwin" and shutil.which("textutil"):
+        try:
+            done = subprocess.run(
+                ["textutil", "-convert", "txt", "-stdout", "-encoding", "UTF-8",
+                 str(path.absolute())],
+                capture_output=True, timeout=20, check=False)
+            if done.returncode == 0:
+                # textutil keeps what `rtf_words` takes out: `\u0` came through
+                # as a NUL, so on a Mac the card still counted as a binary file
+                # (review, 2026-09-30). A page break is a form feed; it stays
+                # a break, or the words either side of it run together.
+                said = done.stdout[:limit].decode("utf-8", "replace").replace("\f", "\n\n")
+                return _RTF_CONTROL.sub("", said).strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return rtf_words(read_rtf(path, limit))
+
+
+def words_file(path: Path) -> Path | None:
+    """The RTF that holds a kept file's words, or None when it has none.
+
+    That is the file itself for an .rtf, and the TXT.rtf inside for an .rtfd:
+    a TextEdit note with a photo pasted in is saved as a folder, and was kept
+    as "a folder of files" whose card said nothing, so `./os find rhubarb`
+    missed the one note about it with a picture. Never through a shortcut:
+    what it points at is not this folder's to read."""
+    suffix = path.suffix.lower()
+    if suffix not in WORDS_INSIDE or path.is_symlink():
+        return None
+    inside = path / "TXT.rtf" if suffix == ".rtfd" else path
+    return inside if inside.is_file() and not inside.is_symlink() else None
+
+
+def read_rtf(path: Path, limit: int = 2_000_000) -> str:
+    """An RTF file's own text, codes and all. RTF is written in plain ASCII,
+    but a few programs put letters in as they are, in either encoding."""
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(limit)
+    except OSError:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", "replace")
 
 
 def write_text(path: Path, text: str) -> None:
@@ -1591,28 +1735,15 @@ class Zenith:
     def initialise(self, owner: str = "", name: str = "") -> dict:
         """Make a shipped template belong to whoever just opened it.
 
-        A template is built on one day and opened on another. Left alone, every
-        date in it would be a lie and every project would look stale on arrival."""
+        It used to re-date every file in Work/, Notes/ and Archive/ to today, so
+        a template built one day and opened another would not arrive looking
+        stale. The blank folder ships none of those, so the only files it ever
+        re-dated were the person's own: a note from 2019 dropped in before the
+        first ./os said 2026, and undo couldn't put it back (stranger test,
+        2026-09-30). `./os setup` on a used folder did the same. What still
+        needs a date gets one here: when it was installed, once."""
         day = today()
-        restamped, moved = 0, 0   # moved: kept at 0; nothing needs migrating now
-
-        for bucket, spec in self.buckets().items():
-            base = self.root / bucket
-            if not base.exists():
-                continue
-            for path in sorted(base.rglob("*.md")):
-                # README.md is an item's spine here, so `ignored()` is the wrong
-                # filter — it deliberately hides README from the *scanner*.
-                if path.name in ("CLAUDE.md", "_index.md") or path.name.startswith("."):
-                    continue
-                text = read_utf8(path)
-                meta, _body = parse_frontmatter(text or "")
-                if not meta:
-                    continue
-                if meta.get("created") == day and meta.get("updated") == day:
-                    continue
-                write_text(path, set_fields(text, {"created": day, "updated": day}))
-                restamped += 1
+        fresh = self.is_fresh()
 
         if owner:
             self.config["owner"] = owner
@@ -1622,11 +1753,16 @@ class Zenith:
         self.save_config()
 
         self.state["fresh"] = False
-        self.state["installed"] = day
+        self.state.setdefault("installed", day)
         self.state.setdefault("undo", [])
-        self.state["history"] = []
+        # What ./os last reads. Emptied for a copy nobody has opened yet, and
+        # kept by `./os setup` in one somebody has.
+        if fresh:
+            self.state["history"] = []
         self.save_state()
-        return {"restamped": restamped, "moved": moved, "day": day,
+        # Last, so the first save holds the folder as it now is.
+        began = History(self).start()
+        return {"day": day, "history": began,
                 "owner": self.config.get("owner", ""), "name": self.config.get("name", "")}
 
     # -- filesystem moves (always journalled) -------------------------------
@@ -1670,6 +1806,19 @@ class Zenith:
         """Remember a file this run brought into existence, so undo can remove it."""
         if path.exists():
             self.record("create", self.rel(path))
+
+    def edited(self, path: Path, was: bytes) -> None:
+        """Remember what a file said before this run rewrote it, so undo can
+        put it back. For the few files `snapshot` does not keep because they
+        are not prose, like .os/words.json; everything else goes through
+        `snapshot`, before the change."""
+        key = self.rel(path)
+        if key not in self._snapshots:
+            blob = hashlib.sha256(key.encode()).hexdigest()[:20] + ".bak"
+            (self._ensure_run_dir() / blob).write_bytes(was)
+            self._snapshots[key] = blob
+            self._snapped_at[key] = len(self._pending)
+        self.record("edit", key)
 
     def make_dir(self, path: Path) -> Path:
         if not path.exists():
@@ -1842,6 +1991,43 @@ VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".mts
 IGNORE_SUFFIXES = (".tmp~", ".pyc", ".swp", "~", ".card.md")
 CATEGORY_MARKER = ".category"
 
+#: Folders a Mac shows as one document. `Garden.rtfd` is TextEdit's note with
+#: a picture in it, the words in a TXT.rtf inside; taken for a folder of notes,
+#: it would be pulled apart into the files it is made of. These are the ones
+#: seen; document_bundle() takes any folder named the same way.
+DOCUMENT_BUNDLES = {".rtfd", ".textbundle", ".pages", ".numbers", ".key", ".app",
+                    ".scriv", ".scrivtemplate", ".photoslibrary", ".photolibrary",
+                    ".logicx", ".band", ".fcpbundle", ".imovielibrary", ".dtbase2",
+                    ".oo3", ".graffle", ".sparsebundle", ".bundle", ".framework",
+                    ".plugin", ".xcodeproj", ".xcworkspace", ".playground",
+                    ".workflow", ".scptd", ".lproj"}
+#: Endings people do give their own folders: a web address, a JavaScript
+#: library, a copy kept aside. `Notes/amazon.com`, holding receipts, is theirs.
+FOLDER_ENDINGS = {".com", ".org", ".net", ".edu", ".gov", ".old", ".bak", ".new",
+                  ".tmp", ".copy", ".backup", ".orig"}
+
+
+def document_bundle(path: Path) -> bool:
+    """Is this a folder a program keeps as one document?
+
+    Finder tells by the ending on the name: `My Novel.scriv` is a Scrivener
+    project, shown and opened as one file. Taken for a folder of notes, it
+    was pulled apart: a header went into the version.txt and every
+    synopsis.txt Scrivener reads back, a card beside every file and folder in
+    it, and ./os check then called two of its synopses the same thing. An
+    ending of three or more small letters marks one, whatever program made
+    it, since nobody names a folder of their own that way."""
+    if not path.is_dir() or path.is_symlink():
+        return False
+    return bundle_ending(path.name)
+
+
+def bundle_ending(name: str) -> bool:
+    """Whether a folder with this name would be taken for one document."""
+    ending = Path(name).suffix
+    return ending.lower() in DOCUMENT_BUNDLES or (
+        bool(re.fullmatch(r"\.[a-z]{3,16}", ending)) and ending not in FOLDER_ENDINGS)
+
 #: Files that ARE the thing they sit in. The scanner hides them so a project
 #: folder counts as one item rather than two — but anything trying to work out
 #: what a folder *is* has to read them, or it is guessing blind.
@@ -1861,6 +2047,57 @@ def ignored(path: Path) -> bool:
     return (name in IGNORE_NAMES or name in IGNORE_FOLDERS
             or name.startswith("._")
             or name.endswith(IGNORE_SUFFIXES))
+
+
+def holds_nothing(path: Path) -> bool:
+    """A folder nobody has put anything in yet, so nothing of theirs to file
+    or warn about.
+
+    What Finder and Windows leave in any folder, and what an app keeps out of
+    sight (a new Obsidian vault holds only `.obsidian`), counts as nothing.
+    So do folders made ahead of time with only that in them: `mkdir -p
+    Recipes/Italian` is still nothing until a recipe goes in."""
+    if not path.is_dir() or path.is_symlink():
+        return False
+    try:
+        return all(p.name in ("Icon\r", "desktop.ini", "Thumbs.db") or p.name.startswith(".")
+                   or holds_nothing(p) for p in path.iterdir())
+    except OSError:
+        return False
+
+
+def group_trouble(os_: "Zenith", label: str) -> str:
+    """Why a folder called `label` in Work or Notes couldn't hold a subject's
+    group, or "" when it can.
+
+    Sort names the group after the subject, and anything in a folder ./os
+    skips vanishes from ./os, find and check while check says all good:
+    Work/Content, where 14 video projects went, a name ending like a
+    leftover (`Wine~`), or like a document (`Wine.rtfd`, which a Mac opens
+    as one TextEdit file). A slash made a folder inside a folder."""
+    if label.casefold() in {n.casefold() for n in IGNORE_FOLDERS}:
+        return "which is where big files go, and ./os never looks in there"
+    if (not label.strip(" .") or label.startswith(".") or ignored(Path(label))
+            or re.search(r'[\\/:*?"<>|\x00-\x1f]', label)):
+        return "and ./os skips a folder named like that, as if it were a leftover file"
+    if bundle_ending(label):
+        return ("and a Mac shows a folder with that ending as one document, "
+                "so what's in it couldn't be opened")
+    if label.casefold() in {n.casefold() for n in (*os_.buckets(), *IGNORE_NAMES)}:
+        return "and this folder already uses that name for something of its own"
+    return ""
+
+
+def group_label(os_: "Zenith", domain: str, labels: dict) -> str:
+    """The folder sort groups a thing in, by the subject in its header.
+
+    `./os words --new` refuses a subject whose folder would vanish, but a
+    header written by hand never asked: `domain: content` on 14 video
+    projects put them all in Work/Content, and ./os, find and check lost
+    every one (review, 2026-09-30). A subject with no safe folder of its own
+    goes in General, with whatever else is too small for one."""
+    label = labels.get(domain) or folder_name(domain or "", "Unsorted")
+    return "General" if group_trouble(os_, label) else label
 
 
 #: What a code project holds. Such a folder is its own repository, so nothing
@@ -1907,23 +2144,57 @@ def staged_captures(dot: Path) -> list[Path]:
     return sorted(p for p in stage.iterdir() if p.is_file() and not ignored(p))
 
 
+def staged_words(path: Path) -> str:
+    """What a staged file says first, to name it by; else its file name.
+
+    A TextEdit note taken back with ./os undo was named by its first line as
+    it sits on disk, `{\\rtf1\\ansi\\ansicpg1252\\cocoartf2907`, and a
+    photo's first line is not words at all."""
+    if words_file(path) is not None:
+        body = rtf_words(read_rtf(path, 20_000))
+    elif not is_binary(path):
+        _, body = parse_frontmatter(read_text(path, 2_000))
+    else:
+        body = ""
+    return next((trunc(ln.strip(), 44) for ln in body.split("\n") if ln.strip()), path.name)
+
+
 #: What belongs at the top of the folder: this program, and the files an AI
 #: reads its rules from. Any other file there was dropped in.
 TOP_NAMES = {"AGENTS.md", "CLAUDE.md", "README.md", "INDEX.md", "os", "template-feedback.md",
              "CLAUDE.local.md", "AGENTS.override.md", "GEMINI.md"}
 
 
-def loose_at_top(root: Path) -> list:
-    """Files dropped at the top of the folder, outside every bucket.
+def loose_at_top(root: Path, buckets=None) -> list:
+    """Files and folders dropped at the top of the folder, outside every bucket.
 
     The most natural place to drop a file, and the one place nothing looked:
     `./os` never mentioned it, sort said everything was filed, find could not
     see it, and save refused it as already in this folder. Sort files these
-    like anything else dropped in by hand."""
+    like anything else dropped in by hand.
+
+    Folders too. Only files were taken, so `My Recipes` dragged in beside
+    Work and Notes was never mentioned, never sorted and never found, while
+    check said all good (review, 2026-09-30). Not the buckets themselves
+    (`buckets`, read from .os/config.json when not given), nor a folder with
+    nothing in it yet, nor a hidden one or one config's `ignore` names. A
+    folder called Content is theirs here: only Work/Content is left alone,
+    and one dragged in beside Work was never mentioned, sorted or found."""
+    if buckets is None:
+        try:
+            said = json.loads((root / MARKER / "config.json").read_text(encoding="utf-8"))
+            buckets = said.get("buckets") if isinstance(said, dict) else None
+        except (OSError, ValueError):
+            buckets = None
+        buckets = buckets if isinstance(buckets, dict) and buckets else ("Work", "Notes", "Archive")
+    kept = {str(b).casefold() for b in buckets}
     try:
         return sorted(p for p in root.iterdir()
-                      if p.is_file() and not p.is_symlink() and p.name not in TOP_NAMES
-                      and not p.name.startswith(".") and not ignored(p))
+                      if not p.is_symlink() and not p.name.startswith(".")
+                      and (not ignored(p) or (p.name == MEDIA_FOLDER and p.is_dir()))
+                      and ((p.is_file() and p.name not in TOP_NAMES)
+                           or (p.is_dir() and p.name.casefold() not in kept
+                               and not holds_nothing(p))))
     except OSError:
         return []
 
@@ -2007,6 +2278,23 @@ INTENT_WORDS = {
     "note": "a note", "asset": "a file",
 }
 
+#: The subject for whatever matches none of the others. It has no words of its
+#: own, so nothing lands there except by default.
+CATCH_ALL = "general"
+
+
+def catch_all(taxonomy: dict) -> str:
+    """The subject a thing gets when no subject's words match it.
+
+    It was `unsorted`, which `./os check` reads as "no subject set", so a
+    folder of home notes that matched nothing got one hint per note telling
+    them to pick a subject. `general` is a subject like the others, and the
+    group every thin one is pooled into when a folder is split up anyway.
+    A words.json without it, one edited by hand or older, still gets
+    `unsorted`."""
+    domains = taxonomy.get("domains")
+    return CATCH_ALL if isinstance(domains, dict) and CATCH_ALL in domains else "unsorted"
+
 
 class Classifier:
     """Decides what an unfiled thing is, what phase it is in, and where it goes.
@@ -2017,8 +2305,10 @@ class Classifier:
         3. structural shape       (a folder holding SKILL.md is a skill)
         4. file extension         (media and data are assets)
         5. weighted keyword score against .os/words.json
-    Anything below `min_classify_score` is filed as a note and flagged
-    `needs-review`, so a low-confidence guess is visible rather than silent.
+    Anything below `min_classify_score` is filed as a note. When there was
+    nothing at all to go on — no sign of a note or of work, and no subject in
+    its words — it is also flagged `needs-review`, so a real guess is visible
+    rather than silent.
     """
 
     NAME_HINTS = {
@@ -2138,6 +2428,9 @@ class Classifier:
     @staticmethod
     def _sample(path: Path) -> tuple[str, str]:
         """(title-ish text, body text) for a file or a folder."""
+        rtf = words_file(path)
+        if rtf is not None:
+            return path.stem, rtf_text(rtf)[:120_000]
         if path.is_dir():
             names, body = [], []
             # Read the spine first: a dropped-in folder usually says what it is
@@ -2160,6 +2453,20 @@ class Classifier:
         return path.stem, ""
 
     # -- scoring ------------------------------------------------------------
+
+    #: What a file's extension adds to a subject that lists it. It says what
+    #: kind of file this is, never what it is about: while `.md` and `.txt`
+    #: counted for Writing, every note anybody saved was filed as writing.
+    EXTENSION_WEIGHT = 2.5
+
+    def _worded(self, scores: dict, suffix: str) -> bool:
+        """Did any subject match on the words themselves, not only on the
+        kind of file? A folder still carrying an older words.json gives every
+        .md to Writing on its extension, and that is not something to go on."""
+        domains = self.tax["domains"]
+        return any(score - (self.EXTENSION_WEIGHT if suffix and suffix in
+                            domains.get(name, {}).get("extensions", []) else 0) > 0.01
+                   for name, score in scores.items())
 
     def score_domain(self, title: str, body: str, suffix: str) -> tuple[str, float, dict]:
         head = " ".join(body.split("\n")[:40])
@@ -2194,7 +2501,7 @@ class Classifier:
                 if matched or in_body:
                     longest = max(longest, len(kw))
             if suffix and suffix in spec.get("extensions", []):
-                total += 2.5
+                total += self.EXTENSION_WEIGHT
             if total:
                 scores[name] = round(total, 2)
                 sharpest[name] = longest
@@ -2253,7 +2560,12 @@ class Classifier:
                     "scores": {}, "summary": "", "captured": ""}
 
         title_src, body = self._sample(path)
+        # A folder says what it is on its own page, never through a note in
+        # it: `Notes/Recipes/Italian/pizza.md` gave Recipes the pizza note's
+        # title, and sort renamed the folder after it.
         meta, stripped = parse_frontmatter(body) if body.lstrip().startswith("---") else ({}, body)
+        if path.is_dir() and not any((path / n).is_file() for n in SPINE_NAMES):
+            meta = {}
         if path.is_file() and suffix in TEXT_SUFFIXES:
             meta2, stripped2 = parse_frontmatter(read_text(path, 120_000))
             if meta2:
@@ -2366,6 +2678,15 @@ class Classifier:
                 verdict["title"] = verdict["title"] or titleize(path.stem)
                 body = ""
 
+        # An RTF's words are read for its subject and its card, but it keeps
+        # the name it was saved under, the way a .txt does. Only "Untitled.rtf"
+        # and the like are named after what they say.
+        # A file only: an .rtfd is a folder, and given a title here it was
+        # renamed to it, lost its .rtfd, and TextEdit no longer opened it.
+        if path.is_file() and words_file(path) is not None and not verdict["title"] \
+                and given_name(path.stem):
+            verdict["title"], verdict["title_given"] = given_name(path.stem), True
+
         # 5. content scoring
         domain, dscore, dall = self.score_domain(title_src, body, suffix)
         intent, iscore, iall = self.score_intent(title_src, body)
@@ -2393,16 +2714,23 @@ class Classifier:
             verdict["status"] = ""
             verdict["why"].append("an account of work already done — nothing left to push on")
 
+        # Unsure means there was nothing at all to go on: no sign it is a note
+        # or work, and no subject in its words. The note-or-work score alone
+        # used to decide it, and a plain fact has no cue either way, so "Q3
+        # revenue was up 8%" and "Fox dug up the bulbs by the gate" both came
+        # back "I wasn't sure what this one was", and so did almost every
+        # other thing a person saved. A weak guess is still kept as a note.
         floor = float(self.os.thresholds.get("min_classify_score", 2.0))
         if verdict["confidence"] < floor:
-            verdict["flags"].append("needs-review")
-            verdict["why"].append("not sure what this is — kept in Notes so it is easy to spot")
+            if not iall and not self._worded(dall, suffix):
+                verdict["flags"].append("needs-review")
+                verdict["why"].append("not sure what this is — kept in Notes so it is easy to spot")
             if verdict["kind"] not in ("asset", "skill", "agent"):
                 verdict["kind"] = "note"
                 verdict["status"] = ""
 
         if not verdict["domain"]:
-            verdict["domain"] = "unsorted"
+            verdict["domain"] = catch_all(self.tax)
         if not verdict["title"]:
             # What they called it, when they called it anything: a folder by
             # its own name, a file of prose by its heading or else its file
@@ -2493,6 +2821,20 @@ class Scanner:
         mds = sorted(p for p in path.glob("*.md") if not ignored(p))
         return mds[0] if mds else None
 
+    @staticmethod
+    def borrows_page(path: Path, spine: Path | None) -> bool:
+        """Is this a folder with no page of its own, read through the first
+        note in it?
+
+        `mkdir Notes/Recipes` with two saved notes moved into it was read as
+        the one about chilli oil: sort renamed the folder after that note,
+        and a folder like it in Work went to Notes, because the note said
+        `type: note` (review, 2026-09-30). A folder made like that is known
+        by its own name and is what the place they put it says, and sort
+        neither renames nor moves it. Every note in it is still found, by
+        its words (Finder._inside)."""
+        return spine is not None and spine.parent == path and spine.name not in SPINE_NAMES
+
     def hydrate(self, item: Item) -> Item:
         m = ID_RE.match(item.path.name)
         if m:
@@ -2522,15 +2864,32 @@ class Scanner:
         item.title = str(meta.get("title")
                          or (titleize(declared_name) if declared_name else "")
                          or titleize(m.group(2) if m else item.path.stem))
+        borrowed = item.is_dir and self.borrows_page(item.path, item.spine)
+        raw_status = meta.get("status")
+        if borrowed:
+            # The note's own title is kept only when it is the folder's name,
+            # spelled as they spelled it: an older sort named such folders
+            # after it, `where-i-learn` for "Where I learn". A long title it
+            # cut short to name the folder is kept too, or an update renamed
+            # an old folder in every list, and words only in its title went
+            # unfound (a released folder, 2026-09-30).
+            own = given_name(item.path.name) or item.path.name
+            if slugify(item.title, 44) != slugify(own, 44) \
+                    and folder_name(item.title, slugify(item.title, 44)) != item.path.name:
+                item.title = own
+            # A note's `status: —` says it is no piece of work; the folder in
+            # Work is one, on the go until they hold it.
+            if str(raw_status or "").strip() == "—":
+                raw_status = ""
         # One shelf now holds prose and files alike, so what a thing *is* comes
         # from its own header; the folder only says where it lives. Without this
         # a PDF filed in Notes would call itself a note in every listing.
-        if item.kind in ("note", "project"):
+        if item.kind in ("note", "project") and not borrowed:
             declared = str(meta.get("type") or "").strip().lower()
             resolved = TYPE_FROM_DISK.get(declared, declared)
             if resolved in ("project", "note", "asset"):
                 item.kind = resolved
-        item.status = normalize_status(meta.get("status"), item.kind, meta.get("type"))
+        item.status = normalize_status(raw_status, item.kind, meta.get("type"))
         raw_domain = str(meta.get("domain") or "").strip()
         item.domain = (slugify(raw_domain, 24) if raw_domain else "") or "unsorted"
         raw_tags = meta.get("tags") or []
@@ -2728,14 +3087,15 @@ class Sorter:
         self.skipped: list[tuple[str, str]] = []      # (path, why it could not be filed)
         self.waiting: list[str] = []                   # empty and seconds old: left for the next run
         self.taken_back: list[str] = []                # put back by ./os undo: left alone on purpose
+        self.brought: set[Path] = set()                # folders taken in from the top of this folder
 
     # -- pass 1: staged captures, and anything dropped in by hand ------------
 
-    def _take(self, src: Path, here: bool = False) -> Path | None:
+    def _take(self, src: Path, here: bool = False, by_hand: bool = False) -> Path | None:
         """Classify one unfiled thing and put it where it belongs."""
         verdict = self.classifier.classify(src)
         try:
-            dest = self.place(src, verdict, here)
+            dest = self.place(src, verdict, here, by_hand)
         except OSError as exc:
             # One thing going missing is not a reason to abandon the other
             # forty-nine — but it is never swallowed: reporting "nothing
@@ -2806,6 +3166,42 @@ class Sorter:
         has no header at all, and so is nobody's."""
         return it.kind in ("project", "note", "asset") and not it.managed
 
+    def bring_in_from_top(self) -> int:
+        """Move each folder left at the top of this folder into the bucket it
+        belongs in, under its own name, to be sorted from there the way a
+        folder dropped into that bucket by hand is.
+
+        Only files were taken from the top, so `My Recipes`, dragged in
+        beside Work and Notes, was never mentioned, sorted or found (review,
+        2026-09-30). Filed the way a saved folder is, it would lose its name
+        to a lower-case one. From inside Notes it is filed where it lies,
+        under its own name, the same as a folder dragged into Notes. Footage,
+        a program's document, a skill or a helper go on the way anything
+        else at the top does, in adopt()."""
+        moved, names = 0, None
+        for src in loose_at_top(self.os.root, self.os.buckets()):
+            if not src.is_dir() or document_bundle(src):
+                continue
+            role = ROLE_FOR_KIND.get(self.classifier.classify(src)["kind"])
+            if role is None or big_media(self.os, src):
+                continue
+            if names is None:
+                names = {it.ident.casefold() for it in self.scanner.scan() if it.ident}
+            # Its own name, or Finder's `My Recipes 2` when that is in use
+            # anywhere here, so no two things share a name.
+            base = self.os.root / self.os.bucket_for_role(role)
+            dest, n = base / src.name, 2
+            while dest.exists() or dest.is_symlink() or ignored(dest) \
+                    or dest.name.casefold() in names:
+                dest, n = base / f"{src.name} {n}", n + 1
+            names.add(dest.name.casefold())
+            self.brought.add(src)
+            self.moves.append(("folder", self.os.rel(src), self.os.rel(dest)))
+            if not self.dry:
+                self.os.move(src, dest)
+            moved += 1
+        return moved
+
     def adopt(self, items: list["Item"]) -> int:
         """Take charge of anything sitting in a bucket that the OS never filed.
 
@@ -2816,25 +3212,30 @@ class Sorter:
         special first. A loose file still goes where it belongs: a PDF dropped
         into Work/ is a thing you look up later wherever you put it. A folder
         somebody made stays where they made it, under their name for it."""
-        taken = 0
         todo = [(it.path, True) for it in items
                 if it.bucket in self.os.buckets() and self.unmanaged(it)]
         # A file left at the top of the folder lies in no bucket at all, so it
-        # goes where it belongs, the same as a file that was saved.
-        todo += [(path, False) for path in loose_at_top(self.os.root)]
+        # goes where it belongs, the same as a file that was saved. A folder
+        # there went into its bucket first (bring_in_from_top).
+        todo += [(path, False) for path in loose_at_top(self.os.root, self.os.buckets())
+                 if path not in self.brought]
+        # A preview leaves a folder at the top, where the real run files it
+        # from the bucket it was brought into; counted the same, or the
+        # preview said "2 filed" where sort then said "3 filed".
+        taken = len(self.brought) if self.dry else 0
         for path, here in todo:
             if self._still_being_written(path):
                 self.waiting.append(self.os.rel(path))
                 continue
             if self.dry:
                 verdict = self.classifier.classify(path)
-                dest = self.place(path, verdict, here=here)
+                dest = self.place(path, verdict, here=here, by_hand=True)
                 if dest is not None:
                     self.moves.append((verdict["kind"], self.os.rel(path),
                                        self.os.rel(dest)))
                     taken += 1
                 continue
-            if self._take(path, here=here) is not None:
+            if self._take(path, here=here, by_hand=True) is not None:
                 taken += 1
         return taken
 
@@ -2849,9 +3250,11 @@ class Sorter:
             self.moves.append((verdict["kind"], self.os.rel(src), self.os.rel(dest)))
         return dest, verdict
 
-    def place(self, src: Path, verdict: dict, here: bool = False) -> Path | None:
+    def place(self, src: Path, verdict: dict, here: bool = False,
+              by_hand: bool = False) -> Path | None:
         """Put one thing where it belongs. `here`: it was dropped into a
-        bucket by hand, rather than saved."""
+        bucket by hand, rather than saved. `by_hand`: dropped in anywhere
+        here by hand, at the top of this folder too."""
         kind = verdict["kind"]
         slug = slugify(verdict["title"] or src.stem, 44)
         root = self.os.root
@@ -2888,12 +3291,22 @@ class Sorter:
                 self._ensure_agent(moved, verdict)
                 return moved
 
+        # A program's document, `Garden Plan.rtfd` or `My Novel.scriv`, is one
+        # file to a Mac, whatever is inside it. Filed from the top of this
+        # folder as a folder, it lost its ending and no longer opened as a
+        # document, and a .scriv got a README of ours inside it (review,
+        # 2026-09-30). It is kept whole, with a card beside it, the way a
+        # file is, under the name it came with.
+        bundle = document_bundle(src)
+        if bundle and kind in ("note", "project"):
+            kind = verdict["kind"] = "asset"
+            verdict["status"] = ""
         # A folder is somebody's own: its files are never rewritten (see
         # _ensure_spine). One they made by hand is also adopted where it lies —
         # the bucket they put it in says what it is, and a name they chose is
         # its name. `Work/Wedding Speech` became `Notes/venue-the-old-barn`,
         # after the first line of the notes inside it.
-        theirs = src.is_dir() and not src.is_symlink()
+        theirs = src.is_dir() and not src.is_symlink() and not bundle
         # Footage, and anything too big to read, lives in Work/Content, which
         # ./os never files, nags or renames. Saved, 300 MB of video went into
         # Notes beside the prose.
@@ -2912,6 +3325,29 @@ class Sorter:
             # Where it goes was their call, so nobody was guessing.
             verdict["flags"] = [f for f in verdict.get("flags", []) if f != "needs-review"]
             keep = bool(verdict.get("title_given"))
+
+        # A file dropped in by hand keeps the name and ending it came with.
+        # `Shopping List.txt` became shopping-list.md, and TextEdit, saving it
+        # again, wrote a second copy that sort filed as shopping-list-2.md
+        # (stranger test, 2026-09-30). Only a name the computer chose, like
+        # Untitled.txt, is named after what it says, and keeps its ending.
+        # Words given to ./os save, and files it's handed, are named as before.
+        # One that reads like work goes into a folder of its name, as it is:
+        # `To Do.txt` became Work/To Do/README.md, and the .txt was gone
+        # (review, 2026-09-30). Only a .md is still made the page itself.
+        # A program's document keeps its name however it comes in.
+        own = ""
+        whole = src.is_file() and (kind != "project" or src.suffix.lower() not in (".md", ".markdown"))
+        if not src.is_symlink() and (bundle or by_hand and whole) \
+                and kind in ("note", "asset", "project"):
+            name = src.name if bundle else src.stem
+            own = given_name(name)
+            # The same words as the name, or sort would rename it to match
+            # its title the next time round (identify).
+            if own and slugify(own, 44) == slugify(name, 44):
+                verdict["title"] = own
+            else:
+                own = ""
 
         bucket = self.os.bucket_for_role(ROLE_FOR_KIND.get(kind, "note"))
         ident = f"{self.os.buckets()[bucket]['code']}.??" if self.dry else self.os.next_id(bucket)
@@ -2936,23 +3372,38 @@ class Sorter:
         def move_to(dest: Path) -> Path:
             return src if dest == src else self.os.move(src, dest)
 
+        def own_place(name: str = src.stem, ending: str = src.suffix) -> Path:
+            # Where it lies, when that is the folder it belongs in, or else
+            # beside the rest there, under its own name: `Shopping List 2.txt`
+            # when that is taken, as Finder would, and called that.
+            if here and base in src.parents and src.name == name + ending:
+                return src
+            dest, n = base / f"{name}{ending}", 2
+            while dest.exists() or dest.is_symlink() or ignored(dest):
+                dest, n = base / f"{name} {n}{ending}", n + 1
+            called = dest.name if bundle or not ending else dest.name[:-len(ending)]
+            verdict["title"] = given_name(called) or verdict["title"]
+            return dest
+
         if kind == "project":
-            dest_dir = src if keep else free(folder_name(verdict["title"], slug))
+            dest_dir = src if keep else own_place(own, "") if own \
+                else free(folder_name(verdict["title"], slug))
             if self.dry:
                 return dest_dir
             if src.is_dir():
                 moved = move_to(dest_dir)
             else:
                 self.os.make_dir(dest_dir)
-                inner = dest_dir / ("README.md" if src.suffix.lower() in TEXT_SUFFIXES else src.name)
+                inner = dest_dir / ("README.md" if src.suffix.lower() in TEXT_SUFFIXES and not own
+                                    else src.name)
                 self.os.move(src, inner)
                 moved = dest_dir
             self._ensure_spine(moved, ident, verdict, kind, theirs)
             return moved
 
         if kind == "asset":
-            suffix = src.suffix if src.is_file() else ""
-            dest = src if keep else free(f"{slug}{suffix}")
+            suffix = src.suffix if src.is_file() or bundle else ""
+            dest = src if keep else own_place() if own else free(f"{slug}{suffix}")
             if self.dry:
                 return dest
             moved = move_to(dest)
@@ -2967,13 +3418,19 @@ class Sorter:
             moved = move_to(dest)
             self._ensure_spine(moved, ident, verdict, "note", theirs)
             return moved
-        dest = free(f"{slug}.md")
+        if own:
+            dest = own_place()
+        else:
+            ending = src.suffix if by_hand or src.suffix.lower() not in TEXT_SUFFIXES else ".md"
+            dest = free(f"{slug}{ending}")
         if self.dry:
             return dest
-        if src.suffix.lower() not in TEXT_SUFFIXES:
-            dest = free(f"{slug}{src.suffix}")
         moved = self.os.move(src, dest)
         if moved.suffix.lower() in TEXT_SUFFIXES:
+            # A .txt takes its header inside, as a .md does, and not on a card
+            # beside it: search reads a note's own words, and with a card it
+            # would have read only the card's. TextEdit opens and saves it as
+            # the plain text it is, header and all, under the same name.
             stamp_file(moved, {"title": verdict["title"], "type": "note",
                                "status": "—", "domain": verdict["domain"],
                                "tags": verdict["tags"], "created": today(),
@@ -3086,11 +3543,16 @@ class Sorter:
         card = asset.with_name(asset.name + ".card.md")
         if card.exists():
             return
+        # A file whose words can be read carries them, so the card says what
+        # is in it and not only its name (see WORDS_INSIDE).
+        said = verdict.get("captured", "") if asset.suffix.lower() in WORDS_INSIDE else ""
         write_text(card, compose({
             "title": verdict["title"], "type": "file",
             "status": "—", "domain": verdict["domain"], "tags": verdict["tags"],
             "created": today(), "source": asset.name,
-        }, f"# {verdict['title']}\n\nAsset card for `{asset.name}`.\n\n{verdict.get('summary','')}\n"))
+        }, f"# {verdict['title']}\n\nAsset card for `{asset.name}`.\n\n"
+           + (f"{CARD_WORDS}\n\n{said}\n\n{CARD_WORDS_END}\n" if said
+              else f"{verdict.get('summary','')}\n")))
         self.os.created(card)
 
     def _ensure_skill(self, folder: Path, verdict: dict) -> None:
@@ -3130,6 +3592,10 @@ class Sorter:
             # header onto it here would file it without ever classifying it.
             if not it.managed:
                 continue
+            # A folder they made, read through a note in it: its name is
+            # theirs, and that note's header is the note's (borrows_page).
+            if it.is_dir and Scanner.borrows_page(it.path, it.spine):
+                continue
             # A headed file counts as filed, but its header can still disagree
             # with where it sits — a hand-dropped folder saying `type: work`
             # left in Notes is work, so it belongs in Work.
@@ -3154,9 +3620,14 @@ class Sorter:
             # A folder is read as a name, so it is spelled like one — "Q3 OKR
             # Review", not q3-okr-review. Notes stay kebab-case files. Any
             # folder that already slugs down to its own title is right however
-            # it is spaced or cased, so it is left exactly as it sits.
+            # it is spaced or cased, so it is left exactly as it sits; and so
+            # is a file, so `Shopping List.txt` keeps the name it came with.
+            # So does one given a number when it went beside another of its
+            # name: `Shopping List-2.txt` was renamed shopping-list.txt
+            # (review, 2026-09-30).
             is_dir = not it.path.is_file()
-            if is_dir and slugify(it.path.name, 44) == slug:
+            said = slugify(it.path.name if is_dir else it.path.stem, 44)
+            if said == slug or (not is_dir and re.fullmatch(re.escape(slug) + r"-\d+", said)):
                 wanted = it.path.name
             elif is_dir:
                 wanted = folder_name(it.title, slug)
@@ -3189,11 +3660,18 @@ class Sorter:
     # -- pass 3: balance ----------------------------------------------------
 
     def _cluster_key(self, group: list[Item], depth_cap: int) -> dict[str, str]:
-        """Assign each item in `group` a second-level folder, deterministically."""
+        """Assign each item in `group` a second-level folder, deterministically.
+
+        Named after a tag, so never one ./os would skip, as the first level
+        isn't: 14 video projects tagged `content` went into
+        Work/General/Content, where ./os never looks, and the next sort took
+        General away with all of them in it (review, 2026-09-30)."""
         tally: dict[str, int] = {}
+        safe: dict[str, bool] = {}
         for it in group:
             for t in it.tags[:5]:
-                if t and t != "unsorted":
+                if t and t != "unsorted" and safe.setdefault(
+                        t, not group_trouble(self.os, titleize(t))):
                     tally[t] = tally.get(t, 0) + 1
         floor = max(2, len(group) // 8)
         ranked = [t for t, n in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0])) if n >= floor]
@@ -3229,7 +3707,7 @@ class Sorter:
 
             groups: dict[str, list[Item]] = {}
             for it in pool:
-                label = labels.get(it.domain, titleize(it.domain or "Unsorted"))
+                label = group_label(self.os, it.domain, labels)
                 groups.setdefault(label, []).append(it)
 
             # too many thin groups? keep only the biggest, pool the rest
@@ -3266,13 +3744,29 @@ class Sorter:
             dest_dir = self.os.root / it.bucket
             for part in want:
                 dest_dir = dest_dir / part
+            # A group's name already on something of theirs, like the Money
+            # folder they made in Notes: sort stopped on moving it into
+            # itself, having marked it as one of its own groups, and the next
+            # sort filled it with their other notes (review, 2026-09-30).
+            # What would go in that group stays where it is.
+            taken = False
+            node = self.os.root / it.bucket
+            for part in want:
+                node = node / part
+                if (node.exists() or node.is_symlink()) and not Scanner.is_category(node):
+                    taken = True
+                    break
+            if taken:
+                continue
             target = dest_dir / it.path.name
-            self.moves.append(("sort", self.os.rel(it.path), self.os.rel(target)))
             moved += 1
             if self.dry:
+                self.moves.append(("sort", self.os.rel(it.path), self.os.rel(target)))
                 continue
             self._make_category(dest_dir, want)
             new = self.os.move_item(it.path, target)
+            # Where it landed, which is not `target` when that name was taken.
+            self.moves.append(("sort", self.os.rel(it.path), self.os.rel(new)))
             it.path, it.trail = new, list(want)
         if not self.dry:
             self.prune_categories()
@@ -3313,10 +3807,26 @@ class Sorter:
             for path in sorted(base.rglob("*"), key=lambda p: len(p.parts), reverse=True):
                 if not Scanner.is_category(path):
                     continue
-                leftovers = [p for p in path.iterdir() if not ignored(p) and p.name != CATEGORY_MARKER]
-                if leftovers:
+                # Only a group with nothing left in it but its own mark, what
+                # a computer leaves, and the card of a file that's gone.
+                # Emptiness was judged by `ignored()`, and a group holding
+                # only a Content folder, which ./os skips, looked empty:
+                # rmtree took it and everything in it, and undo couldn't
+                # bring it back (review, 2026-09-30).
+                inside = list(path.iterdir())
+                litter = [p for p in inside if p.is_file() and not p.is_symlink()
+                          and (p.name in (CATEGORY_MARKER, ".DS_Store", "Thumbs.db", "desktop.ini")
+                               or p.name.startswith("._")
+                               or (p.name.endswith(".card.md") and p.name != ".card.md"
+                                   and not p.with_name(p.name[:-len(".card.md")]).exists()))]
+                if len(litter) < len(inside):
                     continue
-                shutil.rmtree(path, ignore_errors=True)
+                try:
+                    for p in litter:
+                        p.unlink()
+                    path.rmdir()
+                except OSError:
+                    continue
                 self.os.record("rmdir", self.os.rel(path))
                 removed += 1
         return removed
@@ -3326,6 +3836,7 @@ class Sorter:
     def run(self) -> dict:
         # Read the tree first: what is already on disk decides what a new name
         # is allowed to be, so nothing can land on top of something else.
+        brought = self.bring_in_from_top()
         items = self.scanner.scan()
         filed = self.file_staged() + self.adopt(items)
         items = self.scanner.scan()
@@ -3337,7 +3848,7 @@ class Sorter:
         if not self.dry:
             self.os.save_state()
         return {"filed": filed, "identified": identified, "balanced": balanced,
-                "pruned": pruned, "moves": self.moves, "notes": self.notes,
+                "pruned": pruned, "brought": brought, "moves": self.moves, "notes": self.notes,
                 "waiting": self.waiting, "taken_back": self.taken_back,
                 "skipped": [{"path": path, "why": why} for path, why in self.skipped]}
 
@@ -3483,10 +3994,12 @@ class Indexer:
         skills = [i for i in items if i.kind == "skill"]
         agents = [i for i in items if i.kind == "agent"]
         hooks = [i for i in items if i.kind == "hook"]
+        # It opened "Extras for Claude Code", which told any other AI reading
+        # it that the skills weren't for it. AGENTS.md says they are.
         lines = [
             GENERATED, "# What this folder can do", "",
-            "Extras for Claude Code. Type a `/name` **in the chat** (not the terminal) "
-            "to run a skill. Helpers get sent off on their own when a job suits them. "
+            "Skills any AI here can use. In Claude Code, type a `/name` **in the chat** "
+            "(not the terminal) to run one. Helpers get sent off on their own when a job suits them. "
             "None of this is required — `./os help` is the plain version, and it works "
             "in any terminal with or without an AI.", "",
         ]
@@ -3574,6 +4087,298 @@ class Doctor:
                 "path": "", "fix": sample.get("fix", ""),
             })
 
+    #: Names ./os passes over wherever a thing would sit, so a file or folder of
+    #: theirs called that is never filed or found. Work/Content is the one that
+    #: is meant; CLAUDE.md is read by Claude as its own rules, and left alone.
+    #: So is a README.md: it says what the folder it's in is for, like the
+    #: ones the old layout kept in notes/ and work/. Renamed so sort would
+    #: file it, "# My notes" became a piece of work on the go, and a folder
+    #: that was fine before an update was said to need fixing (review,
+    #: 2026-09-30).
+    PASSED_OVER = {MEDIA_FOLDER}
+    #: What `_out_of_reach` says. Those whose fix is ./os check --fix count
+    #: on the front screen and in the brief as things that need fixing.
+    OUT_OF_REACH = ("left-at-top", "passed-over", "work-inside-work", "too-far-in",
+                    "card-left-behind")
+
+    @staticmethod
+    def _filed_work(path: Path, folder: bool) -> str:
+        """The title of the piece of work this is, filed by ./os, or "".
+
+        Ours says `type: work` (or a word older folders used) and has every
+        line our header has: a status, a subject, the day it was made and the
+        day it last changed. A status and a date were taken as enough, and an
+        Obsidian vault's Areas/Health.md, `type: area` / `status: active`,
+        was called work hidden in a folder, and moved out into Work by
+        check --fix (review, 2026-09-30)."""
+        spine: Path | None = path
+        if folder:
+            spine = next((path / n for n in ("README.md", "index.md") if (path / n).is_file()), None)
+        if spine is None or spine.suffix.lower() not in TEXT_SUFFIXES:
+            return ""
+        head = read_text(spine, 4_000)
+        if not head.startswith("---"):
+            return ""
+        meta, _ = parse_frontmatter(head)
+        kind = str(meta.get("type") or "").strip().lower()
+        if kind not in ("work", "ongoing", "area") \
+                or not all(meta.get(k) for k in ("title", "status", "domain", "created", "updated")):
+            return ""
+        return str(meta.get("title") or "").strip() or given_name(path.name if folder else path.stem)
+
+    def _free_beside(self, folder: Path, name: str, suffix: str = "") -> Path:
+        """`name` in `folder`, or the name Finder would give it when that is taken."""
+        n, cand = 2, folder / f"{name}{suffix}"
+        while cand.exists() or cand.is_symlink() or ignored(cand):
+            cand, n = folder / f"{name} {n}{suffix}", n + 1
+        return cand
+
+    def _out_of_reach(self, items: list[Item], fix: bool) -> list[str]:
+        """Name anything of theirs that neither ./os find nor the list reaches.
+
+        One rule for a run of holes that were each found on their own: a
+        folder of PDFs no search found, a piece of work moved into another's
+        folder that dropped off the list, a folder dragged in beside Work and
+        Notes, a Content folder in Notes, a card left behind when its PDF was
+        dragged into a folder, and all the while this said all good (review,
+        2026-09-30). It walks Work and Notes as search does, never into
+        Work/Content, a code project or a program's document, and says nothing
+        about a file in a thing's own folder that search reads or matches by
+        name, but for a hint when a Notes folder holds more notes than search
+        reads the words of. Each finding says where, and what to do."""
+        root, repaired = self.os.root, []
+        rel = self.os.rel
+        live = {name: spec for name, spec in self.os.buckets().items()
+                if spec.get("role") in ("project", "note")}
+        work = self.os.bucket_for_role("project")
+        # Names they told ./os to leave alone, in config's `ignore`. Content is
+        # listed there as shipped, meaning Work/Content, and is not one of them.
+        chosen = {str(n).strip() for n in (self.os.config.get("ignore") or [])
+                  if isinstance(n, str)} - {MEDIA_FOLDER}
+
+        # Left at the top, beside the buckets: no command looks there but sort.
+        for path in loose_at_top(root, self.os.buckets()):
+            self.flag("warn", "left-at-top",
+                      f"'{path.name}' is at the top of this folder, where ./os find "
+                      "doesn't look and nothing lists it", path.name, "./os sort")
+
+        # A name ./os passes over, where a thing of theirs would be; and a
+        # card whose file has gone from beside it.
+        renames: list[tuple[Path, Path]] = []
+        lone: list[Path] = []
+        todo = [root / name for name in live]
+        while todo:
+            node = todo.pop()
+            try:
+                children = sorted(node.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if Scanner.is_category(child):
+                    todo.append(child)
+                elif child.name.endswith(".card.md") and not child.name.startswith(".") \
+                        and child.is_file():
+                    thing = child.with_name(child.name[:-len(".card.md")])
+                    if not (thing.exists() or thing.is_symlink()):
+                        lone.append(child)
+                elif child.name in self.PASSED_OVER and child.name not in chosen \
+                        and not child.is_symlink() and not holds_nothing(child) \
+                        and not (child.name == MEDIA_FOLDER and node == root / work):
+                    # Called after where it is, `Notes Content`, since a bare
+                    # `Content 2` would say nothing about where it came from.
+                    dest = self._free_beside(node, f"{node.name} {Path(child.name).stem}",
+                                             child.suffix if child.is_file() else "")
+                    if fix:
+                        renames.append((child, dest))
+                    else:
+                        self.flag("warn", "passed-over",
+                                  f"{rel(child)} is never filed or found: ./os passes "
+                                  f"over anything called {child.name} there",
+                                  rel(child),
+                                  f"./os check --fix   calls it {dest.name}, then ./os sort files it")
+
+        # Inside each thing's own folder: work filed on its own and hidden in
+        # another's folder, and anything further in than search goes.
+        finder = Finder(self.os, self.scanner)
+        finder._items_at = {str(it.path) for it in items}
+        for it in items:
+            if it.bucket not in live or it.kind not in ("project", "note", "asset") \
+                    or not it.is_dir or it.path.is_symlink():
+                continue
+            got = finder.contents(it, all_of_it=True)
+            lone += got.lone
+            inside: list[Path] = []
+            # Only a piece of work in Work is one that work can hide in (settled
+            # 2026-09-30). One never filed is waiting for sort, and ./os says
+            # so already; once sort has filed it, this looks inside it too.
+            hides = it.kind == "project" and it.bucket == work and it.managed
+            for path, _words, folder in got.named if hides else ():
+                if any(up in path.parents for up in inside):
+                    continue
+                title = self._filed_work(path, folder)
+                if not title:
+                    continue
+                # Work/Wedding, with a README of ours, is one piece of work,
+                # and `Book the Venue` moved into it was part of it: gone from
+                # ./os and from show, while sort said nothing was waiting.
+                # Said, not counted as broken, and never moved by --fix: a
+                # piece of work's own folder is theirs to arrange (AGENTS.md),
+                # and work kept inside another under the released ./os was
+                # called broken after an update, and moved out (review,
+                # 2026-09-30). The command puts it back on the list.
+                inside.append(path)
+                out = self._free_beside(root / work, path.stem if path.is_file() else path.name,
+                                        path.suffix if path.is_file() else "")
+                self.flag("hint", "work-inside-work",
+                          f"'{title}' is inside {it.title}, so it isn't on your list on "
+                          "its own and ./os show can't reach it",
+                          rel(path), f"mv -n {shell_word(rel(path))} {shell_word(rel(out))}")
+            unseen = [p for p in got.unseen if not any(up in p.parents for up in inside)]
+            if unseen:
+                one = len(unseen) == 1 and not got.more
+                many = f"more than {len(unseen):,}" if got.more else f"{len(unseen):,}"
+                if got.why == "deep":
+                    # Up into the thing's own folder, under a name nothing there
+                    # has: a plain mv overwrote the IMG_0001.JPG already at the
+                    # top, for good, with the one from thirteen folders down.
+                    # The command alone, with nothing after it: pasted whole,
+                    # words after it would be taken for more files to move.
+                    level, why = "warn", f"more than {Finder.NAMES_DEPTH} folders down"
+                    up = self._free_beside(it.path, unseen[0].stem, unseen[0].suffix)
+                    cure = f"mv -n {shell_word(rel(unseen[0]))} {shell_word(rel(up))}"
+                else:
+                    # Only footage and exports run to tens of thousands of
+                    # files, and those belong in Work/Content, where ./os leaves
+                    # them alone; Phone Export itself is found meanwhile, so
+                    # this is said, not counted. `mv ... Work/Content/` renamed
+                    # the folder to Work/Content when there was none yet, and
+                    # left its card behind.
+                    level, why = "hint", f"past the first {Finder.NAMES_LOOKED:,} names in it"
+                    shelf = root / work / MEDIA_FOLDER
+                    if it.kind == "project":
+                        # Never a piece of work itself: moved into Work/Content
+                        # it was off the list, and its next action, log and
+                        # notes went with it (review, 2026-09-30). The folder
+                        # in it that holds most of those files goes instead;
+                        # the names at its top are always matched, so the
+                        # files not seen are in a folder inside it.
+                        count: dict[Path, int] = {}
+                        for p in unseen:
+                            top = it.path / p.relative_to(it.path).parts[0]
+                            count[top] = count.get(top, 0) + 1
+                        big = max(count, key=count.__getitem__)
+                        to = self._free_beside(shelf / it.path.name, big.name)
+                        cure = (f"mkdir -p {shell_word(rel(to.parent))} && mv -n "
+                                f"{shell_word(rel(big))} {shell_word(rel(to))}")
+                        why += (f"; a folder this big, like {big.name}, belongs in "
+                                f"{work}/{MEDIA_FOLDER}, which ./os leaves alone")
+                    else:
+                        to = self._free_beside(shelf, it.path.name)
+                        card = it.path.with_name(it.path.name + ".card.md")
+                        cure = (f"mkdir -p {shell_word(rel(shelf))} && mv -n {shell_word(rel(it.path))} "
+                                f"{shell_word(rel(to))}"
+                                + (f" && mv -n {shell_word(rel(card))} {shell_word(rel(to) + '.card.md')}"
+                                   if card.exists() else ""))
+                        why += f"; a folder this big belongs in {work}/{MEDIA_FOLDER}, which ./os leaves alone"
+                self.flag(level, "too-far-in",
+                          f"{many} file{'' if one else 's'} in {it.title} "
+                          f"{'is' if one else 'are'} too far in for ./os find to see ({why}), "
+                          f"like {rel(unseen[0])}",
+                          rel(it.path), cure)
+            # A folder of notes sort filed as one thing: the words of only
+            # the first notes in it are read, and `spice45` was "corrected"
+            # to the spice35 note while check said nothing. Said, not counted
+            # as broken: it was filed like that, and nothing here can change
+            # it without moving their notes. Each is still found by its name.
+            if live[it.bucket].get("role") == "note":
+                read = {str(where) for where, _text in finder._inside(it)}
+                words = finder.contents(it)
+                past = [q for shelves in words.shelves for shelf in shelves for q in shelf
+                        if str(q.parent if q.parent.suffix.lower() == ".rtfd" else q) not in read
+                        and not q.name.endswith(".card.md") and _size(q) > 0]
+                if past and len(read) >= Finder.INSIDE_FILES:
+                    self.flag("hint", "too-far-in",
+                              f"{len(past):,} note{'' if len(past) == 1 else 's'} in "
+                              f"{it.title} {'is' if len(past) == 1 else 'are'} past the "
+                              f"{Finder.INSIDE_FILES} whose words ./os find reads, "
+                              f"like {rel(past[0])}",
+                              rel(it.path),
+                              "./os find still finds each one by its name")
+
+        # A card left behind is the only place a PDF's description is, and a
+        # lone card is read by nothing. Put back beside its file when there
+        # is just one file of that name in Work and Notes with no card yet.
+        cards: list[tuple[Path, Path]] = []
+        if lone:
+            where: dict[str, list[Path]] = {}
+            for it in items:
+                if it.bucket in live:
+                    where.setdefault(it.path.name, []).append(it.path)
+                    if it.is_dir:
+                        got = finder.contents(it, all_of_it=True)
+                        for path in [q for q, _w, _f in got.named] + got.unseen:
+                            where.setdefault(path.name, []).append(path)
+            for card in lone:
+                name = card.name[:-len(".card.md")]
+                there = [q for q in where.get(name, []) if q != card.with_name(name)]
+                bare = [q for q in there if not q.with_name(q.name + ".card.md").exists()]
+                # Nothing in a sources/ folder is ever changed, so a card
+                # there stays where it is, and nothing says it could go:
+                # --fix moved one out of it and left the folder empty
+                # (review, 2026-09-30). A copy can go beside its file.
+                if any(part.casefold() == "sources" for part in card.relative_to(root).parts[:-1]):
+                    if len(there) == 1 and bare:
+                        self.flag("hint", "card-left-behind",
+                                  f"the card for {name} is in a sources folder, which ./os "
+                                  f"never changes, and {name} is in {rel(bare[0].parent)}",
+                                  rel(card), f"cp -n {shell_word(rel(card))} "
+                                             f"{shell_word(rel(bare[0]) + '.card.md')}")
+                    continue
+                if len(there) == 1 and bare:
+                    if fix:
+                        cards.append((card, bare[0].with_name(name + ".card.md")))
+                        continue
+                    self.flag("warn", "card-left-behind",
+                              f"what the card for {name} says isn't found: {name} moved "
+                              f"to {rel(bare[0].parent)}, and its card stayed behind",
+                              rel(card), "./os check --fix   puts the card back beside it")
+                elif there:
+                    self.flag("hint", "card-left-behind",
+                              f"the card for {name} stayed behind when it moved, and "
+                              f"{'it has a new one' if len(there) == 1 else 'there are ' + str(len(there)) + ' files called that'}"
+                              f": {', '.join(rel(q) for q in there[:2])}",
+                              rel(card), f"move what it says into the card beside the {name} you mean")
+                else:
+                    self.flag("hint", "card-left-behind",
+                              f"the card for {name} is still here, and {name} isn't",
+                              rel(card), f"put {name} back beside it, or, if it's gone for good, "
+                                         "the card can go too")
+
+        # Moved the way sort moves things, so ./os undo puts them back. The
+        # run holding the lock (cmd_doctor, setup) is the one doing this. One
+        # the disk won't let go of is said, the same as without --fix.
+        for child, dest in renames:
+            try:
+                self.os.move_item(child, dest)
+            except OSError as exc:
+                self.flag("warn", "passed-over", f"{rel(child)} is never filed or "
+                          f"found, and couldn't be renamed: {exc}", rel(child))
+                continue
+            repaired.append(f"{rel(child)} is called {dest.name} now, so "
+                            "./os sort can file it — ./os undo puts it back")
+        for card, dest in cards:
+            try:
+                self.os.move(card, dest)
+            except OSError as exc:
+                self.flag("warn", "card-left-behind", f"the card for {dest.name[:-8]} "
+                          f"stayed behind, and couldn't be moved: {exc}", rel(card))
+                continue
+            repaired.append(f"the card for {dest.name[:-8]} is back beside it, in "
+                            f"{rel(dest.parent)} — ./os undo puts it back")
+        if repaired:
+            self.os.commit("check")
+        return repaired
+
     # -- the checks ---------------------------------------------------------
 
     def run(self, items: list[Item] | None = None, fix: bool = False) -> dict:
@@ -3600,13 +4405,32 @@ class Doctor:
 
         # 2. the house rules every AI reads
         rules = root / "AGENTS.md"
-        for claude_md, pointer in ((root / "CLAUDE.md", "@AGENTS.md"),
-                                   (root / ".claude" / "CLAUDE.md", "@../AGENTS.md")):
-            if claude_md.exists() and "AGENTS.md" not in read_text(claude_md, 4_000):
-                self.flag("warn", "rules-drift",
-                          f"{self.os.rel(claude_md)} no longer points at AGENTS.md, so "
-                          "Claude Code and every other AI are reading different rules",
-                          self.os.rel(claude_md), f"put `{pointer}` on its first line")
+        for claude_md, pointer, reader in ((root / "CLAUDE.md", "@AGENTS.md", "Claude Code"),
+                                           (root / "GEMINI.md", "@AGENTS.md", "Gemini CLI"),
+                                           (root / ".claude" / "CLAUDE.md", "@../AGENTS.md", "Claude Code")):
+            if not claude_md.exists() or "AGENTS.md" in read_text(claude_md, 4_000):
+                continue
+            # A link to AGENTS.md is AGENTS.md: the same rules, word for word.
+            # It was called out of step, and the fix said to put the pointer on
+            # its first line, which wrote it through the link into AGENTS.md
+            # itself. An update leaves a link alone, and so does this. Made
+            # with `ln` and no -s it is the same file too, but not a symlink,
+            # so samefile, not resolve(): that one was still told to write.
+            try:
+                if rules.exists() and claude_md.samefile(rules):
+                    continue
+                linked = claude_md.is_symlink() or claude_md.stat().st_nlink > 1
+            except OSError:
+                linked = claude_md.is_symlink()
+            if linked:
+                fix = (f"it's a link, so don't write into it: point it at AGENTS.md, or put a "
+                       f"plain file there whose first line is `{pointer}`")
+            else:
+                fix = f"put `{pointer}` on its first line"
+            self.flag("warn", "rules-drift",
+                      f"{self.os.rel(claude_md)} doesn't point at AGENTS.md, so "
+                      f"{reader} and every other AI are reading different rules",
+                      self.os.rel(claude_md), fix)
         if not rules.exists():
             self.flag("error", "no-agents-md",
                       "AGENTS.md is missing — an AI opening this folder won't know the rules",
@@ -3664,18 +4488,13 @@ class Doctor:
                 age = int((time.time() - path.stat().st_mtime) // 86_400)
             except OSError:
                 age = 0
+            words = staged_words(path)
             if self.os.rel(path) in refused:
-                _, body = parse_frontmatter(read_text(path, 2_000))
-                words = next((trunc(ln.strip(), 44) for ln in body.split("\n") if ln.strip()),
-                             path.name)
                 self.flag("hint", "taken-back-capture",
                           f"'{words}' was taken back with ./os undo and is still "
                           "sitting in staging — sort leaves it alone",
                           self.os.rel(path), f'./os save "{self.os.rel(path)}"  to file it after all')
                 continue
-            _, body = parse_frontmatter(read_text(path, 2_000))
-            words = next((trunc(ln.strip(), 44) for ln in body.split("\n") if ln.strip()),
-                         path.name)
             stale = age >= STALE_STAGE_DAYS
             when = "today" if age < 1 else f"{age} days ago"
             self.flag("error" if stale else "warn", "unfiled-capture",
@@ -3686,17 +4505,13 @@ class Doctor:
             items = self.scanner.scan()
 
         # 3. identity and metadata
-        seen: dict[str, Item] = {}
+        seen: dict[str, list[Item]] = {}
         for it in items:
             if it.kind in ("project", "note", "asset"):
                 if not it.ident:
                     self.flag("warn", "no-id", f"'{it.title}' has no name on disk yet", self.os.rel(it.path), "./os sort")
-                elif it.ident in seen:
-                    self.flag("error", "duplicate-id",
-                              f"two things share the name {it.ident} ('{it.title}' and '{seen[it.ident].title}')",
-                              self.os.rel(it.path), "./os sort")
                 else:
-                    seen[it.ident] = it
+                    seen.setdefault(slugify(nfc(it.ident)), []).append(it)
                 if it.spine and (not it.domain or it.domain == "unsorted"):
                     # `new` writes `domain: unsorted` when nothing matched, so
                     # "add a domain: line" asked for one that was already there.
@@ -3707,6 +4522,27 @@ class Doctor:
                               if subjects else "set `domain:` at the top of the file")
             if it.spine and it.spine.exists() and it.words == 0 and it.kind != "asset":
                 self.flag("hint", "empty", f"'{it.title}' is empty", self.os.rel(it.path))
+        # One name on two things: Pizza in Work and pizza.md in Notes. It
+        # was an error for good, since the fix it gave, ./os sort, only keeps
+        # names apart inside one folder, so ./os said "needs fixing" on every
+        # run and --fix changed nothing (review, 2026-09-30). Nothing is
+        # broken: ./os show and the rest ask which one is meant, and take
+        # the folder with the name. So it's said once, as a hint.
+        finder = Finder(self.os, self.scanner)
+        shared = [group for group in seen.values() if len(group) > 1]
+        for group in shared:
+            # Only the three shown: each asks about every thing here, and all
+            # of 200 copies of `Meeting notes` made ./os take three seconds.
+            ways = [finder.qualified(g, group, items) for g in group[:3]]
+            self.flag("hint", "same-name",
+                      f"{len(group)} things are called {group[0].ident}, so a command "
+                      "given that name asks which one you mean",
+                      self.os.rel(group[1].path),
+                      "  ·  ".join(f"./os show {w}" for w in ways))
+        named_twice = {id(g) for group in shared for g in group}
+
+        # 3b. anything of theirs that neither search nor the list can reach
+        repaired += self._out_of_reach(items, fix)
 
         # 4. duplicates
         by_print: dict[str, list[Item]] = {}
@@ -3752,7 +4588,9 @@ class Doctor:
             while j < len(titles) and alike(head_title, titles[j][0]):
                 group.append(titles[j][1])
                 j += 1
-            if len(group) > 1 and len({g.fingerprint for g in group}) > 1:
+            # Said already, and more usefully, as one name on two things.
+            if len(group) > 1 and len({g.fingerprint for g in group}) > 1 \
+                    and not all(id(g) in named_twice for g in group):
                 names = ", ".join(f"'{g.title}'" for g in group[:3])
                 more = f" and {len(group) - 3} more" if len(group) > 3 else ""
                 self.flag("hint", "near-duplicate",
@@ -3834,19 +4672,35 @@ class Doctor:
         litter = [q for q in root.rglob("*")
                   if q.name in (".DS_Store", ".localized") or q.name.endswith(".tmp~")
                   or q.name.startswith("._")]
-        # A code project makes __pycache__ every run. When git already ignores
-        # it, that was the project's choice, and it isn't clutter.
-        caches = [q for q in root.rglob("__pycache__") if q.is_dir()]
+        # A code project makes __pycache__ every run, and it's that project's
+        # own business, not clutter. Anywhere else one is litter. It was left
+        # alone whenever git ignored it, but every folder now has a history
+        # whose .gitignore lists __pycache__/, so none was ever reported
+        # again (review, 2026-09-30). A code project is a folder under this
+        # one with a git, a .gitignore or a project file of its own, or what
+        # one downloads for itself; or this folder, when it has a project file.
+        def in_code(q: Path) -> bool:
+            for up in q.parents:
+                if up == root:
+                    # It always has a .git and a .gitignore: ./os made them.
+                    return any((root / f).exists() for f in CODE_MARKERS if f != ".git") \
+                        or any((root / f).exists() for f in ("setup.py", "requirements.txt"))
+                if up.name in (".venv", "venv", "node_modules") or any(
+                        (up / f).exists() for f in (*CODE_MARKERS, ".gitignore")):
+                    return True
+            return False
+        caches = [q for q in root.rglob("__pycache__") if q.is_dir() and not in_code(q)]
+        # A git they keep themselves that ignores one is their choice, as the
+        # owner settled on 2026-09-29, when a code project's check listed
+        # eighteen as junk. Dropping that for everyone brought it back
+        # (review, 2026-09-30). Only the .gitignore of a history ./os keeps,
+        # or of a git clone of the template, lists __pycache__ for them.
         if caches and (root / ".git").exists():
-            try:
-                done = subprocess.run(
-                    ["git", "-C", str(root), "check-ignore", "--stdin"],
-                    input="\n".join(self.os.rel(q) for q in caches),
-                    capture_output=True, text=True, timeout=10)
-                ignored = set(done.stdout.splitlines())
-                caches = [q for q in caches if self.os.rel(q) not in ignored]
-            except (OSError, subprocess.SubprocessError):
-                pass
+            kept_by = History(self.os)
+            if kept_by.where() == "theirs":
+                told = kept_by._git("check-ignore", "--", *(self.os.rel(q) for q in caches))
+                theirs = set(told.stdout.splitlines())
+                caches = [q for q in caches if self.os.rel(q) not in theirs]
         litter += caches
         for q in litter:
             if fix:
@@ -3859,6 +4713,41 @@ class Doctor:
                 self.flag("hint", "clutter",
                           f"{self.os.rel(q)} is junk your computer left behind",
                           self.os.rel(q), "./os check --fix")
+
+        # 6b. A history that has lost track of its last save takes no more
+        # checkpoints until it's put back. Only the brief and a checkpoint
+        # said so: `./os` said nothing, and this said "all good" (review,
+        # 2026-09-30). Put back, it points at the save git's own record says
+        # it last had; nothing else in it changes. The same when a crash
+        # emptied some of git's files of what it saved.
+        history = History(self.os)
+        lost = history.lost_track()
+        if lost.get("first") and fix:
+            got = history.start_again()
+            repaired.append("finished this folder's first history save, which a crash had "
+                            "cut off" if got["result"] == "started" else
+                            "cleared what a crash left in this folder's history before its "
+                            f"first save was done, but couldn't make it again ({got.get('why')})"
+                            " — ./os checkpoint tries once more")
+        elif lost.get("first"):
+            self.flag("error", "history-lost",
+                      "a crash during this folder's first save left its history empty, so "
+                      "no checkpoint can go in it", ".git", "./os check --fix")
+        elif lost.get("last") and fix:
+            moved = history.put_back(lost)
+            repaired.append("put this folder's history back on its last save"
+                            + (" that can still be read" if lost.get("emptied") else "")
+                            if moved else "cleared what a crash left empty in this folder's history")
+        elif lost.get("emptied"):
+            self.flag("error", "history-lost",
+                      "a crash while saving left some of this folder's history empty, so "
+                      "no checkpoint can go in it", ".git", "./os check --fix")
+        elif lost:
+            self.flag("error", "history-lost",
+                      "this folder's history has lost track of its last save, so no "
+                      "checkpoint can go in it", ".git",
+                      "./os check --fix" if lost.get("last") else
+                      "git fsck --lost-found   finds the saves it still has")
 
         # 7. hygiene and decay
         stale = int(self.os.thresholds.get("stale_project_days", 30))
@@ -3986,16 +4875,226 @@ class Term:
 WORD_RE = re.compile(r"[a-z][a-z0-9'-]{2,}")
 
 
+def shell_word(text: str) -> str:
+    """A name or path as it is typed into a shell: bare when it can be,
+    in double quotes when that is enough, and fully quoted otherwise."""
+    if re.fullmatch(r"[\w./-]+", text):
+        return text
+    return f'"{text}"' if not re.search(r'["$`\\!]', text) else shlex.quote(text)
+
+
+def name_words(name: str) -> str:
+    """A file's name as the words it is made of, to match a search against.
+
+    `Self_assessment-2024` is found by "self assessment", and
+    `MathsNotesWeek1` by "maths notes"."""
+    words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", nfc(name))
+    return re.sub(r"[\W_]+", " ", words, flags=re.UNICODE).strip()
+
+
+class Contents:
+    """What is in a thing's own folder, as far as search goes: Finder.contents."""
+
+    __slots__ = ("shelves", "named", "unseen", "lone", "more", "why")
+
+    def __init__(self):
+        self.shelves: list = []      # each level: each folder's text files, words read
+        self.named: list = []        # (path, its name as words, a folder?): matched by name
+        self.unseen: list = []       # files further in than names are matched
+        self.lone: list = []         # cards of ours whose file is not beside them
+        self.more = False            # and more of those than were counted
+        self.why = ""                # "deep" or "many": what stopped the names
+
+
 class Finder:
     """Ranked full-text search over the whole OS. No index server, no daemon."""
 
     #: how much of a term's score a root-only match earns
     STEM_WEIGHT = 0.6
+    #: What is read in a thing's own folder besides its page: this many files
+    #: at most, the start of each, out of this many names looked at, and this
+    #: much in all for one search. Enough for the notes a person keeps in a
+    #: piece of work, and never a whole code project on every search.
+    INSIDE_FILES, INSIDE_CHARS, INSIDE_LOOKED, INSIDE_BUDGET = 40, 60_000, 4_000, 30_000_000
+    #: How far in the names of the files in a thing's own folder are matched:
+    #: this many folders down, out of this many names looked at. Names cost
+    #: nothing to read, so they go much further than the words do; what lies
+    #: beyond both, ./os check names (Doctor._out_of_reach, `too-far-in`).
+    NAMES_DEPTH, NAMES_LOOKED = 12, 20_000
+    #: Folders inside that hold what programs made, not what a person wrote,
+    #: besides .git, node_modules, __pycache__ and venv, which `ignored()`
+    #: names; anything starting with a dot is left out too.
+    NOT_READ_INSIDE = {"env", "site-packages", "vendor", "dist", "build", "target",
+                       "Pods", "DerivedData", "bower_components"}
+    #: Maps ./os writes itself, which name everything and would match anything.
+    MADE_HERE = {"INDEX.md", "_index.md", "CATALOG.md"}
+    #: What Finder and Windows leave in a folder: not a name anybody chose.
+    LITTER = {"Icon\r", "desktop.ini", "Thumbs.db"}
 
-    def __init__(self, os_: "Zenith"):
+    def __init__(self, os_: "Zenith", scanner: "Scanner | None" = None):
         self.os = os_
-        self.scanner = Scanner(os_)
+        self.scanner = scanner or Scanner(os_)
         self.corrected: dict[str, str] = {}   # what we searched for instead
+        #: For a thing found by words in another file in its folder, that file
+        #: (by the thing's path), so a hit can say where it was.
+        self.found_in: dict[str, Path] = {}
+        self._items_at: set[str] = set()
+        self._inside_read: dict[str, list] = {}
+        self._contents: dict[str, "Contents"] = {}
+        self._budget = self.INSIDE_BUDGET
+        #: Every thing the last by_id() matched, when that was more than one,
+        #: and what that one looked through.
+        self.ambiguous: list[Item] = []
+        self._scanned: list[Item] = []
+        self._slugs: dict[str, str] = {}
+        self._wheres: dict[str, tuple] = {}
+
+    def _read_inside(self, name: str) -> bool:
+        """Whether a folder inside a thing's own folder is read by search.
+
+        A folder called Content is: only Work/Content is the one ./os never
+        looks in, and it is never inside a thing. Website copy kept in
+        Work/Website Redesign/Content was left out as if it were footage."""
+        return not (name.startswith(".") or name in self.NOT_READ_INSIDE
+                    or name in IGNORE_NAMES or name.endswith(IGNORE_SUFFIXES))
+
+    def _inside(self, it: Item) -> list[tuple[Path, str]]:
+        """The other notes in a thing's own folder, as (file, what it says).
+
+        Search read a folder's page and nothing else, so a quote kept in
+        Work/Kitchen Refit/quotes.md was never found, nor anything a person
+        kept inside a piece of work. Text files and TextEdit notes in it are
+        read now, up to the caps above. Never another thing's files: a thing
+        filed inside this folder is searched as itself.
+
+        The files at the top come first, then one level down, and so on; and
+        in each level every folder takes a turn, one file each. Read folder by
+        folder, 45 chapters in Chapters/ used up the whole cap, and the one
+        note in Research/ beside it was never searched."""
+        key = str(it.path)
+        if key in self._inside_read:
+            return self._inside_read[key]
+        out: list[tuple[Path, str]] = []
+        self._inside_read[key] = out
+        if not it.is_dir or it.path.is_symlink() or words_file(it.path) is not None:
+            return out
+        for shelves in self.contents(it).shelves:
+            for turn in range(max(len(shelf) for shelf in shelves)):
+                for shelf in shelves:
+                    if turn >= len(shelf):
+                        continue
+                    if len(out) >= self.INSIDE_FILES or self._budget <= 0:
+                        return out
+                    path = shelf[turn]
+                    if path.suffix.lower() == ".rtf":
+                        text = rtf_words(read_rtf(path, self.INSIDE_CHARS * 4))
+                    elif path.name.endswith(".card.md"):
+                        # A card: what it says is about the file beside it,
+                        # its tags and description as much as its words.
+                        meta, text = parse_frontmatter(read_text(path, self.INSIDE_CHARS))
+                        tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+                        text = " ".join([str(meta.get("description") or ""),
+                                         " ".join(map(str, tags)), text])
+                        path = path.with_name(path.name[:-len(".card.md")])
+                    else:
+                        _, text = parse_frontmatter(read_text(path, self.INSIDE_CHARS))
+                    if text.strip():
+                        self._budget -= len(text)
+                        # A TextEdit note with a picture is the .rtfd, not its TXT.rtf
+                        out.append((path.parent if path.parent.suffix.lower() == ".rtfd"
+                                    else path, text))
+        return out
+
+    def contents(self, it: Item, all_of_it: bool = False) -> "Contents":
+        """What is in a thing's own folder, as far as search goes into it.
+
+        `shelves`: the text files whose words are read (_inside), level by
+        level, one list for each folder. `named`: every file and folder in it
+        whose name is matched. `unseen`: asked for `all_of_it`, the files
+        further in than names are matched, which ./os check names.
+
+        Search matched the words of text files and nothing else, so a folder
+        of PDFs, Notes/Taxes, or of Word files, Notes/School, was one thing
+        whose files no name found, the ones added later too, while sort said
+        nothing was waiting and check said all good (review, 2026-09-30).
+        Every name in it is matched now. Not the names inside a code project
+        or a program's document, `My Novel.scriv`: those are the program's,
+        and its own name is matched as the one file it is."""
+        key = f"{it.path}\0{all_of_it}"
+        if key in self._contents:
+            return self._contents[key]
+        got = self._contents[key] = Contents()
+        if not it.is_dir or it.path.is_symlink():
+            return got
+        # ./os check asks for all of it, and has no use for the words.
+        words_ok = words_file(it.path) is None and not all_of_it
+        level, looked, depth = [(it.path, document_bundle(it.path))], 0, 0
+        while level:
+            shelves, below = [], []
+            for here, sealed in level:
+                words_too = words_ok and looked < self.INSIDE_LOOKED
+                names_too = not sealed and looked < self.NAMES_LOOKED and depth < self.NAMES_DEPTH
+                if not (words_too or names_too or (all_of_it and not sealed)):
+                    continue
+                if not sealed and not names_too and not got.why:
+                    got.why = "many" if looked >= self.NAMES_LOOKED else "deep"
+                if looked >= self.NAMES_LOOKED * 5:
+                    got.more = True           # ./os check counts this far, and no further
+                    break
+                try:
+                    with os.scandir(here) as found:
+                        entries = sorted(found, key=lambda e: e.name)
+                except OSError:
+                    continue
+                looked += len(entries)
+                sealed = sealed or any(e.name in CODE_MARKERS for e in entries)
+                shelf = []
+                for entry in entries:
+                    path = here / entry.name
+                    try:
+                        if str(path) in self._items_at or entry.is_symlink():
+                            continue
+                        folder = entry.is_dir()
+                    except OSError:
+                        continue
+                    if folder:
+                        if not self._read_inside(entry.name):
+                            continue
+                        bundle = document_bundle(path)
+                        if names_too and not sealed:
+                            got.named.append((path, name_words(path.stem if bundle else entry.name)
+                                              + " " + nfc(entry.name), True))
+                        below.append((path, sealed or bundle))
+                        continue
+                    name = entry.name
+                    # A card put back beside its file in here (Doctor, `card-
+                    # left-behind`) is read for that file; one whose file has
+                    # gone is said by ./os check.
+                    if name.endswith(".card.md") and not name.startswith(".") and not sealed:
+                        if (here / name[:-len(".card.md")]).exists():
+                            if words_too:
+                                shelf.append(path)
+                        elif all_of_it:
+                            got.lone.append(path)
+                        continue
+                    if name.startswith(".") or name.endswith(IGNORE_SUFFIXES) \
+                            or name in self.LITTER or path == it.spine:
+                        continue
+                    if words_too and name not in self.MADE_HERE \
+                            and path.suffix.lower() in TEXT_SUFFIXES | {".rtf"}:
+                        shelf.append(path)
+                    if sealed:
+                        continue
+                    if names_too:
+                        got.named.append((path, name_words(path.stem) + " " + nfc(name), False))
+                    elif all_of_it:
+                        got.unseen.append(path)
+                if shelf:
+                    shelves.append(shelf)
+            if shelves:
+                got.shelves.append(shelves)
+            level, depth = below, depth + 1
+        return got
 
     # -- scoring ------------------------------------------------------------
 
@@ -4008,31 +5107,85 @@ class Finder:
             raw = ""
             if it.spine and it.spine.exists() and it.spine.suffix.lower() in TEXT_SUFFIXES:
                 _, raw = parse_frontmatter(read_ends(it.spine))
-                raw = nfc(COMMENT_RE.sub(" ", raw))
-            body = raw.lower()
+            # An RTF is read itself, not only its card: TextEdit goes on saving
+            # into the same file, and a card written before that, or before
+            # cards carried the words at all, knows none of it. The card's own
+            # copy is left out, so a word is not counted twice, and one taken
+            # out of the file is not found. Only the copy: everything from the
+            # heading down was dropped, and a sentence added at the end of the
+            # card, where an AI or a person naturally puts one, was never found.
+            # A card whose end line was edited away is read whole: a word
+            # counted twice is better than one of theirs never found.
+            rtf = words_file(it.path)
+            if rtf is not None:
+                head, _, rest = raw.partition(CARD_WORDS)
+                if CARD_WORDS_END in rest:
+                    rest = rest.split(CARD_WORDS_END, 1)[1]
+                raw = head + "\n" + rest + "\n" + rtf_words(read_rtf(rtf))
+            raw = nfc(COMMENT_RE.sub(" ", raw))
+            # Its page first, then the other notes in its folder (see _inside):
+            # (the file it came from, or None for the page; the words; lowered)
+            pages = [(None, raw, raw.lower())]
+            for where, text in self._inside(it):
+                text = nfc(COMMENT_RE.sub(" ", text))
+                pages.append((where, text, text.lower()))
+            # Then the name of everything in its folder (see contents), with no
+            # words of its own to show: the line under the hit says which file.
+            if it.is_dir:
+                pages += [(where, "", words.lower())
+                          for where, words, _folder in self.contents(it).named]
+            # The file whose name has every word asked for, when one does:
+            # `img 39099` is IMG_39099.jpg, not the first IMG_ in the folder.
+            named_all = next((where for where, text, low in pages[1:] if not text
+                              and all(t.weight(low) for t in terms)), None) \
+                if len(terms) > 1 else None
 
             # Collect the words we have already read, so a failed search can ask
             # "did you mean" without opening a single extra file.
             if vocabulary is not None and len(vocabulary) < 60_000:
                 vocabulary.update(WORD_RE.findall(hay_title))
                 vocabulary.update(WORD_RE.findall(hay_meta))
-                vocabulary.update(WORD_RE.findall(body[:8_000]))
+                for _where, _text, low in pages:
+                    vocabulary.update(WORD_RE.findall(low[:8_000]))
 
-            score, snippet = 0.0, (it.blurb or it.summary)
+            score, snippet, found_in, shown = 0.0, (it.blurb or it.summary), None, False
             for term in terms:
                 score += 10 * term.weight(hay_title)
                 score += 4 * term.weight(hay_meta)
-                hits, worth, form = term.count(body)
+                hits, found = 0, []        # (worth, form, page) for each page it is in
+                for one in pages:
+                    n, w, f = term.count(one[2])
+                    if n:
+                        hits += n
+                        found.append((w, f, one))
                 if not hits:
                     continue
-                score += min(hits, 8) * 1.2 * worth
-                if not snippet or form not in (snippet or "").lower():
-                    pos = body.find(form)
-                    snippet = gist(raw[max(0, pos - 60): pos + 120], 200)
+                score += min(hits, 8) * 1.2 * found[0][0]
+                # Show the words around it, unless they already show; and never
+                # swap the words found inside for a word of its own name, or for
+                # nothing. `./os find "harlow kitchen"` showed the quote from
+                # Harlow Joinery, then "kitchen" in the heading of the kitchen
+                # refit's page replaced it with an empty line and lost the file.
+                if found[0][1] in (snippet or "").lower() or (shown and term.weight(hay_title)):
+                    continue
+                for _worth, form, (where, text, low) in found:
+                    if not text:
+                        # Found by a file's name. The file is what to show,
+                        # never in place of words already found inside.
+                        if not shown:
+                            snippet, found_in, shown = "", named_all or where, True
+                        break
+                    pos = low.find(form)
+                    words = gist(text[max(0, pos - 60): pos + 120], 200)
+                    if words:
+                        snippet, found_in, shown = words, where, True
+                        break
             if len(terms) > 1 and all(t.weight(hay_title) for t in terms):
                 score += 12
             if score > 0:
                 results.append((round(score, 2), it, snippet or ""))
+                if found_in is not None:
+                    self.found_in[str(it.path)] = found_in
         results.sort(key=lambda r: (-r[0], r[1].title.lower()))
         return results
 
@@ -4047,7 +5200,11 @@ class Finder:
         # "one sentence" should not hand back nine skill files ahead of the two
         # notes they were actually looking for. Ask for them by kind to see them.
         toolkit = {"skill", "agent", "hook"}
-        items = [it for it in self.scanner.scan()
+        every = self.scanner.scan()
+        self.found_in, self._inside_read, self._budget = {}, {}, self.INSIDE_BUDGET
+        self._contents = {}
+        self._items_at = {str(it.path) for it in every}
+        items = [it for it in every
                  if (kind in toolkit or it.kind not in toolkit)
                  and (not kind or it.kind == kind)
                  and (not bucket or it.bucket.lower().startswith(bucket.lower()))]
@@ -4110,7 +5267,7 @@ class Finder:
         hits.sort(key=lambda h: -h[0])
         return [it for _score, it in hits]
 
-    def by_id(self, ident: str) -> Item | None:
+    def by_id(self, ident: str, archived: bool = False) -> Item | None:
         """The one item carrying this name. An empty string matches nothing.
 
         Things are addressed by name now — the folder or file name, or the
@@ -4122,20 +5279,115 @@ class Finder:
         then the title. Two notes can share a title: taking the first title
         match the scan met, `./os close same-title-here` put away
         same-title-here-2.md, and the handle `resume-review-2` that ./os had
-        just printed found nothing at all."""
+        just printed found nothing at all.
+
+        One name can be on two things: Pizza.md in My Recipes and in Recipes.
+        ./os show took the first, and the other could be reached only by
+        renaming one by hand (review, 2026-09-30). Every thing the name fits
+        is kept in `ambiguous`, for the_one() to ask which is meant; the first
+        is still returned, to callers asking only whether a name is in use.
+        The folder a thing is in tells them apart, `Recipes/Pizza`, and so
+        does its path from the top of this folder. Something live is meant
+        before something put away, as it always was; `archived` turns that
+        round for ./os back, which only ever means one put away. After
+        `./os close Acme/Website`, the `./os back website` it printed brought
+        out nothing, since Work/Website was live and taken first."""
+        self.ambiguous = []
         ident = nfc(ident).strip()
         if not ident:
             return None
-        items = [it for it in self.scanner.scan()
-                 if it.kind in ("project", "note", "asset", "archive")]
-        exact, slug = ident.lower(), slugify(ident).lower()
-        for same in (lambda it: nfc(it.ident).lower() == exact,
-                     lambda it: slugify(nfc(it.ident)).lower() == slug,
-                     lambda it: slugify(nfc(it.title)).lower() in (exact, slug)):
-            for it in items:
-                if same(it):
-                    return it
-        return None
+        items = self._scanned = [it for it in self.scanner.scan()
+                                 if it.kind in ("project", "note", "asset", "archive")]
+        found = self._named(ident, items) or (self._placed(ident, items) if "/" in ident else [])
+        if not found:
+            return None
+        shelves = {n for n, spec in self.os.buckets().items() if spec.get("role") == "archive"}
+        pool = [it for it in found if (it.bucket in shelves) == archived] or found
+        if len(pool) > 1:
+            self.ambiguous = pool
+        return pool[0]
+
+    def _slug(self, text: str) -> str:
+        """slugify(), remembered: asking which of 800 things a name fits
+        slugged every one of them again for each name asked about, and ./os
+        took three seconds on a folder of 200 folders of the same four notes."""
+        got = self._slugs.get(text)
+        if got is None:
+            got = self._slugs[text] = slugify(nfc(text)).lower()
+        return got
+
+    def _where(self, it: Item) -> tuple[str, str, list[str]]:
+        """A thing's name, its path from the top and the folders it is in, as
+        they are compared: worked out once for each, for the same reason."""
+        key = str(it.path)
+        got = self._wheres.get(key)
+        if got is None:
+            at = nfc(self.os.rel(it.path))
+            got = self._wheres[key] = (nfc(it.ident).lower(), at.lower(),
+                                       [self._slug(p) for p in Path(at).parent.parts])
+        return got
+
+    def _named(self, ident: str, items: list[Item], where=None) -> list[Item]:
+        """Every thing answering to this name, by the first way that fits any:
+        its name on disk, that name as a handle, then its title."""
+        exact, slug = ident.lower(), self._slug(ident)
+        for same in (lambda it: self._where(it)[0] == exact,
+                     lambda it: self._slug(it.ident) == slug,
+                     lambda it: self._slug(it.title) in (exact, slug)):
+            hits = [it for it in items if same(it) and (where is None or where(it))]
+            if hits:
+                return hits
+        return []
+
+    def _placed(self, said: str, items: list[Item]) -> list[Item]:
+        """A name with folders it is in, in order: `Recipes/Pizza`, or
+        `Archive/Website` for Archive/2026/Work/Website, or the whole path,
+        `Notes/Recipes/Pizza.md`."""
+        said = said.strip().strip("/")
+        whole = [it for it in items if self._where(it)[1] == said.lower()]
+        if whole:
+            return whole
+        parts = [p.strip() for p in said.split("/") if p.strip()]
+        if len(parts) < 2:
+            return []
+        tail = [self._slug(p) for p in parts[:-1]]
+
+        def under(it: Item) -> bool:
+            ups = iter(self._where(it)[2])
+            return all(any(up == want for up in ups) for want in tail)
+        return self._named(parts[-1], items, under)
+
+    def typed_names(self, items: list[Item], shown: list[Item]) -> dict[str, str]:
+        """What to print after `./os show` for each thing `shown`: its handle,
+        or, when another live thing answers to that too, the name with its
+        folder. `items` is everything, to tell which names are shared.
+
+        The front screen printed `./os show garden` beside the Garden in Work
+        while Notes had a Garden too, and that command stopped with "which
+        one?"; the brief told the AI the same handle."""
+        live = [it for it in items if it.kind in ("project", "note", "asset")
+                and self.os.buckets().get(it.bucket, {}).get("role") != "archive"]
+        by_slug: dict[str, list[Item]] = {}
+        for it in live:
+            by_slug.setdefault(self._slug(it.ident), []).append(it)
+        out = {}
+        for it in shown:
+            twins = by_slug.get(self._slug(it.ident), [])
+            out[str(it.path)] = self.qualified(it, twins, live) if len(twins) > 1 else handle(it)
+        return out
+
+    def qualified(self, it: Item, among: list[Item], items: list[Item] | None = None) -> str:
+        """The shortest way to name `it` that nothing else answers to, ready to
+        type: its name with the folder it is in, `"My Recipes/Pizza"`, then
+        more of the folders above, and failing all that its whole path."""
+        items = items if items is not None else self._scanned or among
+        items = [i for i in items if i.kind in ("project", "note", "asset", "archive")]
+        ups = Path(self.os.rel(it.path)).parent.parts
+        tries = ["/".join((*ups[-n:], it.ident)) for n in range(1, len(ups) + 1)]
+        said = next((t for t in tries
+                     if [o.path for o in (self._named(t, items) or self._placed(t, items))]
+                     == [it.path]), self.os.rel(it.path))
+        return shell_word(said)
 
 
 class Archivist:
@@ -4144,9 +5396,7 @@ class Archivist:
         self.finder = Finder(os_)
 
     def archive(self, ident: str) -> Path:
-        item = self.finder.by_id(ident)
-        if item is None:
-            die(f"nothing here is called {ident} — try  ./os find {ident}")
+        item = the_one(self.os, ident, "close", finder=self.finder)
         shelf = self.os.bucket_for_role("archive")
         if item.bucket == shelf:
             die(f"{ident} is already in the archive — ./os back {handle(item)} brings it out")
@@ -4172,9 +5422,7 @@ class Archivist:
         return moved
 
     def restore(self, ident: str) -> Path:
-        item = self.finder.by_id(ident)
-        if item is None:
-            die(f"nothing here is called {ident} — try  ./os find {ident}")
+        item = the_one(self.os, ident, "back", finder=self.finder, archived=True)
         if item.bucket != self.os.bucket_for_role("archive"):
             die(f"{ident} is not in the archive — ./os show {handle(item)} says where it is")
         meta, text = {}, ""
@@ -4443,6 +5691,623 @@ class Backup:
         return out
 
 
+#: The git that History runs. ZENITH_GIT stands in for it, so the checks can
+#: try a computer that has none.
+GIT = os.environ.get("ZENITH_GIT") or "git"
+#: Where the published template lives. A folder downloaded with `git clone`
+#: carries its history, and that one is the template's own.
+TEMPLATE_REPO = "zidery333/os-template"
+
+
+class History:
+    """The folder's own history, kept with git, so an edit made by hand can be
+    taken back to how it stood at the last checkpoint.
+
+    `./os undo` only reverses what ./os itself did. A line deleted from About
+    me by hand was gone for good, nothing ever saved, and `./os help` still said
+    every change could be undone (stranger test, 2026-09-30). So the first
+    `./os` in a new folder starts a history, the way main's /setup does, and
+    /wrapup ends each session with `./os checkpoint`. A zip from `./os backup`
+    wasn't enough: it copies all the footage every time.
+
+    Footage in Work/Content is left out by .gitignore, and so are the usual
+    names for keys and passwords, with a second look at names for the ones it
+    missed. A code project with a git of its own keeps its files there. It
+    only ever writes in a history ./os started itself: one that came with a
+    `git clone` of the template, one the person keeps themselves, and a bigger
+    one around this folder (a home folder kept in git, which every save would
+    take whole) are left alone."""
+
+    #: Set in .git/config when ./os starts the history: it's ours to write in.
+    MARK = "zenith.history"
+    #: Why the last save failed, kept beside it until one works: what the
+    #: brief says instead of promising the next checkpoint will start it.
+    FAILED = "zenith.failed"
+    #: Pointed at the wrong history, every command here would write in it: a
+    #: git hook running ./os sets these for the repository it belongs to.
+    NOT_OURS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX",
+                "GIT_NAMESPACE")
+    #: Names that hold keys or passwords, for when .gitignore missed one: the
+    #: list main's nightly save leaves out. Once in the history, a key stays
+    #: there after the file is deleted. Only a file's own name is read, so a
+    #: folder called "keeping secrets" is a subject, not a leak.
+    PRIVATE = re.compile(r"^\.env|\.(pem|p12|kdbx)$|_rsa$|^id_(dsa|ecdsa|ed25519)$|^\.netrc$"
+                         r"|^token\.json$|^api[-_]?keys?\.|^service[-_]?account.*\.json$")
+    #: "secret", "credential" or "password" anywhere in a name, except a
+    #: note's: ./os names a note after its title, and "Secret Santa" is a
+    #: plan, not a key. `./os help checkpoint` promised names like a password,
+    #: and passwords.txt still went in (review, 2026-09-30).
+    PRIVATE_WORDS = re.compile(r"secret|credential|password")
+    #: What `_git` says when git ran out of time and was stopped.
+    SLOW = 124
+    TOO_SLOW = ("git took more than two minutes to take it all in — big files "
+                "belong in Work/Content, which the history leaves out")
+
+    @staticmethod
+    def first_wait() -> float:
+        """How long the first run gives git to take in what's already here.
+
+        The start-of-chat check stops everything at 15 seconds. 382 MB of
+        photos took the first run 9 seconds, and one stopped partway left
+        git's lock behind, so every checkpoint after it failed (review,
+        2026-09-30). Past this, the first checkpoint starts it instead.
+        ZENITH_HISTORY_WAIT sets it, so the checks need not wait it out."""
+        try:
+            return max(0.1, float(os.environ.get("ZENITH_HISTORY_WAIT") or 8))
+        except ValueError:
+            return 8.0
+
+    def __init__(self, os_: "Zenith"):
+        self.os = os_
+        self.root = os_.root
+
+    @staticmethod
+    def no_git() -> bool:
+        """No git to run. On a Mac without Apple's developer tools, git is only
+        a stand-in that pops up an install box, so it counts as none: the same
+        test ./os makes of Python before it starts."""
+        if not shutil.which(GIT):
+            return True
+        if sys.platform == "darwin" and GIT == "git":
+            try:
+                return subprocess.run(["xcode-select", "-p"], capture_output=True,
+                                      timeout=10).returncode != 0
+            except (OSError, subprocess.SubprocessError):
+                return True
+        return False
+
+    @staticmethod
+    def get_git() -> str:
+        """How to get git, in one line a person can follow."""
+        if sys.platform == "darwin":
+            return "type  xcode-select --install  to add it"
+        return "install git to add it"
+
+    def _git(self, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k not in self.NOT_OURS}
+        began = time.time() - 1
+        try:
+            return subprocess.run([GIT, "-C", str(self.root), *args], capture_output=True,
+                                  text=True, errors="replace", env=env, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Stopped, git leaves its lock behind, and every save after would
+            # fail on it. The one made since this began was that git's own.
+            lock = self.root / ".git" / "index.lock"
+            try:
+                if lock.stat().st_mtime >= began:
+                    lock.unlink()
+            except OSError:
+                pass
+            return subprocess.CompletedProcess(list(args), self.SLOW, "", "git took too long")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return subprocess.CompletedProcess(list(args), 1, "", str(exc))
+
+    def where(self) -> str:
+        """'no git', 'none' (no history yet), 'ours', 'template' (it came with
+        a git clone, and nothing of theirs is in it yet), 'theirs' (one ./os
+        didn't start) or 'inside' (this folder sits inside a bigger one)."""
+        if self.no_git():
+            return "no git"
+        if (self.root / ".git").exists():
+            if self._git("config", "--local", "--get", self.MARK).stdout.strip() == "true":
+                return "ours"
+            origin = self._git("remote", "get-url", "origin").stdout.strip()
+            cloned = re.search(r"[:/]" + re.escape(TEMPLATE_REPO) + r"(?:\.git)?/?$", origin)
+            if not cloned:
+                return "theirs"
+            # The template's, only while it holds nothing past the download.
+            # Once they save in it themselves it's theirs: read as the
+            # template's, every brief told them their changes weren't going in
+            # it, and to  rm -rf .git , which would have thrown their own
+            # saves away (review, 2026-09-30). On any branch or in a stash, not
+            # only the one open: saves on a branch of their own still got told
+            # to rm -rf .git.
+            ahead = self._git("rev-list", "--count", "--all", "--not", "--remotes").stdout
+            return "template" if ahead.strip() == "0" else "theirs"
+        if self._git("rev-parse", "--show-toplevel").returncode == 0:
+            return "inside"
+        return "none"
+
+    def _commit(self, message: str) -> subprocess.CompletedProcess:
+        # With no name set, a Mac makes one up from the computer's, and Linux
+        # refuses to save at all; so the one they gave here, or "me". Their
+        # own hooks and signing are for their code, not their notes.
+        named = all(self._git("config", key).stdout.strip() for key in ("user.name", "user.email"))
+        who = [] if named else ["-c", f"user.name={self.os.config.get('owner') or 'me'}",
+                                "-c", "user.email=me@localhost"]
+        return self._git(*who, "-c", "commit.gpgsign=false", "commit", "-q",
+                         "--no-verify", "-m", message)
+
+    @staticmethod
+    def _why(proc: subprocess.CompletedProcess) -> str:
+        """git's reason, in its own words: the first "error:" line, which
+        names the file, over the last, which only says it gave up. A file it
+        wasn't allowed to read was "fatal: adding files failed", and nobody
+        could tell which (review, 2026-09-30)."""
+        said = [line.strip() for line in (proc.stderr or proc.stdout or "").splitlines()
+                if line.strip()]
+        errors = [line[len("error:"):].strip() for line in said if line.startswith("error:")]
+        if errors:
+            locked = re.match(r'open\("(.+)"\): Permission denied$', errors[0])
+            return f"{locked.group(1)} can't be read, as this computer won't let git open it" \
+                if locked else errors[0]
+        return said[-1] if said else "git said no"
+
+    @classmethod
+    def looks_private(cls, name: str) -> bool:
+        name = name.rsplit("/", 1)[-1].lower()
+        return bool(cls.PRIVATE.search(name)) or (
+            not name.endswith(".md") and bool(cls.PRIVATE_WORDS.search(name)))
+
+    def _add(self, timeout: float = 120) -> tuple[subprocess.CompletedProcess, dict]:
+        """Everything as it is now, ready for the next save, but for two kinds
+        of thing, which it names.
+
+        A code project with a git of its own keeps its files there. One set up
+        with nothing saved in it yet made `git add` fail for the whole folder,
+        so no checkpoint was ever kept again (review, 2026-09-30). And a file
+        named like a key or a password, if .gitignore missed it."""
+        # git lists a folder with a git of its own as one name ending in /.
+        found = self._git("ls-files", "--others", "--exclude-standard", "-z")
+        # A crash can garble git's list of what was taken in (.git/index).
+        # Every checkpoint after it failed with "bad signature 0x00000000",
+        # said in every brief, while ./os check said all good (review,
+        # 2026-09-30). The list holds nothing that isn't in the files and
+        # the last save, so it's made again from them.
+        if found.returncode != 0 and re.search(
+                r"index file corrupt|bad signature|index file smaller|bad index", found.stderr):
+            (self.root / ".git" / "index").unlink(missing_ok=True)
+            found = self._git("ls-files", "--others", "--exclude-standard", "-z")
+        found = found.stdout
+        own = sorted(n.rstrip("/") for n in found.split("\0") if n.endswith("/"))
+        added = self._git("add", "-A", "--", ".", *(f":(exclude,literal){n}" for n in own),
+                          timeout=timeout)
+        if added.returncode != 0:
+            return added, {}
+        staged = self._git("diff", "--cached", "--name-only", "--diff-filter=d", "-z").stdout
+        private = [n for n in staged.split("\0") if n and self.looks_private(n)]
+        if private:
+            spec = [f":(literal){n}" for n in private]
+            # The second is for a history with nothing saved in it yet.
+            if self._git("reset", "-q", "--", *spec).returncode != 0:
+                self._git("rm", "-q", "--cached", "--ignore-unmatch", "--", *spec)
+        return added, {"own": own, "private": private}
+
+    def _begin(self, message: str, timeout: float = 120) -> dict:
+        """Start one where there was none, holding everything as it is now."""
+        done = self._git("init", "-q")
+        # Marked before anything is added: a first run stopped partway (the
+        # start-of-chat check gives it 15 seconds) leaves one the next
+        # checkpoint finishes, not one it takes for somebody else's.
+        if done.returncode == 0:
+            done = self._git("config", self.MARK, "true")
+        if done.returncode != 0:
+            return {"result": "failed", "why": self._why(done)}
+        # Not taken back when the rest fails: marked, with nothing saved in
+        # it, it is what the next checkpoint finishes (see keep). ./os never
+        # deletes a .git.
+        return self._save(message, timeout, first=True)
+
+    def _head(self) -> bool:
+        """Whether there is a last save for the next one to follow."""
+        return self._git("rev-parse", "--verify", "-q", "HEAD^{commit}").returncode == 0
+
+    def _lost(self) -> dict:
+        """A last save git has lost track of: the file naming it is there but
+        empty or garbled, which a crash in the middle of a save can leave, or
+        gone while git's record of the branch says it had saves.
+
+        It used to be read as "nothing saved yet", and the whole history was
+        deleted and started again: every earlier checkpoint gone, with the
+        record that could have found them (review, 2026-09-30). git's own
+        commands refuse to touch a branch in this state, so what's found here
+        is the save it last pointed at, for the one line that puts it back."""
+        git = self.root / ".git"
+        try:
+            head = (git / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return {}
+        ref = head[len("ref:"):].strip() if head.startswith("ref:") else ""
+        if not ref.startswith("refs/heads/") or ".." in ref:
+            return {}
+        # Neither is a branch nothing was saved on yet: a first run cut off.
+        try:
+            had = (git / ref).is_file() or (git / "logs" / ref).stat().st_size > 0
+        except OSError:
+            had = False
+        if not had:
+            return {}
+        last = ""
+        for record in (git / "logs" / ref, git / "logs" / "HEAD"):
+            try:
+                lines = record.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            # Newest first, the first save git can read whole: the one the
+            # branch names may be there with what it holds emptied.
+            for line in reversed(lines):
+                sha = (line.split() + ["", ""])[1]
+                if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) and self._whole(sha):
+                    last = sha
+                    break
+            if last:
+                break
+        return {"ref": ref, "last": last}
+
+    def _looks_fine(self) -> bool | None:
+        """Whether the branch plainly names a save that is whole, read
+        straight off the disk: the check runs on every ./os, and this spares
+        it three gits. None when that can't be told from here: git has
+        packed the save away, which it only does with ones it wrote whole.
+
+        Only the name was read. A crash more often leaves the save's own file
+        empty, and that was taken as fine: the checkpoint and every brief said
+        to run ./os check --fix, which found nothing to fix (review,
+        2026-09-30). Then the save was read and not what it holds: with the
+        list of its files emptied, every checkpoint after said nothing had
+        changed and kept nothing, while check said all good (review, the
+        same day). So that list is read too."""
+        git = self.root / ".git"
+        try:
+            head = (git / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return True         # no history here, or not one to look inside
+        if not head.startswith("ref:"):
+            return True         # a save picked by hand, not a branch
+        ref = head[len("ref:"):].strip()
+        try:
+            named = (git / ref).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            try:
+                packed = (git / "packed-refs").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return False
+            named = next((line.split()[0] for line in packed.splitlines()
+                          if line.endswith(" " + ref)), "")
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", named):
+            return False
+        wants = b"commit "
+        while True:
+            try:
+                saved = (git / "objects" / named[:2] / named[2:]).read_bytes()
+            except FileNotFoundError:
+                return None     # packed away
+            except OSError:
+                return False
+            try:
+                start = zlib.decompressobj().decompress(saved, 128)
+            except zlib.error:
+                return False
+            if not start.startswith(wants):
+                return False
+            if wants == b"tree ":
+                return True
+            listed = re.match(rb"commit \d+\0tree ([0-9a-f]{40}|[0-9a-f]{64})\n", start)
+            if not listed:
+                return False
+            named, wants = listed.group(1).decode(), b"tree "
+
+    def _whole(self, save: str) -> bool:
+        """Whether git can read a save and everything in it."""
+        return self._git("rev-list", "--objects", "--no-walk", save).returncode == 0
+
+    #: How git names the file of one thing it saved, in .git/objects/<2>/.
+    SAVED_FILE = re.compile(r"[0-9a-f]{38}|[0-9a-f]{62}")
+
+    def _emptied(self) -> list:
+        """git's files of what it saved that a crash left empty.
+
+        git never writes one empty, so each is a crash's; and while one is
+        there, git takes it as written and never writes it again. With only
+        the files of what a checkpoint took in emptied, the save after it
+        took them as they were, and could never be read back, while check
+        said all good (review, 2026-09-30). One look at each, on every ./os."""
+        found = []
+        try:
+            for fan in os.scandir(self.root / ".git" / "objects"):
+                if len(fan.name) != 2 or not fan.is_dir(follow_symlinks=False):
+                    continue
+                for part in os.scandir(fan.path):
+                    if self.SAVED_FILE.fullmatch(part.name) \
+                            and part.stat(follow_symlinks=False).st_size == 0:
+                        found.append(Path(part.path))
+        except OSError:
+            pass
+        return found
+
+    def _never_saved(self) -> bool:
+        """Whether git holds no save it could ever read back: a crash during
+        the very first one. Read off the disk, since git's own commands stop
+        at the first empty file. Anything packed away was a save once."""
+        objects = self.root / ".git" / "objects"
+        try:
+            if any((objects / "pack").glob("*.pack")):
+                return False
+            fans = [f for f in os.scandir(objects) if len(f.name) == 2
+                    and f.is_dir(follow_symlinks=False)]
+            for fan in fans:
+                for part in os.scandir(fan.path):
+                    if not self.SAVED_FILE.fullmatch(part.name) \
+                            or part.stat(follow_symlinks=False).st_size == 0:
+                        continue
+                    try:
+                        with open(part.path, "rb") as fh:
+                            start = zlib.decompressobj().decompress(fh.read(64), 16)
+                    except (OSError, zlib.error):
+                        continue
+                    if start.startswith(b"commit ") and self._whole(fan.name + part.name):
+                        return False
+        except OSError:
+            return False
+        return True
+
+    def lost_track(self) -> dict:
+        """The branch and its last save, when a history ./os keeps has lost
+        track of it, or of what it holds; otherwise nothing. `emptied`: the
+        save the branch names can still be read, and only other files of
+        git's are empty. `first`: a crash during its very first save, so
+        there is no save to go back to, and nothing in it to lose."""
+        fine, emptied = self._looks_fine(), bool(self._emptied())
+        if (fine and not emptied) or self.where() != "ours":
+            return {}
+        head = self._head() and (fine is None or self._whole("HEAD"))
+        if head and not emptied:
+            return {}
+        lost = self._lost()
+        if not head and not lost.get("last") and (emptied or lost) and self._never_saved():
+            return {"ref": lost.get("ref", ""), "last": "", "emptied": True, "first": True}
+        return {**lost, "emptied": True} if lost and head else lost
+
+    def start_again(self) -> dict:
+        """Clear what a crash during the very first save left, and make that
+        save again (./os check --fix). Only git's own files go: the empty
+        ones, its list of what was taken in, and the branch, which names no
+        save. No file of theirs changes. Says how the save went.
+
+        Left as they were, ./os and check said all good, and every checkpoint
+        after failed on git's words about an empty file, said in every brief
+        (review, 2026-09-30)."""
+        git = self.root / ".git"
+        for part in self._emptied():
+            part.unlink(missing_ok=True)
+        (git / "index").unlink(missing_ok=True)
+        try:
+            head = (git / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            head = ""
+        ref = head[len("ref:"):].strip() if head.startswith("ref:") else ""
+        if ref.startswith("refs/heads/") and ".." not in ref:
+            # Its records too: they name no save that can be read, or one
+            # would have been gone back to instead (_lost).
+            for gone in (git / ref, git / "logs" / ref, git / "logs" / "HEAD"):
+                gone.unlink(missing_ok=True)
+        got = self._save("The folder as it was first opened", first=True)
+        return self._remember(got if got["result"] != "later" else
+                              {"result": "failed", "why": self.TOO_SLOW})
+
+    def put_back(self, lost: dict) -> bool:
+        """Point the branch at the last save git's own record of it names
+        that can still be read (./os check --fix). No file of theirs changes.
+
+        git doesn't make sure its newest files reach the disk, so a crash in
+        a checkpoint often leaves several of them empty, not just the save:
+        the files of what was taken in too. While an empty one is there, git
+        takes it as written and never writes it again, and every checkpoint
+        after failed on it. An empty file holds nothing to lose, so those go,
+        and so does git's list of what was taken in, which named them: the
+        next checkpoint takes every file in again. Only then is the save to
+        go back to picked: git reads an emptied file of one as if it were
+        there, and a gone one as gone. Says whether the branch moved."""
+        git = self.root / ".git"
+        was = self._git("rev-parse", "-q", "--verify", "HEAD").stdout.strip()
+        emptied = False
+        for part in self._emptied():
+            try:
+                part.unlink()
+                emptied = True
+            except OSError:
+                pass
+        if emptied:
+            (git / "index").unlink(missing_ok=True)
+        last = self._lost().get("last") or lost["last"]
+        branch = git / lost["ref"]
+        branch.parent.mkdir(parents=True, exist_ok=True)
+        branch.write_text(last + "\n", encoding="utf-8")
+        # git's record still named the saves that can't be read, and git's
+        # own tidy-up stopped on them every time from then on ("failed to
+        # run repack"). Only those lines go; every save in it stays named.
+        self._git("reflog", "expire", "--expire=never", "--expire-unreachable=never",
+                  "--stale-fix", "--all")
+        return last != was
+
+    def _changed(self, *commit: str) -> list:
+        """What a commit holds, or with none given, what is about to go in."""
+        names = self._git("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root",
+                          *commit).stdout if commit else \
+            self._git("diff", "--cached", "--name-only", "-z").stdout
+        return [n for n in names.split("\0") if n]
+
+    def _theirs(self, *commit: str) -> int:
+        """How many of those are the person's own. ./os writes its bookkeeping
+        in .os/ on every run, so counted in, every checkpoint said a file had
+        changed when they had touched nothing."""
+        return len([n for n in self._changed(*commit) if not n.startswith(MARKER + "/")])
+
+    def start(self) -> str:
+        """The first time ./os runs here: start one, unless it can't or shouldn't."""
+        where = self.where()
+        if where == "inside" and self._kept_around():
+            return "kept around"
+        if where != "none":
+            return where
+        began = self._begin("The folder as it was first opened", timeout=self.first_wait())
+        if began["result"] in ("started", "later"):
+            return began["result"]
+        self._remember(began)
+        return f"failed: {began['why']}"
+
+    def _kept_around(self) -> bool:
+        """Whether the bigger history around this folder already keeps its
+        files. Then it's on purpose, and a hand edit can go back in that one:
+        the brief still said, every session, that it kept none, and offered
+        --here, which would have hidden these files from it (review,
+        2026-09-30)."""
+        return bool(self._git("ls-files", "-z", "--", ".").stdout)
+
+    def _remember(self, got: dict) -> dict:
+        """Keep why a save failed beside the history, until one works.
+
+        After a first start that failed, the brief said "the first ./os
+        checkpoint starts it", and every checkpoint failed the same way
+        (review, 2026-09-30). This is what it says instead."""
+        if got["result"] == "failed":
+            self._git("config", self.FAILED, one_line(got.get("why") or "git said no"))
+        elif got["result"] in ("kept", "started", "nothing"):
+            self._git("config", "--unset", self.FAILED)
+        return got
+
+    def keep(self, message: str, here: bool = False) -> dict:
+        """A checkpoint: everything as it is now, with what changed since the last.
+
+        `here` starts one for this folder alone when it sits inside a bigger
+        one: never on its own, only when the person asks for it."""
+        where = self.where()
+        if where == "inside" and here:
+            where = "none"
+        if where == "none":
+            began = self._begin(message)
+            return self._remember(began if began["result"] != "later" else
+                                  {"result": "failed", "why": self.TOO_SLOW})
+        if where == "inside":
+            return {"result": where, "around": self._kept_around()}
+        if where != "ours":
+            return {"result": where}
+        first = not self._head()
+        lost = self.lost_track()
+        if lost:
+            return {"result": "lost", **lost}
+        lock = self.root / ".git" / "index.lock"
+        try:
+            # Left by a save stopped partway, it stops every one after. No git
+            # ./os runs is given two minutes, so one this old is nobody's; and
+            # with nothing saved yet, it was left by a first run cut off (the
+            # start-of-chat check gives it 15 seconds). A first run still
+            # going holds ./os's own lock, so a checkpoint waits for it first.
+            if first or time.time() - lock.stat().st_mtime >= Lock.STALE_AFTER:
+                lock.unlink()
+        except OSError:
+            pass
+        # With nothing saved yet, this is its first save, made where it is.
+        # It used to be deleted and started again, and a history whose last
+        # save was only lost track of was deleted with it (review, 2026-09-30).
+        got = self._save(message, first=first)
+        return self._remember(got if got["result"] != "later" else
+                              {"result": "failed", "why": self.TOO_SLOW})
+
+    def _save(self, message: str, timeout: float = 120, first: bool = False) -> dict:
+        """Take in everything, and save it. `first`: there is no last save, so
+        it says "started", never "changed since the last one" (review,
+        2026-09-30: a first run stopped partway said 67 files had)."""
+        added, left = self._add(timeout)
+        if added.returncode == self.SLOW:
+            return {"result": "later"}
+        if added.returncode != 0:
+            if (self.root / ".git" / "index.lock").exists():
+                return {"result": "failed", "why": "git is busy in this folder, or was "
+                        "stopped partway in the last 15 minutes — try again after that"}
+            return {"result": "failed", "why": self._why(added)}
+        if not first:
+            # A failed look was read as no change: with the last save's list
+            # of files emptied by a crash, every checkpoint said "nothing has
+            # changed since the last one" and kept nothing (review,
+            # 2026-09-30). One that can't be compared isn't kept.
+            since = self._git("diff", "--cached", "--quiet")
+            if since.returncode not in (0, 1):
+                return {"result": "failed", "why": self._why(since)}
+            if since.returncode == 0:
+                return {"result": "nothing", **left}
+        files = self._theirs()
+        done = self._commit(message)
+        if done.returncode == self.SLOW:
+            return {"result": "later"}
+        if done.returncode != 0:
+            return {"result": "failed", "why": self._why(done)}
+        if first:
+            return {"result": "started", "files": files, **left}
+        return {"result": "kept" if files else "nothing", "files": files, **left}
+
+    def first_words(self, began: str) -> str:
+        """The one line the first run says when it couldn't start one."""
+        if began == "no git":
+            return ("this folder can't keep a history of your changes yet, as there's no "
+                    f"git on this computer — {self.get_git()}")
+        if began == "template":
+            return ("this folder's history came with the download, so your changes "
+                    "won't go in it — to keep your own:  rm -rf .git && ./os checkpoint")
+        if began == "inside":
+            return ("this folder sits inside a bigger folder's history, so it keeps none of "
+                    "its own — to keep one for this folder alone:  ./os checkpoint --here")
+        if began == "later":
+            return ("there's a lot in this folder, so the history of your changes "
+                    "starts at the first  ./os checkpoint  instead")
+        if began == "none":
+            return ("nothing is in the history of your changes yet — the first  "
+                    "./os checkpoint  starts it")
+        if began == "lost":
+            return ("this folder's history has lost track of its last save, so nothing "
+                    "more goes in it until that's put back —  ./os check --fix")
+        if began == "emptied":
+            return ("a crash while saving left some of this folder's history empty, so "
+                    "nothing more goes in it until that's put right —  ./os check --fix")
+        if began.startswith("failed"):
+            return f"couldn't start a history of your changes ({began[8:]})"
+        # "kept around": the bigger history keeps this folder's files, which
+        # is somebody's plan, so there's nothing to say.
+        return ""
+
+    def standing(self) -> str:
+        """That line, for as long as it's true: what the brief carries.
+
+        In Claude Code the start-of-chat check is the first run, and it asks
+        for the brief, so the line the first run prints was never seen: a
+        git clone, no git, or a big folder went unsaid until /wrapup, and a
+        later ./os said nothing either (review, 2026-09-30)."""
+        where = self.where()
+        if where == "ours":
+            failed = self._git("config", "--local", "--get", self.FAILED).stdout.strip()
+            lost = self.lost_track()
+            if lost:
+                return self.first_words("emptied" if lost.get("emptied") else "lost")
+            if self._head():
+                return (f"the last  ./os checkpoint  didn't work ({failed}), so hand edits "
+                        "since the one before it can't go back yet") if failed else ""
+            return self.first_words(f"failed: {failed}" if failed else "none")
+        if where == "inside" and self._kept_around():
+            return ""
+        return self.first_words(where)
+
+
 class Reviewer:
     """The anti-decay pass. A second brain dies from neglect, not from bad taxonomy."""
 
@@ -4458,6 +6323,13 @@ class Reviewer:
     HEADING_LINE = re.compile(r"^\s*#{1,6}\s")
     #: Short enough that no line in it is incidental.
     SHORT_NOTE = 25
+    #: Words saying something already does the job without them. A note that
+    #: said "a scheduled task on the Mac does this every week on its own now"
+    #: was listed as done by hand every time, with a skill offered for it.
+    #: Plurals too: "my scheduled tasks do this" and "this is automated now"
+    #: were still listed, and Scheduled Tasks is what Claude's apps call them.
+    DONE_FOR_THEM = re.compile(r"\b(?:scheduled (?:tasks?|jobs?)|cron(?:tab| jobs?)?|launchd|on its own"
+                               r"|by itself|runs itself|automat(?:ed|ically)|on a timer)\b", re.I)
 
     def routines(self, items: list, limit: int = 3) -> list:
         """Things being kept up by hand that an AI could just do.
@@ -4471,8 +6343,9 @@ class Reviewer:
         either alone is ordinary writing. "Every Monday I dread it" is not a
         skill, and neither is a checklist that runs once. A nudge that fires on
         the wrong note is worse than one that never fires — so when in doubt
-        this says nothing. The words themselves live in .os/words.json, where
-        somebody can teach it their own."""
+        this says nothing. The cadence and step words live in .os/words.json,
+        where somebody can teach it their own; the words saying something
+        already does the job are DONE_FOR_THEM, above."""
         spec = self.os.taxonomy.get("routine") or {}
         cadence = [w.lower() for w in spec.get("cadence", [])]
         procedure = [w.lower() for w in spec.get("procedure", [])]
@@ -4496,6 +6369,14 @@ class Reviewer:
             # A word inside backticks is a name — `Daily Emails/` is a folder,
             # not a cadence — so code spans come out before anything is matched.
             clean = self.CODE_SPAN.sub(" ", COMMENT_RE.sub(" ", body))
+            # Already done for them, by a timer or a scheduled task: no job for
+            # a skill. When in doubt this says nothing, as above. Said in the
+            # title, a heading or a line of its own, not inside a step: "2.
+            # upload them to the app, which emails the client automatically"
+            # is how one step goes, and hid a job they said they do by hand.
+            said_done = [ln for ln in [it.title] + clean.split("\n") if not self.STEP_LINE.match(ln)]
+            if self.DONE_FOR_THEM.search("\n".join(said_done)):
+                continue
             # "every Monday I dread it" in the middle of a paragraph is writing,
             # not a routine. Three notes were flagged on 2026-09-08 for the word
             # `weekly` appearing in their prose. A cadence only counts where the
@@ -4556,7 +6437,7 @@ class Reviewer:
             "score": health["score"],
             "counts": {k: v for k, v in Indexer._counts(items).items()},
             "unfiled": [i.title for i in items if Sorter.unmanaged(i)]
-                       + [f.name for f in loose_at_top(self.os.root)],
+                       + [f.name for f in loose_at_top(self.os.root, self.os.buckets())],
             "active": [{"id": i.ident, "title": i.title, "age": days_since(i.updated)} for i in
                        sorted(active, key=lambda x: days_since(x.updated))],
             "stale": [{"id": i.ident, "title": i.title, "age": days_since(i.updated)} for i in active
@@ -4662,7 +6543,7 @@ class Creator:
         for key, value in {
             "{{ID}}": ident, "{{TITLE}}": title, "{{SLUG}}": slugify(title),
             "{{KIND}}": TYPE_ON_DISK.get(kind, kind), "{{STATUS}}": status or "—",
-            "{{DATE}}": today(), "{{DOMAIN}}": domain or "unsorted",
+            "{{DATE}}": today(), "{{DOMAIN}}": domain or catch_all(self.os.taxonomy),
             "{{TAGS}}": ", ".join(tags), "{{YEAR}}": today()[:4],
             "{{OWNER}}": str(self.os.config.get("owner") or ""),
             "{{OS_NAME}}": str(self.os.config.get("name", "Zenith")),
@@ -4827,11 +6708,11 @@ HELP = """
     os sort                        file anything you dropped in by hand
     os check                       is anything broken?   --fix repairs it
     os tidy                        what's gone stale, doubled up or unfiled
-    os backup                      zip a copy of everything · os update gets the newest version
+    os checkpoint                  keep every file as it is, so hand edits can go back
+    os backup                      a zip of it all · os update gets the newest version
     os edit <name>                 open it in your text editor · os rename <name> "<new>"
     os claim <name>                tell other chats you're on it · os release frees it
-    os demo                        two-minute tour, then puts everything back
-    os name "<your name>"          put your name on this folder
+    os demo · os name "<you>"      a two-minute tour · put your name on this folder
 
   {c1}IF YOU NEED IT{c0}
     os last                        what happened the last time anyone worked here
@@ -4839,7 +6720,7 @@ HELP = """
     os test                        prove it still works, on a throwaway copy
     os index / os brief            rebuild the list · what your AI gets told
 
-  Nothing is ever deleted, and every change can be undone with  os undo
+  Nothing is ever deleted, and every move ./os makes can be undone with  os undo
   If the shell says permission denied, run  bash os  once and it fixes itself.
 """
 
@@ -4895,6 +6776,129 @@ def _count(argv: list[str], name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _one_name(os_: "Zenith", argv: list[str], verb: str) -> None:
+    """Stop a command that takes one name when words come after it.
+
+    They were thrown away without a word: `./os done shop "sold out, finished"`
+    put Shop away and the words went nowhere, and `./os close Kitchen
+    Renovation`, unquoted, put away Kitchen instead (stranger test,
+    2026-09-30). Now they stop the run the way an option it doesn't know does,
+    before anything changes, and it shows how to write a name with spaces.
+
+    A bare -- says what comes after it is a name, whatever it looks like, so
+    it's taken out of argv here and the name is argv[0] for the command too.
+    Left in, `./os close -- garden` was told to try `./os close "-- garden"`
+    (review, 2026-09-30)."""
+    if "--" in argv:
+        argv.remove("--")
+        if not argv:
+            die(f"which one?   ./os {verb} fix-the-boiler      (run ./os to see the names)")
+    extra = argv[1:]
+    if not extra:
+        return
+    whole = " ".join(argv)
+    finder = Finder(os_)
+    known = finder.by_id(whole) is not None
+    first = None if known else finder.by_id(argv[0])
+    if first is not None:
+        right = (f"just the name:   ./os {verb} {handle(first)}      "
+                 "(a name with spaces goes in quotes)")
+    else:
+        right = f'a name with spaces goes in quotes:   ./os {verb} "{whole}"' \
+            + ("" if known else "      (run ./os to see the names)")
+    die(f"./os {verb} takes one name, and '{' '.join(extra)}' came after it, "
+        f"so nothing was changed.\n     {right}", 2)
+
+
+def _where_the_name_ends(os_: "Zenith", argv: list[str], verb: str, then: str) -> None:
+    """Stop a command whose name has words of its own after it (decide, rename)
+    when it can't tell where the name ends.
+
+    `./os decide Kitchen Renovation "we tile the floor"`, unquoted, wrote
+    "Renovation we tile the floor" under Kitchen, and rename called Kitchen
+    "Renovation Kitchen Refit" (review, 2026-09-30). Their words are meant, so
+    they can't be refused the way close's are; but when the first few words
+    together are the name of something else here, it asks for quotes.
+
+    Two words count too: `./os decide Kitchen Renovation` may be Kitchen
+    Renovation with the decision left off. But the way it offered to say it
+    was Kitchen's, `./os rename van "Insurance"`, was the same command again,
+    and was refused again (review, 2026-09-30). A bare -- says where the name
+    ends, so that is the way now. It is taken out of argv here, with the name
+    left at argv[0]: left in, the -- was written into the decision, or the
+    new name."""
+    if "--" in argv:
+        cut = argv.index("--")
+        if cut:
+            argv[:] = [" ".join(argv[:cut]), *argv[cut + 1:]]
+            return
+        del argv[0]
+        if not argv:
+            die(f"which one?   ./os {verb} fix-the-boiler      (run ./os to see the names)")
+    words = list(argv)
+    if len(words) < 2:
+        return
+    # One look at the names first: a long decision is many words to try.
+    names: set[str] = set()
+    for it in Scanner(os_).scan():
+        if it.kind in ("project", "note", "asset", "archive"):
+            names.update((slugify(nfc(it.ident)), slugify(nfc(it.title))))
+    finder = Finder(os_)
+    for upto in range(len(words), 1, -1):
+        name = " ".join(words[:upto])
+        longer = finder.by_id(name) if slugify(nfc(name)) in names else None
+        if longer is None:
+            continue
+        first = finder.by_id(words[0])
+        if first is not None and first.path == longer.path:
+            return
+        rest = " ".join(words[upto:])
+        lines = [f"'{name}' is the name of something here, so it isn't clear where "
+                 "the name ends — nothing was changed.",
+                 f'     the name in quotes:   ./os {verb} "{name}" "{rest or then}"']
+        if first is not None:
+            # With nothing after the longer name, quoting the rest is this
+            # same command; the -- is what makes it different.
+            lines.append(f'     or, for {first.ident}:   ./os {verb} {handle(first)} '
+                         + ("" if rest else "-- ") + f'"{" ".join(words[1:])}"')
+        die("\n".join(lines), 2)
+
+
+def _then(argv: list[str]) -> str:
+    """What was typed after the name, as it goes back after another one."""
+    rest = " ".join(argv[1:]).strip()
+    return f' "{rest}"' if rest else ""
+
+
+def the_one(os_: "Zenith", name: str, verb: str, then: str = "",
+            finder: "Finder | None" = None, archived: bool = False) -> Item:
+    """The one thing a command names, or stop before anything changes.
+
+    Nothing by that name says so, and how to look. More than one, Pizza in
+    Work and pizza.md in Notes, lists each with the command that reaches it:
+    show and the rest took the first, and the other could not be reached
+    (review, 2026-09-30). `then` is what the command takes after the name;
+    `archived`, that it means something put away (./os back)."""
+    finder = finder or Finder(os_)
+    item = finder.by_id(name, archived)
+    if item is None:
+        die(f"nothing here is called {name} — try  ./os find {name}")
+    if finder.ambiguous:
+        among = finder.ambiguous
+        # The first dozen: 200 client folders each with its own Ideas.md
+        # printed 200 lines, and took a second and a half to.
+        shown = among[:12]
+        ways = [f"./os {verb} {finder.qualified(it, among)}{then}" for it in shown]
+        width = min(max(vlen(w) for w in ways), 60)
+        lines = [f"{len(among)} things here are called {name} — which one?"]
+        lines += [f"     {pad(way, width)}   {os_.rel(it.path)}" for way, it in zip(ways, shown)]
+        if len(among) > len(shown):
+            lines.append(f"     and {len(among) - len(shown)} more — the folder it's in "
+                         f"tells them apart, like {ways[0].split(' ', 2)[2]}")
+        die("\n".join(lines), 2)
+    return item
+
+
 def cmd_status(os_: Zenith, argv: list[str]) -> int:
     """One screen. Plain sentences, not a dashboard."""
     if _flag(argv, "--json"):
@@ -4902,7 +6906,8 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
         return 0
     if not (os_.dot / "registry.json").exists():
         Indexer(os_).build()
-    items = Scanner(os_).scan()
+    scanner = Scanner(os_)
+    items = scanner.scan()
     health = Doctor(os_).run(items=items)
 
     mark = wordmark(os_.config.get("name", "Zenith"))
@@ -4920,7 +6925,8 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
                 + paint(trunc(blurb, 50), S.FAINT))
     Out.raw()
 
-    waiting = len([i for i in items if Sorter.unmanaged(i)]) + len(loose_at_top(os_.root))
+    waiting = len([i for i in items if Sorter.unmanaged(i)]) \
+        + len(loose_at_top(os_.root, os_.buckets()))
     # Words taken back with ./os undo sit in the same place on purpose, and are
     # no worry at all: counted here they were a nag with no way to stop it.
     taken = os_.taken_back()
@@ -4929,7 +6935,14 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
     held = [i for i in items if i.kind == "project" and i.status == HOLDING
             and i.bucket != os_.bucket_for_role("archive")]
     cold = [i for i in active if days_since(i.updated) >= int(os_.thresholds["stale_project_days"])]
-    errors = [i for i in health["issues"] if i["level"] == "error"]
+    # A file ./os passes over is missing from everywhere, and only ./os
+    # check said so. check --fix puts it right, so it counts here, as does
+    # anything of theirs ./os check --fix makes findable again. Work kept
+    # inside another piece of work is only said, by ./os check: where it is
+    # was their choice.
+    errors = [i for i in health["issues"] if i["level"] == "error"
+              or (i["code"] in Doctor.OUT_OF_REACH
+                  and str(i.get("fix") or "").startswith("./os check --fix"))]
 
     def plural(n, word):
         return f"{n} {word}" + ("" if n == 1 else "s")
@@ -4938,9 +6951,10 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
         # Every "which one?" says "run ./os to see the names", so here they
         # are: the newest few, each with the name a command takes.
         group = sorted(group, key=lambda i: days_since(i.updated))
+        typed = Finder(os_, scanner).typed_names(items, group[:5])
         for it in group[:5]:
             Out.raw("    " + paint(pad(trunc(it.title, 40), 42), S.INK)
-                    + paint(f"./os show {handle(it)}", S.FAINT))
+                    + paint(f"./os show {typed[str(it.path)]}", S.FAINT))
         if len(group) > 5:
             Out.raw("    " + paint(f"and {len(group) - 5} more — every name is in INDEX.md", S.FAINT))
 
@@ -4987,8 +7001,13 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
                 + paint("   ./os tidy", S.FAINT))
 
     Out.raw()
+    # "Open this folder in any AI and just talk" read as if the ChatGPT app
+    # would do. It takes an AI that can run commands on this computer, the
+    # way the README says: Claude Code is the one it names.
     Out.raw("  " + paint('./os save "anything on your mind"', S.GOLD)
-            + paint("   or open this folder in any AI and just talk", S.FAINT))
+            + paint("   writes it down and files it", S.FAINT))
+    Out.raw("  " + paint("claude", S.GOLD)
+            + paint("   or another AI that can run commands here, then just talk", S.FAINT))
     Out.raw("  " + paint("./os help", S.MUTE) + paint("   everything you can type", S.FAINT))
     Out.raw()
     return 0
@@ -5038,13 +7057,21 @@ def cmd_sort(os_: Zenith, argv: list[str]) -> int:
         Out.note(f"...and {len(result['moves']) - 200} more")
     Out.raw()
     bits = []
+    if result.get("brought"):
+        n = result["brought"]
+        bits.append(f"{n} folder{'' if n == 1 else 's'} brought in from the top")
     if result["filed"]:
         bits.append(f"{result['filed']} filed")
     if result["identified"]:
         bits.append(f"{result['identified']} named")
     if result["balanced"]:
         bits.append(f"{result['balanced']} tucked into folders")
-    Out.ok(" · ".join(bits) or "nothing to do")
+    if dry:
+        # Under "a preview — nothing has moved", a tick saying "1 folder
+        # brought in" read as done.
+        Out.note("./os sort would do this: " + (" · ".join(bits) or "nothing"))
+    else:
+        Out.ok(" · ".join(bits) or "nothing to do")
     report_skipped()
     if not dry:
         Out.note("didn't like any of that?  ./os undo puts it all back")
@@ -5064,7 +7091,7 @@ def cmd_index(os_: Zenith, argv: list[str]) -> int:
         # used to add "do not file them without asking", while AGENTS.md,
         # /wrapup and /tidy all say to run `./os sort`, so the AI had to guess.
         loose = sorted(os_.rel(i.path) for i in Scanner(os_).scan() if Sorter.unmanaged(i))
-        loose += [os_.rel(p) for p in loose_at_top(os_.root)]
+        loose += [os_.rel(p) for p in loose_at_top(os_.root, os_.buckets())]
         if loose:
             listed = ", ".join(loose[:4]) + (f" and {len(loose) - 4} more" if len(loose) > 4 else "")
             print(json.dumps({"systemMessage":
@@ -5282,10 +7309,10 @@ def cmd_decide(os_: Zenith, argv: list[str]) -> int:
 
     `os save` guesses which item a decision belongs to and refuses when it
     cannot tell. This is the same line, said by hand, when you already know."""
-    item = _claimable(os_, argv, "decide")
+    item = _claimable(os_, argv, "decide", more=True)
     line = " ".join(argv[1:]).strip()
     if not re.search(r"[^\W_]", line, re.UNICODE):
-        die(f'what was decided?   ./os decide {handle(item)} "we ship Meta first"')
+        die(f'what was decided?   ./os decide {handle(item)} "a new one, not another repair"')
     warn_if_claimed(os_, item)
     return write_decision(os_, item, DECISION_LEAD.sub("", line).strip() or line)
 
@@ -5356,6 +7383,7 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
         except OSError:
             die(f"cannot read {src}")
         stage = os_.dot / "cache" / STAGING
+        top = {p.resolve() for p in loose_at_top(os_.root, os_.buckets())}
         if resolved.parent == stage.resolve() and resolved.is_file():
             # Words `os undo` put back into staging: sort leaves them alone on
             # purpose, so saving the file by its path is how they get filed
@@ -5367,11 +7395,15 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
             os_.save_state()
             landed = resolved
             what = path.name
-        elif resolved in {p.resolve() for p in loose_at_top(os_.root)}:
+        elif resolved in top and (resolved.is_file() or document_bundle(resolved)):
             # Dropped at the top of the folder: filed from where it lies, the
             # way sort files it, instead of refused as already in this folder.
             landed = os_.root / resolved.name
             what = path.name
+        elif resolved in top:
+            # A folder dropped there goes into its bucket under its own name,
+            # and what is in it is filed from there: sort does all of that.
+            die(f"{resolved.name} is already in this folder — ./os sort files it")
         elif resolved == os_.root or os_.root in resolved.parents:
             die(f"{os_.rel(resolved)} is already in this folder — "
                 "nothing to bring in")
@@ -5496,12 +7528,12 @@ def cmd_new(os_: Zenith, argv: list[str]) -> int:
     domain = _opt(argv, "--domain")
     anyway = _flag(argv, "--anyway", "--force")   # before the title is read off argv
     if not argv:
-        die('what kind?   ./os new work "Ship the redesign"\n'
+        die('what kind?   ./os new work "Fix the boiler"\n'
             "     kinds: work, ongoing, note, skill, helper")
     kind = argv[0]
     title = " ".join(argv[1:]).strip().strip('"')
     if not title:
-        die(f'give it a name:   ./os new {kind} "Ship the redesign"')
+        die(f'give it a name:   ./os new {kind} "Fix the boiler"')
     resolved_kind = KIND_ALIASES.get(kind.lower(), kind)
     known = list((os_.taxonomy.get("domains") or {}).keys())
     if domain and known and domain not in known:
@@ -5528,7 +7560,10 @@ def cmd_new(os_: Zenith, argv: list[str]) -> int:
     Out.ok(title)
     Out.note(os_.rel(path))
     if resolved == "skill":
-        Out.note("type  /" + Path(path).parent.name + "  to run it")
+        # "/name" alone is Claude Code's way in. Every other AI finds skills
+        # the way AGENTS.md says: by the request fitting one.
+        Out.note("ask your AI for it by name — in Claude Code,  /" + Path(path).parent.name
+                 + "  runs it too")
     elif resolved == "agent":
         Out.note("your AI will call on @" + Path(path).stem + " when a job suits it")
     elif resolved == "project":
@@ -5551,11 +7586,10 @@ def _set_phase(os_: Zenith, argv: list[str], phase: str) -> int:
     item. Here it is one word in the header."""
     other = HOLDING if phase == PUSHING else PUSHING
     if not argv or not argv[0].strip():
-        die(f"which one?   ./os {'push' if phase == PUSHING else 'hold'} q3-okr-review"
+        die(f"which one?   ./os {'push' if phase == PUSHING else 'hold'} fix-the-boiler"
             "      (run ./os to see the names)")
-    item = Finder(os_).by_id(argv[0])
-    if item is None:
-        die(f"nothing here is called {argv[0]} — try  ./os find {argv[0]}")
+    _one_name(os_, argv, "push" if phase == PUSHING else "hold")
+    item = the_one(os_, argv[0], "push" if phase == PUSHING else "hold")
     # A note can turn out to be something to do. "Buy a birthday present for
     # Sarah" was filed as a note, and nothing could say otherwise: push refused
     # it, new refused the near-duplicate, and moving it by hand breaks undo.
@@ -5723,12 +7757,15 @@ def warn_if_claimed(os_: Zenith, item: Item) -> None:
              f"./os release {handle(item)} if that chat is done")
 
 
-def _claimable(os_: Zenith, argv: list[str], verb: str) -> Item:
+def _claimable(os_: Zenith, argv: list[str], verb: str, more: bool = False) -> Item:
+    """The one item a command names. `more`: words may follow it (decide)."""
     if not argv or not argv[0].strip():
-        die(f"which one?   ./os {verb} ship-the-redesign      (run ./os to see the names)")
-    item = Finder(os_).by_id(argv[0])
-    if item is None:
-        die(f"nothing here is called {argv[0]} — try  ./os find {argv[0]}")
+        die(f"which one?   ./os {verb} fix-the-boiler      (run ./os to see the names)")
+    if more:
+        _where_the_name_ends(os_, argv, verb, "what was decided")
+    else:
+        _one_name(os_, argv, verb)
+    item = the_one(os_, argv[0], verb, _then(argv))
     if not (item.spine and item.spine.exists()):
         die(f"{item.ident} has no header to write into — ./os check --fix")
     return item
@@ -5861,10 +7898,9 @@ def cmd_rename(os_: Zenith, argv: list[str]) -> int:
     Folders are Title Case With Spaces, notes stay kebab-case files, the
     card beside a file moves with it, and links to it follow."""
     if not argv or not argv[0].strip():
-        die('which one?   ./os rename q3-okr-review "Q4 OKR review"')
-    item = Finder(os_).by_id(argv[0])
-    if item is None:
-        die(f"nothing here is called {argv[0]} — try  ./os find {argv[0]}")
+        die('which one?   ./os rename fix-the-boiler "Replace the boiler"')
+    _where_the_name_ends(os_, argv, "rename", "the new name")
+    item = the_one(os_, argv[0], "rename", _then(argv))
     if item.kind not in ("project", "note", "asset", "archive"):
         die(f"{item.ident} is {KIND_WORDS.get(item.kind, item.kind)} — rename its folder by hand")
     title = one_line(" ".join(argv[1:])).strip().strip('"')
@@ -5896,6 +7932,10 @@ def cmd_rename(os_: Zenith, argv: list[str]) -> int:
         if target != item.path:
             moved = os_.move_item(moved, target)
         spine = Scanner(os_).spine_of(moved) if is_dir else moved
+        # A folder with no page of its own is called by its name alone: the
+        # note it reads through keeps its own title (Scanner.borrows_page).
+        if is_dir and Scanner.borrows_page(moved, spine):
+            spine = None
         if spine is None and is_dir:
             spine = moved / "README.md"
         card = moved.with_name(moved.name + ".card.md")
@@ -5947,12 +7987,19 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
     limit = _count(argv, "--limit", 20)
     query = " ".join(argv).strip()
     if not query:
-        die("what are you looking for?   ./os find token refresh")
+        die("what are you looking for?   ./os find boiler")
     finder = Finder(os_)
     hits = finder.search(query, limit=limit, kind=kind, bucket=bucket)
+
+    def inside(item) -> dict:
+        """The file in a thing's folder its words were found in, when it
+        was not the thing's own page."""
+        where = finder.found_in.get(str(item.path))
+        return {"file": os_.rel(where)} if where is not None else {}
     if as_json:
         print(json.dumps([{"score": s, "id": i.ident, "title": i.title, "kind": i.kind,
-                           "path": os_.rel(i.path), "snippet": sn} for s, i, sn in hits], indent=2))
+                           "path": os_.rel(i.path), "snippet": sn, **inside(i)}
+                          for s, i, sn in hits], indent=2))
         return 0
     Out.title("found", f'"{query}"')
     if finder.corrected:
@@ -5966,6 +8013,9 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
         Out.raw("  " + paint(item.title, S.B)
                 + paint(f"  · {KIND_LABEL.get(item.kind, item.kind)}", S.FAINT))
         Out.raw("          " + paint(trunc(os_.rel(item.path), 74), S.MUTE))
+        where = inside(item).get("file")
+        if where:
+            Out.raw("          " + paint("in " + trunc(where[len(os_.rel(item.path)) + 1:], 71), S.MUTE))
         if snippet:
             Out.raw("          " + paint(trunc(snippet, 74), S.FAINT))
     Out.raw()
@@ -6052,11 +8102,10 @@ def last_logged(body: str) -> str:
 def cmd_show(os_: Zenith, argv: list[str]) -> int:
     """Everything worth knowing about one item, without opening a file."""
     if not argv or not argv[0].strip():
-        die("which one?   ./os show q3-okr-review      (run ./os to see the names)")
+        die("which one?   ./os show fix-the-boiler      (run ./os to see the names)")
+    _one_name(os_, argv, "show")
     ident = argv[0]
-    item = Finder(os_).by_id(ident)
-    if item is None:
-        die(f"nothing here is called {ident} — try  ./os find {ident}")
+    item = the_one(os_, ident, "show")
 
     Out.title(item.title, KIND_LABEL.get(item.kind, item.kind))
     Out.raw()
@@ -6196,10 +8245,9 @@ def cmd_last(os_: Zenith, argv: list[str]) -> int:
 
 def cmd_open(os_: Zenith, argv: list[str]) -> int:
     if not argv or not argv[0].strip():
-        die("which one?   ./os open q3-okr-review")
-    item = Finder(os_).by_id(argv[0])
-    if item is None:
-        die(f"nothing here is called {argv[0]} — try  ./os find {argv[0]}")
+        die("which one?   ./os open fix-the-boiler")
+    _one_name(os_, argv, "open")
+    item = the_one(os_, argv[0], "open")
     # the thing itself, not the card describing it: `open` answers "where is it",
     # and for a PDF sitting in Notes that means the file, not its card
     target = item.path
@@ -6212,12 +8260,16 @@ def cmd_open(os_: Zenith, argv: list[str]) -> int:
 def cmd_doctor(os_: Zenith, argv: list[str]) -> int:
     fix = _flag(argv, "--fix")
     as_json = _flag(argv, "--json")
-    result = Doctor(os_).run(fix=fix)
     if fix:
-        # Whatever was repaired, the list and the catalog must say so — a
-        # skill's edited description sat stale in CATALOG.md until the next
-        # unrelated rebuild (snag, 2026-08-31).
-        Indexer(os_).build()
+        # --fix moves things now (Doctor._out_of_reach), so it takes its turn.
+        with Lock(os_, "check"):
+            result = Doctor(os_).run(fix=True)
+            # Whatever was repaired, the list and the catalog must say so — a
+            # skill's edited description sat stale in CATALOG.md until the next
+            # unrelated rebuild (snag, 2026-08-31).
+            Indexer(os_).build()
+    else:
+        result = Doctor(os_).run()
     if as_json:
         print(json.dumps(result, indent=2))
         return 0 if not any(i["level"] == "error" for i in result["issues"]) else 1
@@ -6258,7 +8310,8 @@ def cmd_doctor(os_: Zenith, argv: list[str]) -> int:
     Out.raw()
     # Only when something listed is one --fix repairs: offered over a list of
     # judgement calls, it ran, fixed nothing, and said the same again.
-    if not fix and any(i.get("fix") == "./os check --fix" for i in result["issues"]):
+    if not fix and any(str(i.get("fix") or "").startswith("./os check --fix")
+                       for i in result["issues"]):
         Out.note("./os check --fix   fixes everything that is safe to fix on its own")
     Out.raw()
     return 0 if not groups.get("error") else 1
@@ -6305,13 +8358,15 @@ def cmd_review(os_: Zenith, argv: list[str]) -> int:
           lambda r: paint(trunc(r["message"], 72), S.MUTE))
 
     if report.get("routines"):
-        Out.raw("  " + paint("YOU DO THESE BY HAND EVERY TIME", S.B, S.GOLD)
+        # A question, not a fact: it is found by words like "every week", and
+        # those can't tell whether they really do it by hand, or how often.
+        Out.raw("  " + paint("DONE BY HAND EVERY TIME?", S.B, S.GOLD)
                 + paint(f"  ({len(report['routines'])})", S.FAINT))
         for row in report["routines"]:
             Out.raw("    "
                     + pad(trunc(row["title"], 40), 42)
                     + paint(f'you wrote "{row["said"]}"', S.FAINT))
-        Out.note("a skill writes the steps down once, so your AI just does it:")
+        Out.note("if so, a skill writes the steps down once, so your AI just does it:")
         Out.note(f'./os new skill "{trunc(report["routines"][0]["title"], 40)}"'
                  + paint("   (or say /make-skill in the chat)", S.FAINT))
         Out.raw()
@@ -6339,7 +8394,8 @@ def cmd_close(os_: Zenith, argv: list[str]) -> int:
     is as true of shipped work as of abandoned work. The word the folder uses
     should not claim more than it knows."""
     if not argv or not argv[0].strip():
-        die("which one?   ./os close q3-okr-review      (run ./os to see the names)")
+        die("which one?   ./os close fix-the-boiler      (run ./os to see the names)")
+    _one_name(os_, argv, "close")
     with Lock(os_, "archive"):
         dest = Archivist(os_).archive(argv[0])
         Indexer(os_).build()
@@ -6347,14 +8403,22 @@ def cmd_close(os_: Zenith, argv: list[str]) -> int:
     Out.ok(os_.rel(dest))
     Out.note("it still turns up in ./os find — nothing gets deleted here")
     Out.note("still going, just quietly?  ./os back it, then ./os hold it")
-    Out.note(f"changed your mind?  ./os back {handle(dest.stem if dest.is_file() else dest.name)}")
+    # ./os back looks among what is put away first. Two put away under one
+    # name, it is told which by the folders it is in.
+    back = handle(dest.stem if dest.is_file() else dest.name)
+    finder = Finder(os_)
+    if finder.by_id(back, archived=True) is not None and finder.ambiguous:
+        mine = next((it for it in finder.ambiguous if it.path == dest), None)
+        back = finder.qualified(mine, finder.ambiguous) if mine else os_.rel(dest)
+    Out.note(f"changed your mind?  ./os back {back}")
     Out.raw()
     return 0
 
 
 def cmd_back(os_: Zenith, argv: list[str]) -> int:
     if not argv or not argv[0].strip():
-        die("which one?   ./os back q3-okr-review")
+        die("which one?   ./os back fix-the-boiler")
+    _one_name(os_, argv, "back")
     with Lock(os_, "restore"):
         dest = Archivist(os_).restore(argv[0])
         Indexer(os_).build()
@@ -6408,6 +8472,71 @@ def cmd_undo(os_: Zenith, argv: list[str]) -> int:
     return 0 if result["restored"] else 1
 
 
+def cmd_checkpoint(os_: Zenith, argv: list[str]) -> int:
+    """Keep everything as it is now in the folder's history (see History).
+
+    /wrapup ends every session with this, so a hand edit made after it can be
+    taken back to how it is now. Held under the lock, so a save running beside
+    it can't be caught half written."""
+    here = _flag(argv, "--here")
+    words = one_line(" ".join(_theirs(argv))).strip() or f"Checkpoint {today()}"
+    with Lock(os_, "checkpoint"):
+        got = History(os_).keep(words, here=here)
+    result = got["result"]
+    Out.title("checkpoint")
+    if result in ("kept", "started"):
+        files = got.get("files", 0)
+        said = f"{files} file" + ("" if files == 1 else "s")
+        Out.ok(f"kept — {said} changed since the last one" if result == "kept" else
+               f"started this folder's history — {said} kept as they are now")
+        Out.note("an edit made by hand after this can be put back to how it is now")
+    elif result == "nothing":
+        Out.ok("nothing has changed since the last one")
+    elif result == "no git":
+        Out.warn("this computer has no git, so there's no history to keep yet — "
+                 + History.get_git())
+        Out.note("everything is still saved in the folder; only what ./os did can be undone")
+    elif result == "template":
+        Out.warn("this folder's history came with the download (git clone), so your "
+                 "files would go into the template's own — nothing kept")
+        Out.note("to start your own instead:  rm -rf .git && ./os checkpoint")
+    elif result == "theirs":
+        Out.warn("this folder already has a history that ./os didn't start, so I left "
+                 "it alone — save it the way you usually do")
+    elif result == "inside" and got.get("around"):
+        # Already keeping these files: --here would hide them from it.
+        Out.warn("this folder's files are kept in the history of a bigger folder around "
+                 "it, so save them there — nothing kept here")
+    elif result == "inside":
+        Out.warn("this folder sits inside a bigger folder's history, and a checkpoint "
+                 "there would take everything around it too — nothing kept")
+        # Main's nightly save offers `git init <folder>`; this said nothing
+        # at all about what to do instead (review, 2026-09-30).
+        Out.note("to keep one for this folder alone:  ./os checkpoint --here")
+    elif result == "lost" and got.get("emptied"):
+        Out.warn("a crash while saving left some of this folder's history empty, so "
+                 "nothing was kept, and nothing in it was changed")
+        Out.note("to put it right:  ./os check --fix   then  ./os checkpoint")
+    elif result == "lost":
+        Out.warn("this folder's history has lost track of its last save — a crash while "
+                 "saving can do that — so nothing was kept, and nothing in it was changed")
+        if got.get("last"):
+            Out.note("to put it back:  ./os check --fix   then  ./os checkpoint")
+        else:
+            Out.note("your files are all still here — to find the saves it still has:  "
+                     "git fsck --lost-found")
+    else:
+        Out.bad(f"couldn't keep a checkpoint: {got.get('why', '')}")
+    for name in got.get("own", []):
+        Out.note(f"{name} has a git history of its own, so none of its files are in "
+                 "this one — save them there")
+    if got.get("private"):
+        Out.note("left out, as the names look like keys or passwords: "
+                 + ", ".join(got["private"]))
+    Out.raw()
+    return 0 if result in ("kept", "started", "nothing") else 1
+
+
 def cmd_backup(os_: Zenith, argv: list[str]) -> int:
     out = Backup(os_).snapshot()
     kept = sorted((os_.dot / "backups").glob("*.zip"))
@@ -6433,14 +8562,24 @@ PLAIN_SPEECH = (
     'gets explained only when they ask (AGENTS.md, "Talk like a person").'
 )
 
-FIRST_TIME = """{name} — this folder holds everything the person is working on, and keeps itself organised.
+# The first question is what's on their mind, not what they're working on:
+# asked first, work shapes everything after it like a workplace, and this
+# folder is meant as a home (decisions, 2026-08-27). How they like answers was
+# never asked at all, so the first sessions guessed.
+FIRST_TIME = """{name} — this folder holds whatever the person wants kept: plans, notes, files, \
+the things they're into. It keeps itself organised.
 
 Nothing has been saved here yet: this is the person's first visit, and they almost certainly \
 have no idea what the folder does.
 
 A first visit here (AGENTS.md, "First, always") is a hello, then a line or two saying plainly \
 that whatever they say gets written down and put in the right place for them — they never \
-pick a folder or name a file — then a question about what they are working on at the moment.
+pick a folder or name a file — then a question about what's on their mind lately, or what \
+they're into. "Nothing yet" is a fine answer.
+
+How they like their answers (short or long, plain or detailed, bad news first or last) is \
+asked once, early on. That and their name go in the About me note \
+(./os new note "About me" --domain personal), whose first lines are in every brief after this one.
 
 Commands, folder names, how many things are in here and how the system works all wait until \
 they ask. "Capture" is not a word they use."""
@@ -6482,14 +8621,22 @@ def _about_them(os_: Zenith, items: list) -> list[str]:
 
 
 def _brief_text(os_: Zenith) -> str:
-    items = Scanner(os_).scan()
+    scanner = Scanner(os_)
+    items = scanner.scan()
     theirs = [i for i in items if i.kind in ("project", "note", "asset")]
-    loose = [i.path for i in items if Sorter.unmanaged(i)] + loose_at_top(os_.root)
+    loose = [i.path for i in items if Sorter.unmanaged(i)] + loose_at_top(os_.root, os_.buckets())
     # Whatever the folder is called now: a brief that opened "ZENITH" after
     # `./os name --name Atlas` had the AI calling it the old name.
     name = str(os_.config.get("name") or "Zenith").upper()
+    # Why hand edits can't be taken back yet, while that's so. Said here
+    # because in Claude Code this is the first run, and what it prints is
+    # never seen (see History.standing).
+    # No full stop: most end in a command, and `--here.` copied as it
+    # stood was refused (review, 2026-09-30).
+    kept = History(os_).standing()
+    kept = kept[:1].upper() + kept[1:]
     if not theirs:
-        return FIRST_TIME.format(name=name)
+        return FIRST_TIME.format(name=name) + (f"\n\n{kept}" if kept else "")
 
     stale_days = int(os_.thresholds["stale_project_days"])
     active = sorted([i for i in items if i.kind == "project" and i.status == PUSHING],
@@ -6497,7 +8644,11 @@ def _brief_text(os_: Zenith) -> str:
     held = sorted([i for i in items if i.kind == "project" and i.status == HOLDING
                    and i.bucket != os_.bucket_for_role("archive")],
                   key=lambda i: days_since(i.updated))
-    errors = [i for i in Doctor(os_).run(items=items)["issues"] if i["level"] == "error"]
+    errors = [i for i in Doctor(os_).run(items=items)["issues"] if i["level"] == "error"
+              or (i["code"] in Doctor.OUT_OF_REACH
+                  and str(i.get("fix") or "").startswith("./os check --fix"))]
+    # A name another live thing has too is given with its folder: see typed_names.
+    typed = Finder(os_, scanner).typed_names(items, active[:4] + held[:4])
 
     def ago(days: int) -> str:
         return "today" if days <= 0 else ("yesterday" if days == 1 else f"{days} days ago")
@@ -6513,7 +8664,7 @@ def _brief_text(os_: Zenith) -> str:
     # to fit is not a name, and show refused it.
     if active:
         shown = "; ".join(
-            f"{_shorten(i.title, 48)} [{handle(i)}] (last touched {ago(days_since(i.updated))}"
+            f"{_shorten(i.title, 48)} [{typed[str(i.path)]}] (last touched {ago(days_since(i.updated))}"
             + (", going cold)" if days_since(i.updated) >= stale_days else ")")
             for i in active[:4])
         if len(active) > 4:
@@ -6523,7 +8674,7 @@ def _brief_text(os_: Zenith) -> str:
         out.append("- Nothing being pushed right now.")
     if held:
         out.append("- Being kept up (no next action wanted): " + "; ".join(
-            f"{_shorten(i.title, 40)} [{handle(i)}]" for i in held[:4])
+            f"{_shorten(i.title, 40)} [{typed[str(i.path)]}]" for i in held[:4])
             + (f"; and {len(held) - 4} more" if len(held) > 4 else ""))
     out.append(f"- {things(len(loose))} dropped in but not filed — ./os sort" if loose
                else "- Nothing waiting to be filed.")
@@ -6533,6 +8684,8 @@ def _brief_text(os_: Zenith) -> str:
                    "each to be merged into their file of the same name; the folder can go once that's done.")
     if errors:
         out.append(f"- {things(len(errors))} broken — ./os check --fix")
+    if kept:
+        out.append(f"- {kept}")
     about = _about_them(os_, items)
     if about:
         out += [""] + about
@@ -6791,6 +8944,9 @@ def cmd_snag(os_: Zenith, argv: list[str]) -> int:
             Out.note(f"{len(ranked)} cleared — the file above is the record now")
         Out.raw()
         Out.note("hand that file to whoever maintains this template")
+        # Each snag is kept word for word, and one about a note can name who or
+        # what the note was about. Nothing said so, and it went out as written.
+        Out.note("read it before you send it, in case something personal slipped in")
         Out.raw()
         return 0
 
@@ -6832,6 +8988,103 @@ def _words_or_die(call, *args):
         die(f"cannot read .os/words.json: {exc}")
 
 
+def _new_subject(L, root: Path, key: str, label: str) -> bool:
+    """Add a subject with no words yet to words.json; False if it is there.
+
+    Its words then go where `./os words` always puts them, in `learned`: an
+    update never touches those, and a release never ships them."""
+    data = L.load_words(root)
+    blocks = data["domains"]
+    if key in blocks:
+        return False
+    blocks[key] = {"label": label, "keywords": [], "extensions": []}
+    L.write_words(root, data)
+    return True
+
+
+def _subject_called(os_: Zenith, said: str) -> str:
+    """The subject someone meant, however they spelled its name.
+
+    `./os words Garden "dahlias"` was refused with "no subject called
+    'Garden'", and then offered `--new garden` for a subject that was right
+    there; so was "Bee keeping" once --new had made it bee-keeping. Spaces,
+    capitals and its label all find it now. Unknown, it comes back as given."""
+    domains = os_.taxonomy.get("domains") or {}
+    if said in domains:
+        return said
+    want = slugify(said, 24)
+    for key, spec in domains.items():
+        if want in (slugify(key, 24), slugify(str(spec.get("label") or ""), 24)):
+            return key
+    return said
+
+
+def _subject_label(os_: Zenith, said: str, key: str) -> str:
+    """The name of the folder a new subject's things will be grouped in.
+
+    Once Notes or Work holds more than a dozen things, sort groups them in a
+    folder per subject, named after it, and the name was used just as it was
+    typed. `--new content` grouped every video note into Work/Content, the
+    one folder ./os never looks in, so they all vanished; `Food/drink` made a
+    folder inside a folder, and `../outside` moved notes out of this folder
+    altogether, while `./os check` said all good. Now a slash or dots can't
+    get into it, and a name already used for something else is refused. So
+    is one ending the way leftover files do (`wine~`, `x.swp`): ./os skips a
+    folder named like that, and 14 merlot notes grouped in Notes/Wine~ were
+    never found again. `group_trouble` says which names can't be one; sort
+    asks it too, of a subject written into a header by hand."""
+    label = folder_name(said, key)
+    again = '     Pick another name:   ./os words --new "<another name>" …'
+    why = group_trouble(os_, label) or (
+        "and this folder already uses that name for something of its own"
+        if label.casefold() == "unsorted" else "")
+    if why:
+        die(f"'{said}' can't be a subject's name: what you save about it would be "
+            f"grouped in a folder called {label}, {why}.\n" + again)
+    for other, spec in (os_.taxonomy.get("domains") or {}).items():
+        if str(spec.get("label") or "").casefold() == label.casefold():
+            die(f"'{said}' would share a folder with the subject {other}, which is "
+                f"called {spec.get('label')} too.\n"
+                f'     Add your words to that one:   ./os words {other} "<a word>" …\n' + again)
+    for bucket, spec in os_.buckets().items():
+        if not spec.get("categorize"):
+            continue
+        try:
+            here = [p for p in (os_.root / bucket).iterdir()
+                    if p.name.casefold() == label.casefold()]
+        except OSError:
+            here = []
+        # A group sort made itself is fine to share; anything else is not.
+        if any(not Scanner.is_category(p) for p in here):
+            die(f"'{said}' can't be a subject's name: {bucket}/{here[0].name} is already "
+                "here, and what you save about the subject would be grouped in a folder "
+                "with that name.\n" + again)
+    return label
+
+
+def _words_step(os_: Zenith, change):
+    """Make one change to .os/words.json as a step `./os undo` takes back.
+
+    It was not one, so `./os undo` straight after `./os words --new
+    beekeeping "hive"` left beekeeping where it was and took back the save
+    before it instead. A run that changes nothing is not a step at all."""
+    path = os_.dot / "words.json"
+    with Lock(os_, "words"):
+        try:
+            was = path.read_bytes()
+        except OSError:
+            was = None
+        out = _words_or_die(change)
+        try:
+            changed = was is not None and path.read_bytes() != was
+        except OSError:
+            changed = False
+        if changed:
+            os_.edited(path, was)
+            os_.commit("words")
+    return out
+
+
 def cmd_words(os_: Zenith, argv: list[str]) -> int:
     """The vocabulary this folder files by, and how to add to it.
 
@@ -6851,38 +9104,89 @@ def cmd_words(os_: Zenith, argv: list[str]) -> int:
         sys.dont_write_bytecode = was
 
     as_json = _flag(argv, "--json")
+    make = _flag(argv, "--new")
     rest = _theirs(argv)
 
-    if not rest:
+    if not rest and not make:
         rows = _words_or_die(L.domains, os_.root)
         if as_json:
             print(json.dumps({"ok": True, "domains": rows}, indent=2))
             return 0
         Out.title("words", "what this folder files by")
+        # As wide as the longest name: one made with --new can be 24 letters,
+        # and ran straight into its count ("a-very-long-subject-name0 words").
+        wide = max([14] + [len(row["domain"]) + 2 for row in rows])
         for row in rows:
             extra = f"+{row['learned']} learned" if row["learned"] else ""
-            Out.raw("  " + paint(pad(row["domain"], 14), S.GOLD)
+            if row["domain"] == CATCH_ALL and not row["keywords"] and not extra:
+                extra = "whatever fits none of the others"
+            Out.raw("  " + paint(pad(row["domain"], wide), S.GOLD)
                     + paint(pad(f"{row['keywords']} words", 12), S.INK)
                     + paint(extra, S.JADE))
         Out.raw()
-        Out.note('./os words <domain> "<a word you use>" …   teaches it more')
+        Out.note('./os words <subject> "<a word you use>" …   teaches it more')
+        Out.note('./os words --new <name> "<a word>" …        makes a subject of your own')
         Out.note("or open .os/words.json and add them to a keywords list yourself")
         Out.raw()
         return 0
 
-    if len(rest) == 1:
-        die('give me a domain and at least one word'
-            '\n     ./os words marketing "ad set" "learning phase"'
-            '\n     ./os words          lists the domains')
+    # A subject of their own. The folder shipped knowing only the subjects it
+    # came with, and `./os words garden "bulbs"` was refused as "no domain
+    # called 'garden'", so a folder of garden notes had nowhere of its own to
+    # go. It takes --new, not any word at all: a typo of a real subject would
+    # otherwise quietly become a second one.
+    said = rest[0] if rest else ""
+    label = ""
+    if make:
+        if not rest:
+            die('what is it called?   ./os words --new knitting "yarn" "purl"')
+        if not re.search(r"[^\W\d_]", said) or slugify(said, 24) == "unsorted":
+            die(f"'{said}' can't be a subject's name — try a plain word, "
+                'like  ./os words --new knitting "yarn"')
+        key = _subject_called(os_, said)
+        if key not in (os_.taxonomy.get("domains") or {}):
+            key = slugify(said, 24)
+            label = _subject_label(os_, said, key)
+        rest = [key] + rest[1:]
+    elif len(rest) == 1:
+        die('give me a subject and at least one word'
+            '\n     ./os words garden "dahlias" "runner beans"'
+            '\n     ./os words --new knitting "yarn" "purl"   makes a new subject'
+            '\n     ./os words          lists the subjects')
+    else:
+        rest = [_subject_called(os_, said)] + rest[1:]
 
-    result = _words_or_die(L.teach, os_.root, rest[0], rest[1:])
+    def change() -> tuple[bool, dict | None]:
+        made = _new_subject(L, os_.root, rest[0], label or titleize(rest[0])) if make else False
+        return made, (L.teach(os_.root, rest[0], rest[1:]) if len(rest) > 1 else None)
+    made, result = _words_step(os_, change)
+
+    if result is None:          # a new subject, and no words for it yet
+        key = rest[0]
+        if as_json:
+            print(json.dumps({"ok": True, "domain": key, "made": made,
+                              "added": [], "already_known": []}, indent=2))
+            return 0
+        Out.title("words", key)
+        (Out.ok if made else Out.note)(f"a new subject: {key}" if made
+                                       else f"there is already a subject called {key}")
+        Out.note(f'give it the words you use for it:   ./os words {key} "<a word>" …')
+        Out.raw()
+        return 0
+    if make:
+        result["made"] = made
     if as_json:
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
     if not result["ok"]:
-        die(result["why"] + "\n     it knows: " + ", ".join(result["domains"]))
+        die(result["why"].replace("domain", "subject") + "\n     it knows: "
+            + ", ".join(result["domains"])
+            + f'\n     a new one?  ./os words --new {slugify(rest[0], 24) or "knitting"} '
+            + " ".join(json.dumps(w, ensure_ascii=False) for w in rest[1:3]))
 
     Out.title("words", result["domain"])
+    if made:
+        Out.ok(f"a new subject: {result['domain']}")
     if result["added"]:
         Out.ok(f"{len(result['added'])} added — " + ", ".join(result["added"]))
     else:
@@ -7164,12 +9468,17 @@ def cmd_setup(os_: Zenith, argv: list[str]) -> int:
     Out.raw()
     who = f"{result['owner']}'s folder." if result["owner"] else "This folder is yours now."
     Out.raw("  " + paint(who + " Everything you make lives here.", S.INK))
+    said = History(os_).first_words(result["history"])
+    if said:
+        Out.note(said)
     Out.raw()
     Out.raw("  " + paint("TRY THIS", S.B, S.GOLD))
+    # Not "any AI", as the first screen and the demo say: a chat-only app
+    # like ChatGPT can't run ./os (review, 2026-09-30). 80 wide at most.
     for cmd, why in (
         ('./os save "anything on your mind"', "I put it somewhere sensible"),
         ("./os", "see where everything stands"),
-        ("claude", "or any AI — then just talk to it normally"),
+        ("claude", "or another AI that can run commands here"),
     ):
         Out.raw("    " + paint(pad(cmd, 36), S.GOLD) + paint(why, S.FAINT))
     Out.raw()
@@ -7179,24 +9488,31 @@ def cmd_setup(os_: Zenith, argv: list[str]) -> int:
     return 0
 
 
+#: Home things, not a job's: the first thing a stranger sees ./os do was a
+#: billing service's token refresh and a codebase kept green, and somebody
+#: with a garden read that as a tool for programmers. Each one has to land as
+#: the kind it says it is — the demo's second step shows all three.
 DEMO_ITEMS = [
-    ("The billing service token refresh fails every Friday night. Has to be fixed "
-     "before the release on the 14th. First step is reproducing it on staging.",
+    ("The boiler keeps cutting out at night. Has to be fixed before winter. "
+     "First step is booking the engineer.",
      "this one has a next action"),
-    ("Notes on how names work here: a thing is called what it is, so the note "
-     "on running a retro is the file called how-to-run-a-retro. Nothing to do "
-     "— just worth keeping.",
+    ("Notes on Gran's lemon cake: 200g butter, 200g sugar, four eggs, 200g "
+     "flour, the zest of two lemons. Nothing to do — just worth keeping.",
      "this one is just worth keeping"),
-    ("Keep the codebase green: no failing tests, no lint errors, checked every "
-     "week. This never ends, it is just something I hold to.",
+    ("Keep the vegetable garden weeded: every week from spring to autumn. "
+     "This never ends, it is just something I hold to.",
      "this one is just kept level"),
 ]
+#: What step 3 searches for: a word from the first item that none of the
+#: others has, so it is the one found.
+DEMO_FIND = "boiler"
 
 
 def cmd_demo(os_: Zenith, argv: list[str]) -> int:
     """Show the whole idea on three throwaway items, then put the folder back."""
     keep = _flag(argv, "--keep")
-    loose = [i for i in Scanner(os_).scan() if Sorter.unmanaged(i)] + loose_at_top(os_.root)
+    loose = [i for i in Scanner(os_).scan() if Sorter.unmanaged(i)] \
+        + loose_at_top(os_.root, os_.buckets())
     if loose and not keep:
         die(f"you have {len(loose)} thing(s) dropped in but not filed, and the demo "
             "would sweep them up with its own.\n"
@@ -7228,7 +9544,20 @@ def cmd_demo(os_: Zenith, argv: list[str]) -> int:
         # Work is one kind in two phases, so the label has to read the phase
         # off the filed item — that distinction is the whole point of step 2.
         phase_of = {os_.rel(i.path): i.status for i in Scanner(os_).scan()}
-        for kind, _src, dst in result["moves"]:
+        # Where each of the three is now. In a folder with more than a dozen
+        # things, sort then groups them by subject, a second move of the same
+        # thing: that printed as a bare "sort →" line, and the phase was read
+        # off the path from before it, so the kept-up garden was work to push.
+        moves = result["moves"]
+
+        def landed(n: int, path: str) -> str:
+            for kind, src, dst in moves[n + 1:]:
+                if kind in ("sort", "id") and (path == src or path.startswith(src + "/")):
+                    path = dst + path[len(src):]
+            return path
+        filed = [(kind, landed(n, dst)) for n, (kind, _src, dst) in enumerate(moves)
+                 if kind not in ("sort", "id", "group")]
+        for kind, dst in filed:
             word = KIND_WORDS.get(kind, kind)
             if kind == "project":
                 word = ("work you're pushing" if phase_of.get(dst) != HOLDING
@@ -7237,9 +9566,14 @@ def cmd_demo(os_: Zenith, argv: list[str]) -> int:
                     + paint("→ ", S.FAINT) + paint(trunc(dst, 50), S.INK))
 
         step(3, "Find one again, without remembering where it went.")
-        Out.raw("    " + paint('./os find "token refresh"', S.FAINT))
-        for _score, item, _sn in Finder(os_).search("token refresh", limit=1):
-            Out.raw("    " + paint(item.title[:56], S.B))
+        Out.raw("    " + paint(f"./os find {DEMO_FIND}", S.FAINT))
+        # The demo's own, never theirs: in a folder that already held a note
+        # about the boiler, straight after "find one again" it showed theirs.
+        ours = {dst for _kind, dst in filed}
+        for _score, item, _sn in Finder(os_).search(DEMO_FIND, limit=200):
+            if os_.rel(item.path) in ours:
+                Out.raw("    " + paint(item.title[:56], S.B))
+                break
 
         step(4, "Change your mind about all of it, at once.")
         if keep:
@@ -7261,10 +9595,13 @@ def cmd_demo(os_: Zenith, argv: list[str]) -> int:
     Out.raw("  " + paint("THAT IS THE WHOLE THING", S.B, S.GOLD))
     Out.raw("    " + paint("Say it. It gets filed. You find it later. You can always undo.", S.INK))
     Out.raw()
-    Out.raw("    " + paint(pad('./os save "..."', 24), S.GOLD)
+    Out.raw("    " + paint(pad('./os save "..."', 18), S.GOLD)
             + paint("put something real in", S.FAINT))
-    Out.raw("    " + paint(pad("claude", 24), S.GOLD)
-            + paint("or any AI — just talk to it", S.FAINT))
+    # Not "any AI": one that only chats, like the ChatGPT app, can't run ./os.
+    # Said as the first screen says it, and under 80 wide: it was 86, and
+    # wrapped in a Terminal window as it opens.
+    Out.raw("    " + paint(pad("claude", 18), S.GOLD)
+            + paint("or another AI that can run commands here, then just talk", S.FAINT))
     Out.raw()
     return 0
 
@@ -7272,12 +9609,17 @@ def cmd_demo(os_: Zenith, argv: list[str]) -> int:
 def cmd_edit(os_: Zenith, argv: list[str]) -> int:
     """Open an item in $EDITOR, or in whatever the desktop uses."""
     if not argv or not argv[0].strip():
-        die("which one?   ./os edit q3-okr-review      (run ./os to see the names)")
-    item = Finder(os_).by_id(argv[0])
-    if item is None:
-        die(f"nothing here is called {argv[0]} — try  ./os find {argv[0]}")
+        die("which one?   ./os edit fix-the-boiler      (run ./os to see the names)")
+    _one_name(os_, argv, "edit")
+    item = the_one(os_, argv[0], "edit")
     warn_if_claimed(os_, item)
     target = item.spine or item.path
+    # Only a person at a terminal gets an editor or a window. An AI running
+    # this has no screen, so what it opened landed on the person's desk, and
+    # the self-checks run `edit` too: every `./os test` opened TextEdit.
+    if not sys.stdout.isatty():
+        print(str(target))
+        return 0
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if editor:
         return subprocess.run([*editor.split(), str(target)]).returncode
@@ -7352,7 +9694,7 @@ _os() {
   if (( CURRENT == 2 )); then _describe -t commands 'os' cmds; return; fi
   case ${words[2]} in
     new) _values 'kind' work ongoing note learning skill agent ;;
-    open|edit|done|back|rename|claim|release|decide) _message 'a name like q3-okr-review' ;;
+    open|edit|done|back|rename|claim|release|decide) _message 'a name like fix-the-boiler' ;;
     sort) _values 'flag' --dry-run --json ;;
     check) _values 'flag' --fix --json ;;
     help) _describe -t commands 'os' cmds ;;
@@ -7401,18 +9743,18 @@ DETAIL = {
              "work you already have, and the rest becomes its next action. Video, "
              "and anything bigger than 100 MB, goes to Work/Content, which ./os "
              "leaves alone.",
-             ['os save "the auth token breaks every Friday"',
-              "os save ~/Downloads/pricing-deck.pdf"],
+             ['os save "the boiler cuts out every night"',
+              "os save ~/Downloads/boiler-manual.pdf"],
              "Wrong place? ./os undo puts it back, every time."),
     "new": ('os new <work|ongoing|note|learning|skill|agent> "<name>"',
             "Start something from a blank template, already named and stamped. "
             "If you already have something by nearly the same name it stops and says so "
             "— add --anyway if you really want both.",
-            ['os new work "Ship the redesign"',
-             'os new ongoing "Keep the tests passing"',
-             'os new note "How Postgres indexes work"',
+            ['os new work "Fix the boiler"',
+             'os new ongoing "Keep the garden weeded"',
+             'os new note "Gran\'s lemon cake"',
              'os new learning "How sourdough is actually made"',
-             'os new skill "Draft the weekly invoice"'],
+             'os new skill "Plan the week\'s meals"'],
             "A learning note is a note in a different shape: numbered steps, "
             "where the people who do it disagree, what goes wrong, and one "
             "thing to practise. It is what ./os learn is for — reach for it "
@@ -7432,9 +9774,9 @@ DETAIL = {
               "Tell any other chat open on this folder that you are working on "
               "this one. It writes a line in the item's own header, so the next "
               "session sees it the moment it types ./os. Let go with os release.",
-              ['os claim ship-the-redesign',
-               'os claim ship-the-redesign --as "the copy pass"',
-               "os release ship-the-redesign"],
+              ['os claim fix-the-boiler',
+               'os claim fix-the-boiler --as "ringing round for quotes"',
+               "os release fix-the-boiler"],
               "It is a note, not a lock — nothing is ever refused because of a "
               "claim, it just says who was there first. A claim older than 12 "
               "hours is shown as stale and can be claimed straight over, "
@@ -7469,26 +9811,30 @@ DETAIL = {
              "and then empties the pile, so nothing you wrote is ever simply "
              "gone. None of it is mixed in with your own notes, and none of it "
              "leaves this folder on its own."),
-    "words": ('os words   |   os words <domain> "<a word you use>" …',
-              "Show the vocabulary this folder files by, and add to it. Where "
+    "words": ('os words   |   os words <subject> "<a word you use>" …   |   '
+              'os words --new <name> "<a word>" …',
+              "Show the words this folder files by, and add to them. Where "
               "something lands is decided by matching words, so the fastest way "
-              "to make it better at your work is to give it the words you "
-              "actually use — your clients, your projects, the jargon of your "
-              "trade.",
+              "to make it better is to give it the words you actually use — "
+              "people, places, plants, the names of things you do. No subject "
+              "that fits? --new makes one of your own.",
               ["os words",
-               'os words marketing "ad set" "learning phase"',
-               'os words engineering "northwind" "the flimbus service"'],
-              "It only ever adds to a `learned` list, so the keywords you wrote "
-              "yourself in .os/words.json are never touched and anything added "
-              "here can be deleted without disturbing them. /learn writes to it "
+               'os words garden "dahlias" "runner beans"',
+               'os words --new knitting "yarn" "purl" "cast on"'],
+              "It only ever adds — a new subject, or words in a subject's "
+              "`learned` list — so the keywords you wrote yourself in "
+              ".os/words.json are never touched and anything added here can be "
+              "deleted without disturbing them. Changed your mind straight "
+              "away? ./os undo takes the last one back. /learn writes to it "
               "at the end of studying a subject, which is why filing gets better "
-              "at a subject once you have learned one."),
+              "at a subject once you have learned one. Anything that matches no "
+              "subject at all goes under general."),
     "hold": ("os hold <name>   |   os push <name>",
              "Say what a piece of work needs from you now. Holding means there "
              "is no next action, only a standard you keep level — it stops being "
              "counted as on the go, and stops being nagged for going quiet. "
              "Pushing puts it back on the go.",
-             ["os hold q3-okr-review", "os push q3-okr-review"],
+             ["os hold fix-the-boiler", "os push fix-the-boiler"],
              "Nothing moves on disk; it is one word in the file's header. That is "
              "the point — the same job flips between the two over and over, and "
              "no filing system should make you shuffle folders for that. A note "
@@ -7496,11 +9842,13 @@ DETAIL = {
              "it and it becomes work, in Work/."),
     "find": ("os find <words>",
              "Search names, titles, tags and the full text of everything you "
-             "have saved, archive included. Typos and plurals are fine — "
+             "have saved, archive included, the notes kept inside a piece of "
+             "work's folder, and the name of every file in a folder, a PDF or a "
+             "photo too. Typos and plurals are fine — "
              "'meetings' finds 'meeting', and it will tell you when it searched "
              "for something other than what you typed. Skills and helpers are "
              "left out unless you ask for them with --kind skill.",
-             ["os find token refresh", "os find billing --kind project",
+             ["os find boiler", "os find garden --kind project",
               "os find weekly --kind skill"],
              "You don't have to remember where you put it, or spell it right. "
              "That is the whole point."),
@@ -7508,23 +9856,24 @@ DETAIL = {
              "Everything worth knowing about one thing — what state it is in, when "
              "you last touched it, its next action, what was decided — without "
              "opening the file. The name on disk or the title said any reasonable "
-             "way both find it.",
-             ["os show q3-okr-review", 'os show "Q3 OKR review"'],
+             "way both find it. When two things share a name, it lists both and "
+             "how to name each: with the folder it is in, Recipes/Pizza.",
+             ["os show fix-the-boiler", 'os show "Fix the boiler"'],
              "./os edit <name> opens it properly when you want to change something."),
     "open": ("os open <name>", "Print where something lives, and show it to you in "
              "Finder, Explorer or your file manager. To open the file itself for "
              "editing, use ./os edit.",
-             ["os open q3-okr-review"],
+             ["os open fix-the-boiler"],
              "The name is the handle: either the name on disk or the title said "
              "any reasonable way."),
     "edit": ("os edit <name>", "Open it in your text editor.",
-             ["os edit q3-okr-review"], "Set $EDITOR to stay in the terminal."),
+             ["os edit fix-the-boiler"], "Set $EDITOR to stay in the terminal."),
     "rename": ('os rename <name> "<new name>"',
                "Give something a new name on disk and in its header in one move, "
                "so the two never disagree. Folders come out Title Case With Spaces, "
                "notes stay kebab-case files, a file's card moves with it, and links "
                "to it from other notes follow.",
-               ['os rename q3-okr-review "Q4 OKR review"'],
+               ['os rename fix-the-boiler "Replace the boiler"'],
                "Renaming by hand leaves the title and the folder saying different "
                "things — this is the one that keeps them together. ./os undo reverses it."),
     "close": ("os close <name>   |   os back <name>",
@@ -7532,36 +9881,59 @@ DETAIL = {
               "no longer live — not necessarily finished. Things leave because you "
               "stopped carrying them, and that is as true of shipped work as of "
               "abandoned work.",
-              ["os close q3-okr-review", "os back q3-okr-review"],
+              ["os close fix-the-boiler", "os back fix-the-boiler"],
               "Nothing is deleted, and things in the archive still turn up in "
               "./os find. If it is not over, just quiet, ./os hold it instead."),
     "decide": ('os decide <name> "<what was settled>"',
                "Append one dated line to that item's ## Decisions. A decision is "
                "never a thing of its own — it is a line in the thing it is about, "
                "which is where it is still findable a year later.",
-               ['os decide ship-the-redesign "three tiers, not four"'],
+               ['os decide fix-the-boiler "a new one, not another repair"'],
                "./os save does this by itself when the words name the item, and "
                "refuses when it cannot tell which one you meant."),
     "undo": ("os undo [--anyway]", "Reverse the last thing Zenith itself did — a save, a "
              "filing, a close, a new.",
              ["os undo", "os undo --anyway"],
              "It restores where files went AND what they said, twenty steps back. "
-             "It cannot undo edits you made by hand in a text editor — for those, "
-             "use your editor's own undo. It never throws them away either: when a "
+             "It cannot undo edits you made by hand in a text editor — the "
+             "folder's history can, back to the last checkpoint (./os help "
+             "checkpoint). It never throws those edits away either: when a "
              "file was written in since that step, undo stops and names it, and "
              "with --anyway copies it aside first and says where."),
+    "checkpoint": ('os checkpoint "<what changed>" [--here]',
+                   "Keep everything in this folder as it is now, in its own history, so "
+                   "an edit made by hand after this can be taken back. The first ./os "
+                   "in a new folder starts the history, and your AI keeps one at the "
+                   "end of each session.",
+                   ['os checkpoint "the boiler notes, and next week\'s plan"'],
+                   "It needs git (on a Mac: xcode-select --install). Footage in "
+                   "Work/Content is left out, and so is everything .gitignore lists "
+                   "or named like a key or a password, like .env or credentials.json. "
+                   "A code project with a git of its own keeps its files in that one. "
+                   "A history this folder already had from somewhere else is left "
+                   "alone, and so is a bigger one around it: --here starts one for "
+                   "this folder alone. To see or take back a hand "
+                   "edit, an AI uses git: git diff shows what changed since, and git "
+                   "restore puts a file back."),
     "sort": ("os sort [--dry-run]",
              "Take charge of anything you dropped in by hand. A folder you made "
-             "keeps its name and its place, and nothing in it is rewritten. A "
-             "loose file, or one left at the top of this folder, gets a plain name "
-             "and a header and goes where it belongs. Also re-groups what is "
-             "already filed as the folders fill up.",
+             "keeps its name, and nothing in it is rewritten. A loose file, or "
+             "one left at the top of this folder, keeps its own name and ending "
+             "and goes where it belongs: with a header (a card beside it, if it "
+             "isn't text), or, if it reads like work, in a folder of its name in "
+             "Work. A folder left there goes into Notes, or Work if it reads like "
+             "work, under its own name. Also re-groups what is already filed, "
+             "folders you made too, as Notes and Work fill up.",
              ["os sort --dry-run     # show me first, change nothing", "os sort"],
              "./os save files things the moment you say them, so this is for the "
              "times you dragged a pile of files in from Finder instead."),
     "check": ("os check [--fix]",
-              "Look for anything broken: repeated names, half-written skills, "
-              "dead links.",
+              "Look for anything broken, like half-written skills or dead links, "
+              "and anything of yours that ./os find and the list can't reach: a "
+              "folder left at the top, work moved inside another piece of work, "
+              "a file too far in, a PDF's card left behind when the PDF was "
+              "moved. Each comes with the command that fixes it. Two things "
+              "with one name are fine, and said once.",
               ["os check", "os check --fix"],
               "--fix only repairs the mechanical. Anything needing a judgement call "
               "is reported, never guessed."),
@@ -7632,6 +10004,9 @@ def cmd_help(os_: Zenith | None, argv: list[str]) -> int:
         return 0
     if topic:
         Out.warn(f"there is nothing called '{topic}'")
+        near = NEAR_MISS.get(topic, "").split(" ")[0]
+        if near in DETAIL:
+            Out.note(f"did you mean  ./os help {near}  ?")
         Out.note("./os help   lists everything you can type")
         Out.raw()
         return 1
@@ -7666,6 +10041,7 @@ COMMANDS = {
     "check": cmd_doctor, "doctor": cmd_doctor, "fix": cmd_doctor,
     "tidy": cmd_review, "review": cmd_review, "cleanup": cmd_review,
     "backup": cmd_backup, "snapshot": cmd_backup,
+    "checkpoint": cmd_checkpoint,
     "edit": cmd_edit, "e": cmd_edit,
     "demo": cmd_demo, "tour": cmd_demo,
     "name": cmd_name, "setup": cmd_setup, "init": cmd_setup,
@@ -7695,6 +10071,9 @@ NEAR_MISS = {
     "guide": "help", "manual": "help", "link": "check --fix", "repair": "check --fix",
     "vocab": "words", "vocabulary": "words", "keywords": "words", "taxonomy": "words",
     "upgrade": "update", "latest": "update", "refresh": "update",
+    # git's word and the thing it keeps: `./os commit` and `./os history` were
+    # answered "./os help lists everything", and the list didn't have it.
+    "commit": "checkpoint", "history": "checkpoint", "versions": "checkpoint",
     "bug": "snag", "issue": "snag", "complain": "snag", "annoying": "snag",
 }
 
@@ -7710,6 +10089,7 @@ NEAR_MISS = {
 FLAGS: dict[str, set[str] | None] = {
     "cmd_back": set(),
     "cmd_backup": set(),
+    "cmd_checkpoint": {"--here"},
     "cmd_brief": {"--json"},
     "cmd_last": {"--json"},
     "cmd_claim": {"--as"},
@@ -7739,7 +10119,7 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_test": None,      # forwards everything to the suite
     "cmd_undo": {"--anyway"},
     "cmd_update": {"--anyway", "--check", "--dry-run", "--from", "-n"},
-    "cmd_words": {"--json"},
+    "cmd_words": {"--json", "--new"},
     "cmd_snag": {"--clear", "--export", "--json"},
 }
 
@@ -7854,13 +10234,18 @@ def main(argv: list[str] | None = None) -> int:
     os_ = Zenith(root)
     S.setup("never" if no_color else os_.behaviour.get("colour", "auto"))
 
-    # A template is built on one day and opened on another. The first command in
-    # a fresh copy quietly re-dates it, so nothing arrives looking stale.
+    # The first command in a copy nobody has opened makes it theirs: the day it
+    # was installed, and the start of its history (see Zenith.initialise).
     # `check` and `test` are exempt: they are what a maintainer runs inside the
     # template itself, and neither should make the shipped copy anyone's.
     if os_.is_fresh() and handler not in (cmd_setup, cmd_help, cmd_doctor, cmd_test):
         try:
-            os_.initialise()
+            # Held, as `./os setup` holds it: a checkpoint made while the first
+            # run was still taking everything in took git's lock away from
+            # under it, and the git words it failed with sat in every brief
+            # after (review, 2026-09-30). Now it waits its turn.
+            with Lock(os_, "first run"):
+                began = os_.initialise()["history"]
             Indexer(os_).build()
             # Not a word of it when the answer is being parsed. `--json` means
             # stdout belongs to whatever is reading it, and a greeting printed
@@ -7871,6 +10256,12 @@ def main(argv: list[str] | None = None) -> int:
                 Out.raw("  " + paint("Welcome — this folder is yours now.", S.GOLD)
                         + paint("   ./os demo", S.FAINT)
                         + paint(" shows you the whole idea in two minutes.", S.FAINT))
+                # No git is no reason to stop: one line, and on with the command.
+                # Not before a brief, which says it too: in a terminal it came
+                # twice (review, 2026-09-30).
+                said = History(os_).first_words(began)
+                if said and handler is not cmd_brief:
+                    Out.note(said)
         except OSError:
             pass
 
