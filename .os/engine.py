@@ -1990,6 +1990,9 @@ VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".mts
 #: about every file in the tree, on every single command.
 IGNORE_SUFFIXES = (".tmp~", ".pyc", ".swp", "~", ".card.md")
 CATEGORY_MARKER = ".category"
+#: What `made:` says in the header of a folder somebody made and named
+#: themselves. Sort never moves one of those into a subject group.
+BY_HAND = "by hand"
 
 #: Folders a Mac shows as one document. `Garden.rtfd` is TextEdit's note with
 #: a picture in it, the words in a TXT.rtf inside; taken for a folder of notes,
@@ -2199,13 +2202,46 @@ def loose_at_top(root: Path, buckets=None) -> list:
         return []
 
 
+def name_key(name: str, folder: bool) -> str:
+    """The name a thing answers to, as names are compared: `Pizza/` and
+    `pizza.md` both answer to `./os show pizza`."""
+    return slugify(nfc(name if folder else Path(name).stem))
+
+
+def names_in_group(base: Path, skip: Path | None = None) -> set[str]:
+    """Every name already used in this bucket, its subject groups included.
+
+    Sort checked a new name only against the folder it was going into, so a
+    second note called Pizza went into Notes while the first was in
+    Notes/Food. The next sort put it in General, and ./os check said two
+    things were called pizza on every run after, with nothing to fix it
+    (stranger test, 2026-09-30). `skip`: the thing being named, whose own
+    name isn't in anyone's way."""
+    out: set[str] = set()
+    todo = [base]
+    while todo:
+        node = todo.pop()
+        try:
+            children = list(node.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if ignored(child) or child == skip or child.name.endswith(".card.md"):
+                continue
+            if Scanner.is_category(child):
+                todo.append(child)
+                continue
+            out.add(name_key(child.name, not child.is_file()))
+    return out
+
+
 class Item:
     """One thing the OS knows about."""
 
     __slots__ = (
         "path", "bucket", "kind", "ident", "title", "status", "domain", "tags",
         "created", "updated", "summary", "is_dir", "words", "trail",
-        "flags", "fingerprint", "spine", "blurb", "managed", "claim",
+        "flags", "fingerprint", "spine", "blurb", "managed", "claim", "by_hand",
     )
 
     def __init__(self, path: Path, bucket: str, kind: str):
@@ -2228,6 +2264,9 @@ class Item:
         self.fingerprint = ""
         self.spine: Path | None = None  # the markdown file that carries front matter
         self.claim = ""            # a `claimed:` header, verbatim — see cmd_claim
+        #: Its header says `made: by hand`: a folder somebody made and named
+        #: themselves, which sort adopted where they put it. See Sorter.stays_put.
+        self.by_hand = False
         #: Has the OS ever taken charge of this? True iff its own header says
         #: what it is — a `type:` or a `title:`. The *filename* proves nothing;
         #: anyone can type one. Decided in hydrate(), where the front matter is
@@ -2850,6 +2889,7 @@ class Scanner:
                 item.summary = gist(body)
         item.blurb = str(meta.get("description") or "").strip()
         item.claim = str(meta.get("claimed") or "").strip()
+        item.by_hand = str(meta.get("made") or "").strip().lower() == BY_HAND
         # There are no numbers any more: filed means the header says what the
         # thing is. The name on disk is the handle every command answers to.
         item.managed = bool(str(meta.get("type") or meta.get("title") or "").strip())
@@ -3325,6 +3365,9 @@ class Sorter:
             # Where it goes was their call, so nobody was guessing.
             verdict["flags"] = [f for f in verdict.get("flags", []) if f != "needs-review"]
             keep = bool(verdict.get("title_given"))
+            # Said in its header, so sort never moves it into a subject group
+            # however big the folder gets (stays_put).
+            verdict["by_hand"] = True
 
         # A file dropped in by hand keeps the name and ending it came with.
         # `Shopping List.txt` became shopping-list.md, and TextEdit, saving it
@@ -3356,16 +3399,29 @@ class Sorter:
         # Names are plain words, and the name is the handle: nothing is tagged.
         # A name ./os never looks inside (Content, README.md) is taken too: work
         # called "Content" was made inside the media folder, and vanished.
+        # Every name in use here, in its subject groups too, so no two
+        # things in one bucket answer to one name (names_in_group).
+        folder = kind == "project" or not src.is_file()
+        used: set[str] | None = None
+
+        def in_use(cand: Path) -> bool:
+            nonlocal used
+            if cand.exists() or cand.is_symlink() or ignored(cand):
+                return True
+            if used is None:
+                used = names_in_group(base, skip=src)
+            return name_key(cand.name, folder) in used
+
         def free(name: str) -> Path:
             cand = base / name
             # Adopting a file where it already lies is not a move — without
             # this it went to `name-2` and straight back again.
-            if cand == src or not (cand.exists() or ignored(cand)):
+            if cand == src or not in_use(cand):
                 return cand
-            suf = cand.suffix
+            suf = "" if folder and not bundle else cand.suffix
             stem = cand.name[: -len(suf)] if suf else cand.name
             n = 2
-            while (base / f"{stem}-{n}{suf}").exists():
+            while in_use(base / f"{stem}-{n}{suf}"):
                 n += 1
             return base / f"{stem}-{n}{suf}"
 
@@ -3379,7 +3435,7 @@ class Sorter:
             if here and base in src.parents and src.name == name + ending:
                 return src
             dest, n = base / f"{name}{ending}", 2
-            while dest.exists() or dest.is_symlink() or ignored(dest):
+            while in_use(dest):
                 dest, n = base / f"{name} {n}{ending}", n + 1
             called = dest.name if bundle or not ending else dest.name[:-len(ending)]
             verdict["title"] = given_name(called) or verdict["title"]
@@ -3480,8 +3536,20 @@ class Sorter:
         spine = self.scanner.spine_of(folder) or (folder / "README.md")
         if theirs:
             code = any((folder / f).exists() for f in CODE_MARKERS)
+            readme = folder / "README.md"
             spine = folder.with_name(folder.name + ".card.md") \
-                if code or (folder / "README.md").exists() else folder / "README.md"
+                if code or readme.exists() else readme
+            # A piece of work they wrote up themselves, with its decisions, log
+            # or next action in its README: the header goes on that README.
+            # With a card beside it, a decision made later went into the card,
+            # and its decisions were split across two files (stranger test,
+            # 2026-09-30). Only the header is added; every line of theirs
+            # stays as it is.
+            if kind == "project" and not code and self._worked_on(readme):
+                spine = readme
+                # Kept as it was, so ./os undo puts it back word for word.
+                self.os.snapshot(spine)
+                self.os.record("edit", self.os.rel(spine))
         already_there = spine.exists()
         existing, has_shape, head = "", False, ""
         if theirs:
@@ -3536,8 +3604,21 @@ class Sorter:
             "status": verdict.get("status") or (PUSHING if kind == "project" else "—"),
             "domain": verdict["domain"], "tags": verdict["tags"],
             "created": today(), "summary": verdict.get("summary", ""),
+            "made": BY_HAND if verdict.get("by_hand") else None,
         })
         self._finish_header(spine, verdict)
+
+    #: The sections of a piece of work that only grow or change as it goes.
+    WORK_SECTIONS = re.compile(r"^##\s+(Decisions|Log|Next action)\b", re.M | re.I)
+
+    @classmethod
+    def _worked_on(cls, readme: Path) -> bool:
+        """Does this README already keep a piece of work's decisions, log or
+        next action? One that isn't plain text is kept as it is, with a card."""
+        if not readme.is_file() or readme.is_symlink():
+            return False
+        text = read_utf8(readme)
+        return text is not None and bool(cls.WORK_SECTIONS.search(parse_frontmatter(text)[1]))
 
     def _sidecar(self, asset: Path, ident: str, verdict: dict) -> None:
         card = asset.with_name(asset.name + ".card.md")
@@ -3635,7 +3716,14 @@ class Sorter:
                 wanted = f"{slug}{suffix}"
             target = it.path.with_name(wanted)
             n = 2
-            while target != it.path and (target.exists() or ignored(target)):
+            used: set[str] | None = None
+            while target != it.path:
+                if not (target.exists() or ignored(target)):
+                    # Nor a name used anywhere else in this bucket's groups.
+                    if used is None:
+                        used = names_in_group(self.os.root / it.bucket, skip=it.path)
+                    if name_key(target.name, is_dir) not in used:
+                        break
                 target = it.path.with_name(f"{wanted}-{n}" if is_dir
                                           else f"{slug}-{n}{suffix}")
                 n += 1
@@ -3698,11 +3786,14 @@ class Sorter:
             pool = [it for it in items if it.bucket == bucket]
             if not pool:
                 continue
-            currently_split = any(it.trail for it in pool)
+            # A folder somebody made stays where it is, in a group or not, and
+            # so says nothing about whether the rest are grouped now.
+            currently_split = any(it.trail for it in pool if not self.stays_put(it))
             should_split = len(pool) > split if not currently_split else len(pool) >= collapse
             if not should_split:
                 for it in pool:
                     plan[str(it.path)] = []
+                self._leave_theirs(pool, plan)
                 continue
 
             groups: dict[str, list[Item]] = {}
@@ -3732,7 +3823,38 @@ class Sorter:
                     sub = mapping.get(str(it.path))
                     if sub:
                         plan[str(it.path)] = [cat, sub]
+            self._leave_theirs(pool, plan)
         return plan
+
+    def stays_put(self, it: Item) -> bool:
+        """Is this a folder somebody made and named, which sort never moves
+        into a subject group or out of one?
+
+        Once Notes passed 12 things, `mkdir Notes/Recipes` with two notes in
+        it was moved to Notes/Food/Recipes (stranger test, 2026-09-30). A
+        folder they named stays where they put it, however big the folder
+        gets (decided 2026-10-01). The loose notes sort filed itself are
+        still grouped as before, and so is the work `./os new` made.
+
+        Sort never makes a folder in Notes: every one there came from
+        somebody, made by hand or handed to ./os save. In Work, where sort
+        makes a folder for every piece of work, it is one made by hand: read
+        through a note in it, with a card beside it, or saying `made: by
+        hand`, which sort writes when it takes one in where it lies. A
+        program's document is a file to them, and is grouped like one."""
+        if not it.is_dir or document_bundle(it.path) \
+                or it.kind not in ("project", "note", "asset"):
+            return False
+        if self.os.buckets().get(it.bucket, {}).get("role") == "note":
+            return True
+        card = it.path.with_name(it.path.name + ".card.md")
+        return it.by_hand or Scanner.borrows_page(it.path, it.spine) or it.spine == card
+
+    def _leave_theirs(self, pool: list[Item], plan: dict[str, list[str]]) -> None:
+        """Plan every folder somebody made to stay exactly where it is."""
+        for it in pool:
+            if self.stays_put(it):
+                plan[str(it.path)] = list(it.trail)
 
     def balance(self, items: list[Item]) -> int:
         plan = self.target_trails(items)
@@ -4099,7 +4221,7 @@ class Doctor:
     #: What `_out_of_reach` says. Those whose fix is ./os check --fix count
     #: on the front screen and in the brief as things that need fixing.
     OUT_OF_REACH = ("left-at-top", "passed-over", "work-inside-work", "too-far-in",
-                    "card-left-behind")
+                    "card-left-behind", "archived-by-hand")
 
     @staticmethod
     def _filed_work(path: Path, folder: bool) -> str:
@@ -4379,6 +4501,82 @@ class Doctor:
             self.os.commit("check")
         return repaired
 
+    def _archived_by_hand(self) -> None:
+        """Name anything put in Archive by hand, where nothing can reach it.
+
+        ./os close files a thing as Archive/<year>/<where it was>/<name>, and
+        only that shape is read. A project dragged straight into Archive was
+        gone from the list, from ./os show and from ./os find, and check said
+        all good (stranger test, 2026-09-30). Each one is said, with the
+        command that puts it back and closes it properly. Nothing is moved:
+        which folder it came from is their call."""
+        shelf = next((n for n, spec in self.os.buckets().items()
+                      if spec.get("role") == "archive"), "")
+        base = self.os.root / shelf
+        if not shelf or not base.is_dir():
+            return
+        buckets = self.os.buckets()
+        work, notes = self.os.bucket_for_role("project"), self.os.bucket_for_role("note")
+        rel = self.os.rel
+
+        def odd(path: Path) -> bool:
+            if ignored(path) or path.name.startswith(".") or holds_nothing(path):
+                return False
+            # A card goes with its file, and is in the command for it.
+            if path.name.endswith(".card.md") and path.name != ".card.md":
+                thing = path.with_name(path.name[:-len(".card.md")])
+                return not (thing.exists() or thing.is_symlink())
+            return True
+
+        found: list[Path] = []
+        try:
+            tops = sorted(base.iterdir())
+        except OSError:
+            return
+        for top in tops:
+            if not odd(top):
+                continue
+            if not (top.is_dir() and not top.is_symlink() and re.fullmatch(r"\d{4}", top.name)):
+                found.append(top)
+                continue
+            try:
+                inside = sorted(top.iterdir())
+            except OSError:
+                continue
+            for origin in inside:
+                if not odd(origin):
+                    continue
+                # Loose in a year's folder, or a piece of work put there
+                # whole: its own README read as the folder a thing came from.
+                if not origin.is_dir() or (origin.name not in buckets and any(
+                        (origin / n).is_file() for n in ("README.md", "index.md"))):
+                    found.append(origin)
+
+        for path in found:
+            folder = path.is_dir()
+            head = Scanner.spine_of(path)
+            meta = parse_frontmatter(read_text(head, 4_000))[0] \
+                if head and head.suffix.lower() in TEXT_SUFFIXES else {}
+            declared = TYPE_FROM_DISK.get(str(meta.get("type") or "").strip().lower(),
+                                          str(meta.get("type") or "").strip().lower())
+            home = work if declared == "project" or (folder and not declared) else notes
+            dest = self._free_beside(self.os.root / home,
+                                     path.name if folder else path.stem,
+                                     "" if folder else path.suffix)
+            name = dest.name if folder else dest.stem
+            card = path.with_name(path.name + ".card.md")
+            steps = [f"mv -n {shell_word(rel(path))} {shell_word(rel(dest))}"]
+            if card.exists():
+                steps.append(f"mv -n {shell_word(rel(card))} {shell_word(rel(dest) + '.card.md')}")
+            if not (meta.get("type") or meta.get("title") or card.exists()):
+                steps.append("./os sort")
+            steps.append(f"./os close {shell_word(name)}")
+            self.flag("warn", "archived-by-hand",
+                      f"'{path.name}' was moved into {shelf} by hand, where the list, "
+                      "./os show and ./os find can't reach it. This moves it back and "
+                      f"closes it, which files it in {shelf} the way they can",
+                      rel(path), " && ".join(steps))
+
     # -- the checks ---------------------------------------------------------
 
     def run(self, items: list[Item] | None = None, fix: bool = False) -> dict:
@@ -4543,6 +4741,7 @@ class Doctor:
 
         # 3b. anything of theirs that neither search nor the list can reach
         repaired += self._out_of_reach(items, fix)
+        self._archived_by_hand()
 
         # 4. duplicates
         by_print: dict[str, list[Item]] = {}

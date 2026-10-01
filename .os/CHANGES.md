@@ -3,6 +3,21 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-01.2
+
+- A folder you make yourself stays where you put it. Before, once you had
+  more than 12 notes, sort could tuck it inside a subject folder like Food.
+  The notes it filed for you are still grouped as before.
+- Two notes called the same thing no longer end up in different subject
+  folders. The second one gets a "-2" on its name, so `./os show` always
+  knows which you mean.
+- If you make a work folder yourself and the page in it already has
+  decisions, a log or a next action, everything stays on that one page.
+  Before, a second page was made beside it, and new decisions went there.
+- If you drag something into Archive yourself, `./os check` now tells you
+  it can't be found there, and gives you the one line to type that puts it
+  away properly.
+
 ## 2026-10-01.1
 
 - `./os update` now tells you in plain words what changed, like this list.

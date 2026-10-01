@@ -21,6 +21,7 @@ import json
 import multiprocessing
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -4730,6 +4731,176 @@ def test_a_folder_they_made_keeps_its_name_and_every_note_in_it_is_found(t: Case
     t.box.run("sort")
     t.ok((root / "Work" / "Mend the Shed Door" / "README.md").is_file(),
          "a folder ./os made is renamed when its title changes")
+
+
+HOME_FACTS = (
+    "Boiler pressure should sit at 1.5 bar when cold",
+    "The car's tyre pressure is 32 psi front and back",
+    "Lemon cake: 200g butter, 200g sugar, 4 eggs, zest of two lemons",
+    "Tomatoes need staking once they reach 30cm",
+    "Library card number is on the fridge",
+    "Bin day is Tuesday, recycling every other week",
+    "Doctor said take vitamin D through winter",
+    "The garden tap washer is 1/2 inch",
+    "Sourdough starter: feed it 1:1:1 every 12 hours",
+    "Mum's birthday is 14 March",
+    "Wifi router lives behind the TV",
+    "Broadband contract ends in June",
+    "Paint for the hallway is Farrow and Ball Elephant's Breath",
+)
+
+
+@test
+def test_a_folder_they_made_is_never_moved_into_a_group(t: Case) -> None:
+    """Once Notes passed 12 things, sort moved `mkdir Notes/Recipes` into
+    Notes/Food/Recipes (stranger test, 2026-09-30). A folder somebody made
+    stays where they put it however big the folder gets, in Work too, and
+    one already in a group stays in it (decided 2026-10-01). The notes sort
+    filed itself, and the work ./os new made, are still grouped."""
+    root = t.box.root
+    recipes = root / "Notes" / "Recipes"
+    recipes.mkdir(parents=True)
+    for words in ("Pizza dough: 500g flour, 325ml water, 10g salt, rest 24 hours",
+                  "Chilli oil: warm 200ml oil and pour over chilli flakes"):
+        t.box.run("save", words)
+        saved = root / t.box.carrying(words.split(":")[0])["path"]
+        saved.rename(recipes / saved.name)
+    # Made by hand in Work with only a photo in it: sort gives it a page.
+    kitchen = root / "Work" / "Kitchen"
+    kitchen.mkdir(parents=True)
+    (kitchen / "worktop.jpg").write_bytes(b"\xff\xd8\xff\xe0 not really a photo")
+    # One a released ./os already put in a group, as it did past 12 things.
+    garden = root / "Notes" / "Garden"
+    (garden / "Allotment").mkdir(parents=True)
+    (garden / ".category").write_text(json.dumps({"name": "Garden", "trail": ["Garden"],
+                                                  "auto": True, "created": "2026-09-01",
+                                                  "engine": "3.0.0"}) + "\n")
+    (garden / "Allotment" / "plot.md").write_text(
+        "---\ntitle: Plot 14\ntype: note\nstatus: —\ndomain: home\ntags: []\n"
+        "created: 2026-09-01\nupdated: 2026-09-01\n---\n\nBeans along the north fence.\n")
+    t.box.run("sort")
+    theirs = {p: p.read_bytes() for d in (recipes, kitchen, garden / "Allotment")
+              for p in d.iterdir() if p.is_file()}
+    t.ok("made: by hand" in (kitchen / "README.md").read_text(),
+         "the folder made by hand in Work says so in its header")
+
+    for words in HOME_FACTS:
+        t.box.run("save", words)
+    for n in range(13):
+        t.box.run("new", "work", f"Fix the {['shed', 'gate', 'fence', 'roof', 'tap'][n % 5]} "
+                                 f"number {n + 1}")
+    moved = t.box.run("sort").stdout
+    t.eq({p: p.read_bytes() for p in theirs if p.is_file()}, theirs,
+         f"Recipes, Kitchen and the Allotment stay exactly where they were\n{moved}")
+    t.ok("Recipes" not in moved and "Kitchen" not in moved and "Allotment" not in moved,
+         f"and sort doesn't say it moved them\n{moved}")
+    grouped = {i["bucket"] for i in t.box.items() if i["trail"]}
+    t.ok({"Notes", "Work"} <= grouped,
+         f"the notes and work ./os filed itself are still grouped ({sorted(grouped)})")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "and the next sort has nothing to do")
+    for word, where in (("pizza", "Notes/Recipes"), ("beans", "Notes/Garden/Allotment")):
+        t.eq([h["path"] for h in t.box.json("find", word)][:1], [where], f"./os find {word} finds it")
+
+
+@test
+def test_sort_never_names_two_things_in_one_bucket_alike(t: Case) -> None:
+    """A second note called Pizza was named against the top of Notes only,
+    while the first was in Notes/Food. The next sort put it in General, and
+    two things were called pizza for good (stranger test, 2026-09-30). A new
+    name is checked against every name in the bucket, its groups too."""
+    root = t.box.root
+    for words in HOME_FACTS + ("Pizza",):
+        t.box.run("save", words)
+    t.box.run("sort")
+    t.ok(any(i["trail"] for i in t.box.items()), "Notes is grouped by now")
+    t.box.run("save", "Pizza\n\nRecipe: 500g flour, 325ml water, 10g salt, yeast. "
+                      "Ingredients for the dough, rest 24 hours")
+    t.box.run("sort")
+    # And one renamed by hand to a title already in another group.
+    paint = root / t.box.carrying("Farrow and Ball")["path"]
+    paint.write_text(paint.read_text().replace("title: Paint for the hallway", "title: Pizza", 1))
+    t.box.run("sort")
+    names = [engine.slugify(i["id"]) for i in t.box.items() if i["bucket"] == "Notes"]
+    t.eq(sorted(n for n in set(names) if names.count(n) > 1), [],
+         "no two things in Notes answer to one name")
+    t.ok(not [i for i in t.box.json("check", expect=None)["issues"] if i["code"] == "same-name"],
+         "and check has no name said twice")
+    shown = t.box.run("show", "pizza", expect=None)
+    t.ok(shown.returncode == 0 and "Notes/" in shown.stdout, "./os show pizza answers straight away")
+
+
+@test
+def test_a_work_folder_with_its_own_decisions_keeps_them_in_one_place(t: Case) -> None:
+    """A Work folder made by hand whose README already kept its decisions got
+    a card beside it, and the next decision went into the card: two files of
+    decisions (stranger test, 2026-09-30). The header goes on that README,
+    and every line of theirs stays."""
+    root = t.box.root
+    reno = root / "Work" / "Kitchen Reno"
+    reno.mkdir(parents=True)
+    theirs = ("# Kitchen reno\n\nNew worktops and tiles.\n\n## Next action\n- [ ] Call the tiler\n\n"
+              "## Decisions\n- 2026-09-20 · oak worktops, not granite\n\n"
+              "## Log\n- 2026-09-20 · measured up\n")
+    (reno / "README.md").write_text(theirs)
+    (reno / "quote.txt").write_text("Harlow Joinery: 2400 pounds\n")
+    # Without any of those sections, the README is still theirs alone.
+    plain = root / "Work" / "Bike Repair"
+    plain.mkdir()
+    (plain / "README.md").write_text("# Bike repair\n\nThe back brake squeals.\n")
+    t.box.run("sort")
+    t.ok(not (root / "Work" / "Kitchen Reno.card.md").exists(), "no card beside it")
+    text = (reno / "README.md").read_text()
+    meta, body = engine.parse_frontmatter(text)
+    t.eq((meta.get("type"), meta.get("title")), ("work", "Kitchen Reno"), "the header is on its README")
+    t.eq(body.strip(), theirs.strip(), "and every line of theirs is as it was")
+    t.ok((root / "Work" / "Bike Repair.card.md").exists()
+         and (plain / "README.md").read_text() == "# Bike repair\n\nThe back brake squeals.\n",
+         "a README with no decisions, log or next action keeps a card beside it")
+    t.box.run("decide", "Kitchen Reno", "white tiles, not green")
+    shown = t.box.run("show", "Kitchen Reno").stdout
+    t.ok("oak worktops" in shown and "white tiles" in shown and "Call the tiler" in shown,
+         f"./os show has both decisions and the next action\n{shown}")
+    t.ok("white tiles" in (reno / "README.md").read_text(), "the new decision is in the same file")
+    t.box.run("undo")
+    t.box.run("undo")
+    t.eq((reno / "README.md").read_text(), theirs, "undo puts their README back word for word")
+
+
+@test
+def test_something_moved_into_archive_by_hand_is_named(t: Case) -> None:
+    """A project dragged straight into Archive was gone from the list, show
+    and find, and check said all good (stranger test, 2026-09-30). Check
+    names anything in Archive that isn't where ./os close puts things, with
+    the command that closes it properly. What ./os close filed, and a
+    year's folder of older notes like this workshop's, are not named."""
+    root = t.box.root
+    t.box.run("new", "work", "Kitchen Reno")
+    t.box.run("new", "work", "Bathroom")
+    t.box.run("close", "Bathroom")
+    (root / "Work" / "Kitchen Reno").rename(root / "Archive" / "Kitchen Reno")
+    (root / "Archive" / "2026" / "Shed").mkdir(parents=True)
+    (root / "Archive" / "2026" / "Shed" / "README.md").write_text("# Shed\n\nNew felt on the roof.\n")
+    (root / "Archive" / "boiler manual.txt").write_text("Bleed the radiators each autumn.\n")
+    older = root / "Archive" / "2026" / "old-layout"
+    older.mkdir(parents=True)
+    (older / "subjects.md").write_text("# Subjects\n\nWhat the old layout kept.\n")
+    issues = [i for i in t.box.json("check", expect=None)["issues"] if i["code"] == "archived-by-hand"]
+    t.eq(sorted(i["path"] for i in issues),
+         ["Archive/2026/Shed", "Archive/Kitchen Reno", "Archive/boiler manual.txt"],
+         "check names each thing put in Archive by hand, and nothing else")
+    t.ok(all("by hand" in i["message"] and "./os close" in i["fix"] for i in issues),
+         f"each says what happened and how to close it ({issues})")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    for issue in issues:
+        done = subprocess.run(issue["fix"].replace("./os ", f"{shlex.quote(str(root / 'os'))} "),
+                              shell=True, cwd=str(root), env=env, capture_output=True, text=True)
+        t.eq(done.returncode, 0, f"`{issue['fix']}` works as given\n{done.stdout}{done.stderr}")
+    t.eq([i for i in t.box.json("check", expect=None)["issues"] if i["code"] == "archived-by-hand"], [],
+         "afterwards check has nothing more to say")
+    for word, where in (("kitchen", "Archive/2026/Work/Kitchen Reno"),
+                        ("felt", "Archive/2026/Work/Shed"),
+                        ("radiators", "Archive/2026/Notes/boiler manual.txt")):
+        t.eq([h["path"] for h in t.box.json("find", word)][:1], [where], f"./os find {word} reaches it")
 
 
 @test
