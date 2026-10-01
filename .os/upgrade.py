@@ -10,7 +10,9 @@ Zenith — upgrade an older folder to this template
 Brings the machinery up to date and leaves the person's things alone:
 
     replaced   os · .os/engine.py · .os/learn.py · .os/upgrade.py · .os/templates/
-               .os/tests/ · the shipped skills, helpers and hooks in .claude/ · AGENTS.md
+               .os/tests/ · .os/CHANGES.md (what changed, in words: the
+               entries newer than their version are printed at the end)
+               · the shipped skills, helpers and hooks in .claude/ · AGENTS.md
                — but a shipped file THEY edited is kept, and the new version set
                aside in .os/upgrades/<stamp>/ for them (or their AI) to merge. One
                they deleted stays deleted. A program file changed there and never
@@ -63,6 +65,9 @@ MACHINERY = [
     "os",
     ".os/engine.py", ".os/learn.py", ".os/upgrade.py",
     ".os/templates", ".os/tests",
+    # The change note: what each release changed, in plain words. Theirs to
+    # read, not to edit, so the newest always replaces it.
+    ".os/CHANGES.md",
 ]
 #: Shipped, but the kind of file a person reasonably edits. Replaced only when
 #: the copy on disk still matches a version the template once released —
@@ -230,6 +235,27 @@ def record() -> int:
 
 def say(line: str = "") -> None:
     print(line)
+
+
+def whats_new(release: str, most: int = 3) -> list[str]:
+    """What the change note says is new since `release`, the version this
+    folder had, as lines to print: `most` releases, newest first. Read from
+    the new version's own .os/CHANGES.md, so an update from a version that
+    never had one says it too."""
+    try:
+        text = (HERE / engine.CHANGES_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    entries = engine.changes_since(text, release)
+    if not entries:
+        return []
+    lines = ["  WHAT'S NEW" + (f" since {release}" if release else "")]
+    for head, body in entries[:most]:
+        lines.append("    " + ("this version" if head == engine.UNRELEASED else head))
+        lines += ["      " + line.rstrip() for line in body.splitlines() if line.strip()]
+    if len(entries) > most:
+        lines.append(f"    and {len(entries) - most} older, in .os/CHANGES.md")
+    return lines
 
 
 def die(msg: str) -> None:
@@ -500,9 +526,47 @@ def loose_in(root: Path) -> int:
         return 0
 
 
+def change_note(argv: list[str]) -> int:
+    """Template maintainers: print the entry the next release goes out with,
+    or stop when there isn't a new one. release-os.sh asks this before it
+    builds anything, so no release goes out without saying what changed.
+
+        python3 .os/upgrade.py --change-note [--published=<its CHANGES.md>]
+
+    The new entry is the one at the top of .os/CHANGES.md headed
+    `## Next release`. `--published` is the change note of the version out
+    now: an entry that is already in it is not new, whatever its heading."""
+    path = HERE / engine.CHANGES_FILE
+    head = f"## {engine.UNRELEASED}"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        die(f"there's no .os/{engine.CHANGES_FILE}. Make one, with a '{head}' entry at the top "
+            "saying in plain words what people will notice.")
+    entries = engine.change_entries(text)
+    if not entries or entries[0][0] != engine.UNRELEASED:
+        die(f"there's no new entry in .os/{engine.CHANGES_FILE}. Add one at the top, headed "
+            f"'{head}', saying in plain words what people will notice.")
+    body = entries[0][1]
+    if not re.search(r"^\s*- +\S", body, re.M):
+        die(f"the '{head}' entry in .os/{engine.CHANGES_FILE} has nothing in it. "
+            "Write a line for each thing people will notice, starting with '- '.")
+    published = next((a.split("=", 1)[1] for a in argv if a.startswith("--published=")), "")
+    if published and Path(published).is_file():
+        out = engine.change_entries(Path(published).read_text(encoding="utf-8", errors="replace"))
+        same = next((h for h, b in out if b == body), "")
+        if same:
+            die(f"the '{head}' entry is already out, as {same}. Change its heading to "
+                f"'## {same}', and write a new one above it.")
+    print(body)
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if "--record" in argv:
         return record()
+    if "--change-note" in argv:
+        return change_note(argv)
     dry = "--dry-run" in argv
     anyway = "--anyway" in argv
     args = [a for a in argv if not a.startswith("--")]
@@ -865,6 +929,13 @@ def main(argv: list[str]) -> int:
         new.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(new, root / ".os" / "shipped.json")
     say()
+    # What changed, in words. The lines above say which files; this says
+    # what they'll notice.
+    news = whats_new(str(before.get("release") or ""))
+    for line in news:
+        say(line)
+    if news:
+        say()
     if (kept or typo) and not dry:
         say("  merge:  ask your AI to fold each set-aside file into yours, or diff them by hand")
     say("  next:  cd " + str(root) + "   ·   ./os check   ·   ./os")

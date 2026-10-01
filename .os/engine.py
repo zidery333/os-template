@@ -4839,12 +4839,34 @@ def stem(word: str) -> str:
     return word
 
 
+#: What may follow a word's root for it to be the same word: its last letter
+#: again (run, running), an e (bake, baking), then an ending, then the end of
+#: the word. Nothing else: the root of "winner" is "win", and matched as the
+#: start of any word it found the note about winter (review, 2026-09-30).
+_ROOT_TAIL = r"(?:{double})?{e}(?:" + "|".join(_SUFFIXES + ("y",)) + r")?(?![a-z0-9])"
+
+
+def root_pattern(root: str, doubled: bool = False) -> "re.Pattern":
+    """A root found as a whole word with one of its endings: "garden" finds
+    garden, gardens, gardener and gardening, and never gardenia. A root that
+    ends in y also takes the endings that swap it, so "berry" finds berries.
+    A root whose last letter was doubled before its ending, win in winner,
+    never ends in e: winner is not wine."""
+    tail = _ROOT_TAIL.format(double=re.escape(root[-1]), e="" if doubled else "e?")
+    if root.endswith("y") and len(root) > 3:
+        body = re.escape(root[:-1]) + r"(?:y" + tail + r"|i(?:es|ed|er|est|ly)(?![a-z0-9]))"
+    else:
+        body = re.escape(root) + tail
+    return re.compile(r"(?<![a-z0-9])" + body)
+
+
 class Term:
     """One search word: how it was typed, and its root.
 
     The word as typed matches anywhere, the way it always has. The root only
     matches at the start of a word — otherwise "biling" stems to "bil" and
-    starts finding every note about anything mobile."""
+    starts finding every note about anything mobile — and only with an
+    ending after it, so "winner" (root "win") never finds "winter"."""
 
     __slots__ = ("word", "root", "_rx")
 
@@ -4852,7 +4874,9 @@ class Term:
         self.word = word
         root = stem(word)
         self.root = root if root != word else ""
-        self._rx = re.compile(r"(?<![a-z0-9])" + re.escape(root)) if self.root else None
+        # "winner" → "win": the n was doubled, so the word is win, not wine.
+        doubled = len(word) > len(root) and word.startswith(root) and word[len(root)] == root[-1]
+        self._rx = root_pattern(root, doubled) if self.root else None
 
     def weight(self, hay: str) -> float:
         """1.0 for the word as typed, less for a root-only match, 0 for neither."""
@@ -4873,6 +4897,29 @@ class Term:
 
 
 WORD_RE = re.compile(r"[a-z][a-z0-9'-]{2,}")
+
+
+class _Unaccent(dict):
+    """For str.translate: a letter with an accent → the same letter without
+    it, one character for one, so a place found in the plain text is the same
+    place in the text as written. Worked out once for each letter met."""
+
+    def __missing__(self, code: int) -> int:
+        bare = unicodedata.normalize("NFD", chr(code))
+        plain = ord(bare[0]) if len(bare) > 1 and all(unicodedata.combining(c) for c in bare[1:]) else code
+        self[code] = plain
+        return plain
+
+
+_UNACCENT = _Unaccent()
+
+
+def unaccented(text: str) -> str:
+    """`Diátaxis` as `Diataxis`, `café` as `cafe`: search reads both ways
+    the same. Typed without the accent, a word was found only because the
+    near-word guess happened to land on part of it, and that guess no longer
+    searches on its own."""
+    return text if text.isascii() else text.translate(_UNACCENT)
 
 
 def shell_word(text: str) -> str:
@@ -4934,7 +4981,9 @@ class Finder:
     def __init__(self, os_: "Zenith", scanner: "Scanner | None" = None):
         self.os = os_
         self.scanner = scanner or Scanner(os_)
-        self.corrected: dict[str, str] = {}   # what we searched for instead
+        #: When nothing matched: a near word for each word typed that is in
+        #: nothing, to offer as a search of its own. Never searched for.
+        self.near: dict[str, str] = {}
         #: For a thing found by words in another file in its folder, that file
         #: (by the thing's path), so a hit can say where it was.
         self.found_in: dict[str, Path] = {}
@@ -5102,8 +5151,8 @@ class Finder:
               vocabulary: set | None) -> list[tuple[float, Item, str]]:
         results = []
         for it in items:
-            hay_title = nfc(f"{it.ident} {it.title} {it.path.name}").lower()
-            hay_meta = nfc(f"{it.domain} {' '.join(it.tags)} {it.status} {it.blurb}").lower()
+            hay_title = unaccented(nfc(f"{it.ident} {it.title} {it.path.name}").lower())
+            hay_meta = unaccented(nfc(f"{it.domain} {' '.join(it.tags)} {it.status} {it.blurb}").lower())
             raw = ""
             if it.spine and it.spine.exists() and it.spine.suffix.lower() in TEXT_SUFFIXES:
                 _, raw = parse_frontmatter(read_ends(it.spine))
@@ -5125,14 +5174,14 @@ class Finder:
             raw = nfc(COMMENT_RE.sub(" ", raw))
             # Its page first, then the other notes in its folder (see _inside):
             # (the file it came from, or None for the page; the words; lowered)
-            pages = [(None, raw, raw.lower())]
+            pages = [(None, raw, unaccented(raw.lower()))]
             for where, text in self._inside(it):
                 text = nfc(COMMENT_RE.sub(" ", text))
-                pages.append((where, text, text.lower()))
+                pages.append((where, text, unaccented(text.lower())))
             # Then the name of everything in its folder (see contents), with no
             # words of its own to show: the line under the hit says which file.
             if it.is_dir:
-                pages += [(where, "", words.lower())
+                pages += [(where, "", unaccented(words.lower()))
                           for where, words, _folder in self.contents(it).named]
             # The file whose name has every word asked for, when one does:
             # `img 39099` is IMG_39099.jpg, not the first IMG_ in the folder.
@@ -5166,7 +5215,7 @@ class Finder:
                 # nothing. `./os find "harlow kitchen"` showed the quote from
                 # Harlow Joinery, then "kitchen" in the heading of the kitchen
                 # refit's page replaced it with an empty line and lost the file.
-                if found[0][1] in (snippet or "").lower() or (shown and term.weight(hay_title)):
+                if found[0][1] in unaccented((snippet or "").lower()) or (shown and term.weight(hay_title)):
                     continue
                 for _worth, form, (where, text, low) in found:
                     if not text:
@@ -5192,8 +5241,8 @@ class Finder:
     # -- the search ---------------------------------------------------------
 
     def search(self, query: str, limit: int = 20, kind: str = "", bucket: str = "") -> list[tuple[float, Item, str]]:
-        self.corrected = {}
-        terms = [t for t in re.split(r"\s+", nfc(query).lower().strip()) if t]
+        self.near = {}
+        terms = [t for t in re.split(r"\s+", unaccented(nfc(query).lower().strip())) if t]
         if not terms:
             return []
         # Skills and helpers are the machinery, not the person's work. Searching
@@ -5214,22 +5263,19 @@ class Finder:
         if hits:
             return hits[:limit]
 
-        # Nothing matched. Before giving up, assume a typo: every word in the
-        # folder is already in hand from the pass above, so this costs no reads.
-        fixed = []
+        # Nothing matched. A near word it knows may be what they meant: every
+        # word in the folder is already in hand from the pass above, so this
+        # costs no reads. It is only offered, never searched for. Searched for,
+        # a real word was swapped for another one: bike for bake, june for
+        # jungle, valve for valet, and the notes shown were about something
+        # else (review, 2026-09-30).
         for term in terms:
             if len(term) < 4 or term in vocabulary:
-                fixed.append(term)
                 continue
             near = difflib.get_close_matches(term, vocabulary, n=1, cutoff=0.75)
             if near and near[0] != term:
-                self.corrected[term] = near[0]
-                fixed.append(near[0])
-            else:
-                fixed.append(term)
-        if not self.corrected:
-            return []
-        return self._pass(items, [Term(t) for t in fixed], None)[:limit]
+                self.near[term] = near[0]
+        return []
 
     def like(self, title: str, kinds: tuple = (), threshold: float = 0.82) -> list:
         """Things already here that are near-identical to `title`.
@@ -8002,11 +8048,15 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
                           for s, i, sn in hits], indent=2))
         return 0
     Out.title("found", f'"{query}"')
-    if finder.corrected:
-        swaps = ", ".join(f"{was} → {now}" for was, now in finder.corrected.items())
-        Out.note(f"no exact match, so I searched for  {swaps}")
     if not hits:
         Out.warn("nothing matched — try fewer words, or a different one")
+        if finder.near:
+            # Offered as a command to type, never searched for on its own:
+            # `bike` is a real word, and bake is not what they asked for.
+            words = [finder.near.get(w, w) for w in re.split(r"\s+", unaccented(nfc(query).lower().strip())) if w]
+            more = (["--kind", kind] if kind else []) + (["--in", bucket] if bucket else [])
+            Out.raw("  " + paint("try a near word:  ", S.MUTE)
+                    + paint("./os find " + " ".join(shell_word(w) for w in words + more), S.GOLD))
         Out.raw()
         return 1
     for score, item, snippet in hits:
@@ -9292,6 +9342,32 @@ def _release_key(stamp: str) -> tuple:
     return tuple(int(n) for n in re.findall(r"\d+", stamp or "")) or (0,)
 
 
+#: The change note: `.os/CHANGES.md`, one `## <release>` heading per
+#: release, newest first, with plain-words bullets under it. An update only
+#: said which files it replaced, never what anybody would notice.
+CHANGES_FILE = "CHANGES.md"
+#: The heading of the entry still being written. release-os.sh refuses to
+#: publish without one, and swaps it for the real release name as it builds.
+UNRELEASED = "Next release"
+CHANGES_HEADING = re.compile(r"^## +(.+?)[ \t]*$", re.M)
+RELEASE_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}(?:\.\d+)?")
+
+
+def change_entries(text: str) -> list:
+    """Each entry in a change note, in its order: (heading, what it says).
+    Only headings that are a release, or the one still being written."""
+    parts = CHANGES_HEADING.split(text or "")
+    return [(head.strip(), body.strip()) for head, body in zip(parts[1::2], parts[2::2])
+            if head.strip() == UNRELEASED or RELEASE_STAMP.fullmatch(head.strip())]
+
+
+def changes_since(text: str, release: str) -> list:
+    """The entries newer than `release`: all of them for a folder from before
+    releases, and the one still being written always."""
+    return [(head, body) for head, body in change_entries(text)
+            if head == UNRELEASED or not release or _release_key(head) > _release_key(release)]
+
+
 def _newest_release(source: str) -> str:
     """The published release stamp, or "" when it can't be found out: no
     network, no curl certificates, nothing published. Five seconds at most."""
@@ -9844,14 +9920,15 @@ DETAIL = {
              "Search names, titles, tags and the full text of everything you "
              "have saved, archive included, the notes kept inside a piece of "
              "work's folder, and the name of every file in a folder, a PDF or a "
-             "photo too. Typos and plurals are fine — "
-             "'meetings' finds 'meeting', and it will tell you when it searched "
-             "for something other than what you typed. Skills and helpers are "
+             "photo too. Plurals and word endings are fine — 'meetings' finds "
+             "'meeting'. When nothing matches, it offers a near word as a "
+             "command to type, and never searches for a different word on its "
+             "own. Skills and helpers are "
              "left out unless you ask for them with --kind skill.",
              ["os find boiler", "os find garden --kind project",
               "os find weekly --kind skill"],
-             "You don't have to remember where you put it, or spell it right. "
-             "That is the whole point."),
+             "You don't have to remember where you put it. A misspelling gets "
+             "you the right spelling to try."),
     "show": ("os show <name>",
              "Everything worth knowing about one thing — what state it is in, when "
              "you last touched it, its next action, what was decided — without "

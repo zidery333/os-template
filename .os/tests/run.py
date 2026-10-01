@@ -5371,10 +5371,10 @@ def test_search_forgives_how_people_type(t: Case) -> None:
         hits = found(query)
         t.ok(any(want in (h["title"] + h["snippet"]).lower() for h in hits),
              f"'{query}' finds '{want}'")
-    # a plain typo
-    hits = found("accountnt")
-    t.ok(any("accountant" in (h["title"] + h["snippet"]).lower() for h in hits),
-         "a misspelling still finds the note")
+    # a plain typo is offered as a search to type, not searched for on its own
+    t.eq(found("accountnt"), [], "a misspelling is not swapped for another word")
+    said = t.box.run("find", "accountnt", expect=1).stdout
+    t.ok("./os find accountant" in said, f"but the right spelling is offered to type\n{said}")
     # ...but a stem must not match in the middle of an unrelated word
     for hit in found("biling"):
         blob = (hit["title"] + hit["snippet"]).lower()
@@ -5385,6 +5385,79 @@ def test_search_forgives_how_people_type(t: Case) -> None:
          "an exact substring still matches inside a longer word")
     # and nonsense is still nonsense
     t.eq(found("zzzzqqqxx"), [], "a word that is in nothing finds nothing")
+
+
+@test
+def test_search_never_swaps_a_real_word_for_another(t: Case) -> None:
+    """When nothing matched, search looked for the nearest word it knew and
+    showed those notes: bike found bake, cage cake, june jungle, winter wine
+    and valve valet, and winner showed the winter note with no word about it
+    (review, 2026-09-30). Now it says nothing matched and offers the near
+    word as a command to type. Plurals and endings are still forgiven."""
+    for text in (
+        "Notes on Gran's lemon cake recipe: 200g butter, 200g sugar, four eggs",
+        "The boiler keeps cutting out at night, worth knowing the reset button",
+        "Weeding the garden is easiest on a dry morning, notes on what grows",
+        "Bake bread on Sunday mornings, the sourdough wants a long rise",
+        "The jungle gym in the back yard has two loose bolts, a note for later",
+        "Wine for the party: one red, two whites, notes from the shop",
+        "Valet parking at the hotel was twenty pounds, a note for next time",
+    ):
+        t.box.run("save", text)
+
+    def plain(query: str) -> str:
+        return t.box.run("find", query, expect=None).stdout
+
+    for typed, near in (("bike", "bake"), ("cage", "cake"), ("june", "jungle"),
+                        ("winter", "wine"), ("valve", "valet")):
+        t.eq(t.box.json("find", typed, expect=None), [], f"'{typed}' finds nothing, not the {near} note")
+        said = plain(typed)
+        t.ok("nothing matched" in said and f"./os find {near}" in said,
+             f"'{typed}' says nothing matched and offers ./os find {near}\n{said}")
+        t.ok("searched for" not in said, f"and never says it searched for something else\n{said}")
+
+    # Plurals and word endings are still the same word.
+    for typed, want in (("lemons", "lemon"), ("boilers", "boiler"), ("gardening", "garden"),
+                        ("cakes", "cake"), ("baking", "bake")):
+        hits = t.box.json("find", typed)
+        t.ok(any(want in (h["title"] + h["snippet"]).lower() for h in hits),
+             f"'{typed}' still finds the {want} note ({[h['title'] for h in hits]})")
+
+    # Real typos: offered, not searched for.
+    for typed, near in (("lemmon", "lemon"), ("recipie", "recipe")):
+        t.eq(t.box.json("find", typed, expect=None), [], f"'{typed}' isn't searched for as another word")
+        t.ok(f"./os find {near}" in plain(typed), f"'{typed}' offers ./os find {near}")
+    # The rest of a longer search is kept in what is offered.
+    t.ok("./os find lemon recipe" in plain("lemmon recipie"), "every word is offered, put right")
+
+    # An accent typed or not is the same word. Found before only because the
+    # near-word guess, "taxis", happened to be part of it.
+    t.box.run("save", "Diátaxis: four kinds of documentation, a note for later")
+    for typed in ("diataxis", "diátaxis", "DIATAXIS"):
+        t.ok(any("taxis" in h["title"].lower() for h in t.box.json("find", typed)),
+             f"'{typed}' finds the Diátaxis note")
+
+    # winner's root is win, and win is the start of winter: not the same word.
+    t.box.run("save", "Winter tyres go on before the first frost, a note for the car")
+    t.ok(any("winter" in h["title"].lower() for h in t.box.json("find", "winter")), "winter finds winter")
+    t.eq(t.box.json("find", "winner", expect=None), [], "winner doesn't show the winter note")
+    said = plain("winner")
+    t.ok("nothing matched" in said and "./os find winter" in said,
+         f"it says nothing matched, and offers winter to type\n{said}")
+
+
+@test
+def test_a_root_is_found_only_with_its_own_endings(t: Case) -> None:
+    """A root matched the start of any word: "winner" found "winter"."""
+    for typed, hay, want in (
+        ("winner", "winter tyres", False), ("winner", "the winning goal", True),
+        ("winner", "red wine", False), ("baking", "bake bread", True),
+        ("gardening", "garden notes", True), ("gardening", "gardener's diary", True),
+        ("gardening", "a gardenia", False), ("berries", "a berry tart", True),
+        ("biling", "mobile billing", True), ("biling", "mobile phone", False),
+        ("types", "type of index", True), ("meetings", "meet the team", True),
+    ):
+        t.eq(engine.Term(typed).weight(hay) > 0, want, f"'{typed}' in '{hay}'")
 
 
 @test
@@ -9266,6 +9339,132 @@ def test_update_check_says_when_a_newer_version_is_out(t: Case) -> None:
          "nothing is said when this folder has the newest")
     t.eq(t.box.run("update", "--check", "--from", str(t.box.tmp / "nowhere")).stdout.strip(), "",
          "or when it can't find out")
+
+
+CHANGES_THEN = """# What's new
+
+## 2026-02-01.1
+
+- Bread recipes are kept as notes now.
+- Search reads TextEdit notes.
+
+## 2026-01-01.1
+
+- An older change they already have.
+"""
+
+
+@test
+def test_an_update_says_in_words_what_changed(t: Case) -> None:
+    """An update listed the files it replaced and never said what anybody
+    would notice. It prints the change note's entries newer than the version
+    the folder had, even from a version that had no change note at all."""
+    root = t.box.root
+    (root / ".os" / "CHANGES.md").unlink(missing_ok=True)     # 2026-09-30.1 had none
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1",
+                         lambda out: (out / ".os" / "CHANGES.md").write_text(CHANGES_THEN))
+    preview = t.box.run("update", "--from", str(published), "--dry-run").stdout
+    t.ok("WHAT'S NEW" in preview and "Bread recipes are kept as notes" in preview,
+         f"a preview says what's new\n{preview}")
+    done = t.box.run("update", "--from", str(published)).stdout
+    t.ok("WHAT'S NEW since 2026-01-01.1" in done, f"the update says what's new since their version\n{done}")
+    t.ok("2026-02-01.1" in done and "Bread recipes are kept as notes" in done
+         and "Search reads TextEdit notes" in done, "every line of the new entry")
+    t.ok("older change they already have" not in done, "and not the ones they already had")
+    t.eq((root / ".os" / "CHANGES.md").read_text(), CHANGES_THEN, "the change note comes with the update")
+    again = t.box.run("update", "--from", str(published)).stdout
+    t.ok("WHAT'S NEW" not in again, "nothing new, nothing said")
+
+
+@test
+def test_the_change_note_is_replaced_not_kept_as_theirs(t: Case) -> None:
+    """The change note is the template's, not theirs: an update replaces it
+    even when they wrote in it, and sets nothing aside to merge."""
+    root = t.box.root
+    (root / ".os" / "CHANGES.md").write_text(CHANGES_THEN)
+    _release(root, "2026-02-01.1")
+    with open(root / ".os" / "CHANGES.md", "a") as note:
+        note.write("\nMy own line.\n")
+    newer = "# What's new\n\n## 2026-03-01.1\n\n- Held work stops nagging.\n\n" + CHANGES_THEN.split("\n", 2)[2]
+    published = _publish(t, "2026-03-01.1", lambda out: (out / ".os" / "CHANGES.md").write_text(newer))
+    done = t.box.run("update", "--from", str(published)).stdout
+    t.eq((root / ".os" / "CHANGES.md").read_text(), newer, "it's replaced")
+    t.ok("Held work stops nagging" in done and "Bread recipes" not in done,
+         f"and only what's newer than their version is said\n{done}")
+    t.eq(list((root / ".os" / "upgrades").rglob("CHANGES.md")), [], "nothing is set aside to merge")
+
+
+@test
+def test_the_change_note_is_read_by_release(t: Case) -> None:
+    """Which entries are new to a folder, by the release it has."""
+    text = ("# What's new\n\n## Next release\n\n- Coming.\n\n## 2026-02-01.2\n\n- Two.\n\n"
+            "## 2026-02-01.1\n\n- One.\n\n## Not a release\n\n- Skipped.\n")
+    heads = lambda got: [h for h, _ in got]
+    t.eq(heads(engine.change_entries(text)), ["Next release", "2026-02-01.2", "2026-02-01.1"],
+         "only releases, and the entry being written")
+    t.eq(heads(engine.changes_since(text, "2026-02-01.1")), ["Next release", "2026-02-01.2"],
+         "newer than the folder's release")
+    t.eq(heads(engine.changes_since(text, "2026-02-01.2")), ["Next release"], "the one being written always")
+    t.eq(len(engine.changes_since(text, "")), 3, "everything, for a folder from before releases")
+    t.eq(engine.change_entries(text)[1][1], "- Two.", "with what it says")
+
+
+@test
+def test_no_release_without_a_new_change_note(t: Case) -> None:
+    """The release script asks `upgrade.py --change-note` for the new entry
+    before it builds anything, and stops without one."""
+    root = t.box.root
+    note = root / ".os" / "CHANGES.md"
+    published = t.box.tmp / "published-CHANGES.md"
+    published.write_text(CHANGES_THEN)
+
+    def ask(*more: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(root / ".os" / "upgrade.py"), "--change-note", *more],
+                              capture_output=True, text=True)
+
+    note.write_text("# What's new\n\n## Next release\n\n- Held work stops nagging.\n\n"
+                    + CHANGES_THEN.split("\n", 2)[2])
+    got = ask(f"--published={published}")
+    t.eq((got.returncode, got.stdout.strip()), (0, "- Held work stops nagging."), "a new entry is handed over")
+    note.write_text(CHANGES_THEN)
+    got = ask(f"--published={published}")
+    t.ok(got.returncode != 0 and "Next release" in got.stderr, f"no new entry stops it\n{got.stderr}")
+    note.write_text("# What's new\n\n## Next release\n\n" + CHANGES_THEN.split("\n", 2)[2])
+    got = ask()
+    t.ok(got.returncode != 0 and "nothing in it" in got.stderr, f"so does an empty one\n{got.stderr}")
+    note.write_text(CHANGES_THEN.replace("## 2026-02-01.1", "## Next release"))
+    got = ask(f"--published={published}")
+    t.ok(got.returncode != 0 and "already out, as 2026-02-01.1" in got.stderr,
+         f"and one already published under its real name\n{got.stderr}")
+    note.unlink()
+    got = ask()
+    t.ok(got.returncode != 0 and "CHANGES.md" in got.stderr, f"and no change note at all\n{got.stderr}")
+
+
+@test
+def test_the_shipped_change_note_reads_right(t: Case) -> None:
+    """Every entry has lines to read, the newest is on top, and only the top
+    one can be the one still being written."""
+    text = (SOURCE / ".os" / "CHANGES.md").read_text(encoding="utf-8")
+    entries = engine.change_entries(text)
+    t.ok(entries, "it has entries")
+    for head, body in entries:
+        t.ok(re.search(r"^- +\S", body, re.M), f"{head} says something")
+    t.ok(all(h != engine.UNRELEASED for h, _ in entries[1:]), "only the top one is unreleased")
+    stamps = [engine._release_key(h) for h, _ in entries if h != engine.UNRELEASED]
+    t.eq(stamps, sorted(stamps, reverse=True), "newest first")
+
+
+@test
+def test_agents_md_says_to_look_for_a_newer_version_first(t: Case) -> None:
+    """Nothing told the AI to run ./os update --check, so nobody heard a
+    newer version was out unless they asked."""
+    text = (t.box.root / "AGENTS.md").read_text(encoding="utf-8")
+    first = text.split("## First, always", 1)[1].split("\n## ", 1)[0]
+    t.ok("./os update --check" in first, "it's under 'First, always'")
+    t.eq(t.box.run("update", "--check", "--from", str(t.box.tmp / "nowhere")).stdout.strip(), "",
+         "and says nothing when it can't find out")
 
 
 @test

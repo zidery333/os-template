@@ -14,10 +14,12 @@ they can check.
 ./os find "$ARGUMENTS" --limit 15
 ```
 
-Ranked, covers everything including the archive, and forgives typos and plurals —
-so don't waste turns on spelling variants; it tells you when it searched for
-something other than what you typed. When it comes back thin, their synonyms and
-a `Grep` across `Notes/` and `Work/` for the distinctive words usually find it.
+Ranked, covers everything including the archive, and forgives plurals and word
+endings, so don't waste turns on those. It never searches for a different word on
+its own: when nothing matches it offers a near word as a command (`./os find bake`).
+Run that only if it's plainly what they meant. When it comes back thin, their
+synonyms and a `Grep` across `Notes/` and `Work/` for the distinctive words
+usually find it.
 
 Read the top few properly before answering. Snippets are for ranking, not for
 quoting.

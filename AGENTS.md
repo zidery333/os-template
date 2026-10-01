@@ -8,11 +8,12 @@ folder guarantees and needs; how you get there is your call.
 
 ## First, always
 
-Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one
-plain sentence about where things stand. **If the folders are empty, this person has
-never used it**: don't explain the system or list commands. Say hello, say in a line or
-two that whatever they tell you gets written down and filed, and ask what's on their
-mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
+Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one plain
+sentence about where things stand. Then run `./os update --check` and pass on, once, any line
+it prints. **If the folders are empty, this person has never used it**: don't explain the
+system or list commands. Say hello, say in a line or two that whatever they tell you gets
+written down and filed, and ask what's on their mind or what they're into ("nothing yet" is
+fine). `./os brief` says the same.
 
 ## Talk like a person
 
@@ -42,9 +43,8 @@ The person never picks one — `./os save` decides and files it immediately.
 and `./os rename` it if a camera or scanner named it. Files dropped in by hand
 aren't filed until `./os sort` adopts them where they lie, and `./os` says so meanwhile.
 
-Everything is known by its plain name — the folder or file name, like
-`Q3 OKR Review`. A name follows its thing everywhere: a closed item keeps its
-name in `Archive/`. **Use the names.**
+Everything is known by its plain name — the folder or file name, like `Q3 OKR Review`. A name
+follows its thing everywhere: a closed item keeps its name in `Archive/`. **Use the names.**
 
 ## The two phases of work
 
@@ -74,7 +74,7 @@ when they say it is genuinely over.
 ./os new learning "..."  a note about how something is done, in that shape
 ./os hold <name>         no next action — just keep it level
 ./os push <name>         back on the go — a note pushed becomes work
-./os find <words>        search everything — forgives typos and plurals
+./os find <words>        search everything — forgives plurals, offers near words
 ./os show <name>         one item: state, next action, decisions, recent log
 ./os last                what happened the last time anyone worked here
 ./os open <name>         where something lives on disk · ./os edit <name>  to change it

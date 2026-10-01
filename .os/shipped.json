@@ -48,7 +48,8 @@
       "304e11faae5bd27589698a59732927d5143c3bb7",
       "3ce647097b5766897938f7d857dbf835224c75f2",
       "eba6281a78f44f30b21fbf6f4b3a2ded63c13a4e",
-      "b590c0cf230e596d9786d8b82af49f8ad2235feb"
+      "b590c0cf230e596d9786d8b82af49f8ad2235feb",
+      "b4ce6fb34b39fddbda912751933c20f85bcfbf28"
     ],
     ".claude/skills/learn/NOTE.md": [
       "3f7c8843add51eb99eb30e7bd4f8b789bf730ba6",
@@ -113,7 +114,8 @@
       "4723eb93c98e26f524c5e6121ad38bb0a31c8836",
       "42a6148b771dcdedcfd6b0db42e4bf8c3ccded83",
       "ae0d5e3192accff7d7634b02ba5d11a9243ae57b",
-      "6fe46721e318717b775481de9f383fc554754d43"
+      "6fe46721e318717b775481de9f383fc554754d43",
+      "8f5181c79ccb7c78873357687d495598f7fec33b"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
@@ -130,14 +132,16 @@
     ],
     ".os/engine.py": [
       "bac237136e89196303b5a92c4b5a36792a42fd8c",
-      "43efdf1f8b6271f90307868c486a50579fa32bcd"
+      "43efdf1f8b6271f90307868c486a50579fa32bcd",
+      "36b2202ca981f6e500993c757b2f5a13f5675390"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540"
     ],
     ".os/upgrade.py": [
       "b02cb5841cb06fe71994843ae60e0f459e197d38",
-      "019cc47636454d0117d43d3800524d707ec790aa"
+      "019cc47636454d0117d43d3800524d707ec790aa",
+      "2f3057e0ad322a5699c44c611b12f8ca4ee9ac95"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc"
@@ -211,7 +215,7 @@
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-09-30.1",
+  "release": "2026-10-01.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
