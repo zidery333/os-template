@@ -55,6 +55,7 @@ import unicodedata
 import zipfile
 import zlib
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 ENGINE_VERSION = "3.0.0"
 MARKER = ".os"
@@ -1444,6 +1445,8 @@ class Zenith:
         self._run_dir: Path | None = None
         #: set when a run stopped partway and what it had done was kept for undo
         self.stopped_partway = ""
+        #: how many files had a link pointed the right way by the last commit
+        self.relinked = 0
 
     def _shape_state(self) -> None:
         # `setdefault` only fills a key that is *missing*. A state file carrying
@@ -1689,9 +1692,35 @@ class Zenith:
                 rel = step["dst"] + rel[len(step["src"]):]
         return rel
 
+    def keep_before(self, path: Path, key: str) -> bool:
+        """Keep what `path` says now, for undo, under the name `key`: where it
+        was before this run started. Undo puts every moved thing back first and
+        its words second, so a note that moved and then had a link fixed must
+        be kept under its old place, or its words would never go back.
+
+        The first copy of a file in a run is the one kept, as with `snapshot`."""
+        if key in self._snapshots:
+            return True
+        try:
+            data = path.read_bytes()
+            blob = hashlib.sha256(key.encode()).hexdigest()[:20] + ".bak"
+            (self._ensure_run_dir() / blob).write_bytes(data)
+        except OSError:
+            return False
+        self._snapshots[key] = blob
+        self._snapped_at[key] = 0
+        return True
+
     def commit(self, label: str) -> int:
         if not self._pending:
             return 0
+        # Links between notes follow anything this run moved, before undo
+        # writes down how each file was left: see Relinker.
+        self.relinked = 0
+        try:
+            self.relinked = Relinker(self, self._pending).run()
+        except Exception:
+            pass     # a link left as it was is better than a move undo can't reverse
         # How each file stood when this run was done with it, so undo can tell
         # whether anybody has written in it since: see Undo.revert.
         after = {}
@@ -4985,7 +5014,9 @@ class Doctor:
         for it in items:
             if not it.spine or not it.spine.exists() or it.spine.suffix.lower() not in TEXT_SUFFIXES:
                 continue
-            text = read_text(it.spine, 80_000)
+            # a link shown inside a code fence is an example, not a link
+            text = re.sub(r"^ {0,3}(```|~~~).*?^ {0,3}\1", "", read_text(it.spine, 80_000),
+                          flags=re.S | re.M)
             for m in re.finditer(r"\[[^\]]*\]\(([^)#:]+\.md)\)", text):
                 target = (it.spine.parent / m.group(1).replace("%20", " ")).resolve()
                 if not target.exists():
@@ -6553,6 +6584,200 @@ class History:
         return self.first_words(where)
 
 
+class Twins:
+    """A second write-up of something already written down.
+
+    Matching on the name does not work: the old template filed a write-up
+    called `roediger-karpicke-testing-effect` beside one called
+    `retrieval-practice`, the same study with no word in common. What two
+    write-ups of one thing cannot avoid repeating is its figures and its
+    names: the people, the date, the numbers. So that is what is compared,
+    the way the old template's no-second-copy check did.
+
+    It only ever warns. Two things really can share a number and a name, and
+    a second note from a new angle is sometimes right. To keep false alarms
+    down, ordinary things don't count: a number under 100, a weight like
+    `200g`, a year on its own, a word that opens a sentence (`Preheat`), or a
+    name that turns up all over the folder (their own, say). And it takes a
+    name plus figures, never figures alone: two recipes share `200` and `180`
+    all the time."""
+
+    MONTHS = ("january", "february", "march", "april", "may", "june", "july",
+              "august", "september", "october", "november", "december")
+    #: Capitalised words that are not names of anything.
+    NOT_NAMES = {
+        "the", "this", "that", "these", "those", "they", "their", "there", "then",
+        "and", "but", "not", "for", "with", "from", "what", "when", "where", "who",
+        "why", "how", "yes", "okay", "note", "notes", "todo", "next", "action",
+        "decision", "decisions", "log", "open", "questions", "where", "stands",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "today", "tomorrow", "yesterday", "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+        *MONTHS,
+    }
+    FIGURE = re.compile(
+        r"(?<![\w.])(?:[£$€]\s?\d[\d,]*(?:\.\d+)?\s?(?:k|m|bn)?\b"       # £40,000  $3.5m
+        r"|\d[\d,]*(?:\.\d+)?%"                                            # 61%  28.64%
+        r"|\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\w])"                           # 3,733
+        r"|\d+\.\d+(?![\w.])"                                               # 28.64
+        r"|\d{3,}(?![\w.,%]))", re.I)                                        # 1450
+    _MONTH = "|".join([*MONTHS, "sept", *(m[:3] for m in MONTHS)])
+    DATE = re.compile(
+        r"\b(?:(\d{4})-(\d{1,2})-(\d{1,2})"
+        r"|(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(" + _MONTH + r")\b\.?"
+        r"|(" + _MONTH + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?)\b", re.I)
+    NAME = re.compile(r"(?<![\w'’])([A-Z][a-z]+(?:[A-Z][a-z]+)?|[A-Z]{2,6})(?:['’]s)?(?![\w'’-])")
+    #: What can come right before a sentence starts, on the same line.
+    OPENS = re.compile(r"(?:^|[.!?:;\u2014\u2013\"\u201c(]\s*|^\s*(?:[-*+>#|]+\s*|\d+[.)]\s*|\[[ xX]\]\s*)+)$")
+    #: Read this much of each note: a write-up says what it is about early.
+    READ = 60_000
+
+    def __init__(self, os_: "Zenith"):
+        self.os = os_
+
+    @classmethod
+    def marks(cls, text: str) -> tuple[set, set]:
+        """(figures, names) that a write-up of the same thing would repeat."""
+        _, body = parse_frontmatter(text)
+        body = COMMENT_RE.sub(" ", body)
+        body = re.sub(r"`[^`\n]*`", " ", body)
+        body = re.sub(r"\]\([^)\n]*\)", "] ", body)            # where a link points
+        body = re.sub(r"https?://\S+", " ", body)
+        figures = set()
+        for m in cls.DATE.finditer(body):
+            # said the same way however it was written: 2026-03-12, 12th March
+            # and March 12 are all "12 March"
+            if m.group(1):
+                month, day = int(m.group(2)), int(m.group(3))
+            else:
+                short = (m.group(5) or m.group(6)).lower()[:3]
+                month = next(n for n, x in enumerate(cls.MONTHS, 1) if x.startswith(short))
+                day = int(m.group(4) or m.group(7))
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                figures.add(f"{day} {cls.MONTHS[month - 1].title()}")
+        for m in cls.FIGURE.finditer(cls.DATE.sub(" ", body)):
+            raw = m.group(0).lower().replace(" ", "")
+            plain = raw.replace(",", "")
+            digits = re.sub(r"\D", "", plain)
+            if re.fullmatch(r"(19|20)\d\d", plain):
+                continue        # a year alone: every note from this year shares it
+            if "%" not in plain and not plain[0] in "£$€" and len(digits) < 3:
+                continue        # 2.5, 12: everyday numbers
+            figures.add(plain)
+        names = set()
+        for line in body.split("\n"):
+            for m in cls.NAME.finditer(line):
+                word = m.group(1)
+                if word.lower() in cls.NOT_NAMES or len(word) < 3:
+                    continue
+                if cls.OPENS.search(line[:m.start()]):
+                    continue    # the start of a sentence: any word is capitalised there
+                names.add(word)
+        return figures, names
+
+    def _items(self):
+        shelf = self.os.bucket_for_role("archive")
+        for it in Scanner(self.os).scan():
+            if it.kind not in ("note", "project") or it.bucket == shelf:
+                continue
+            spine = it.spine
+            if not spine or not spine.is_file() or spine.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            yield it, read_text(spine, self.READ)
+
+    @staticmethod
+    def _match(a: tuple, b: tuple, common: set) -> list:
+        """What a and b share, when it is enough to say so; else []."""
+        figures = a[0] & b[0]
+        names = (a[1] & b[1]) - common
+        if not names or not figures or len(figures) + len(names) < 3:
+            return []
+        # A long note shares a few things with anything. Two lists of the same
+        # channels, kept on the same days, shared a third of what each said and
+        # were two different notes; a write-up said twice shares most of it.
+        smaller = min(len(a[0]) + len(a[1]), len(b[0]) + len(b[1]))
+        if (len(figures) + len(names)) < 0.4 * smaller:
+            return []
+        return sorted(names) + sorted(figures)
+
+    @staticmethod
+    def _common(marked: list, total: int) -> set:
+        """Names said in so many notes they say nothing: the owner's own name,
+        their town, the company they work for."""
+        seen: dict = {}
+        for _it, (_f, names) in marked:
+            for n in names:
+                seen[n] = seen.get(n, 0) + 1
+        bar = max(6, total // 20)
+        return {n for n, c in seen.items() if c >= bar}
+
+    def like(self, text: str, skip: tuple = ()) -> list:
+        """Things already here that `text` may be a second write-up of:
+        [(item, [what they share])], the closest first."""
+        new = self.marks(text)
+        if len(new[0]) + len(new[1]) < 3 or not new[0] or not new[1]:
+            return []
+        skipped = {str(p) for p in skip}
+        marked = [(it, self.marks(t)) for it, t in self._items()
+                  if str(it.path) not in skipped and str(it.spine) not in skipped]
+        common = self._common(marked, len(marked))
+        hits = []
+        for it, m in marked:
+            shared = self._match(new, m, common)
+            if shared:
+                hits.append((len(shared), it, shared))
+        hits.sort(key=lambda h: (-h[0], h[1].title))
+        return [(it, shared) for _n, it, shared in hits]
+
+    def like_title(self, title: str) -> list:
+        """For `./os new learning`, which has only a name to go on: notes
+        already naming two or more of the same people, places or figures."""
+        figures = {f for f in self.marks("x " + title)[0]}
+        names = {w for w in re.findall(r"[A-Z][a-z]+|[A-Z]{2,6}", title)
+                 if w.lower() not in self.NOT_NAMES and len(w) >= 3}
+        if len(figures) + len(names) < 2:
+            return []
+        marked = [(it, self.marks(t)) for it, t in self._items()]
+        common = self._common(marked, len(marked))
+        names -= common
+        hits = []
+        for it, (f, n) in marked:
+            shared = sorted(names & n) + sorted(figures & f)
+            if len(shared) >= 2:
+                hits.append((len(shared), it, shared))
+        hits.sort(key=lambda h: (-h[0], h[1].title))
+        return [(it, shared) for _n, it, shared in hits]
+
+    def pairs(self, limit: int = 20) -> list:
+        """Every pair of things here that look like one write-up twice, for tidy.
+        Compared only where they share a name, so it stays quick with thousands."""
+        marked = [(it, self.marks(t)) for it, t in self._items()]
+        common = self._common(marked, len(marked))
+        by_name: dict = {}
+        for n, (_it, (_f, names)) in enumerate(marked):
+            for name in names - common:
+                by_name.setdefault(name, []).append(n)
+        seen, out = set(), []
+        for holders in by_name.values():
+            for i, a in enumerate(holders):
+                for b in holders[i + 1:]:
+                    if (a, b) in seen:
+                        continue
+                    seen.add((a, b))
+                    one, two = marked[a][0], marked[b][0]
+                    if one.path in two.path.parents or two.path in one.path.parents:
+                        continue
+                    shared = self._match(marked[a][1], marked[b][1], common)
+                    if shared:
+                        out.append((len(shared), one, two, shared))
+        out.sort(key=lambda h: (-h[0], h[1].title, h[2].title))
+        return [(one, two, shared) for _n, one, two, shared in out[:limit]]
+
+    @staticmethod
+    def say(shared: list, n: int = 4) -> str:
+        return ", ".join(shared[:n]) + (" …" if len(shared) > n else "")
+
+
 class Reviewer:
     """The anti-decay pass. A second brain dies from neglect, not from bad taxonomy."""
 
@@ -6648,6 +6873,20 @@ class Reviewer:
                         "where": self.os.rel(it.path), "said": said})
         return out[:limit]
 
+    def same_write_ups(self) -> list:
+        """Two notes that look like one thing written up twice, by the
+        figures and names they share (see Twins). Only said here, in the
+        weekly pass, never counted against the folder by ./os check: two
+        notes can share all that and both be right."""
+        out = []
+        for one, two, shared in Twins(self.os).pairs():
+            out.append({"level": "hint", "code": "same-write-up",
+                        "message": f"'{one.title}' and '{two.title}' both mention {Twins.say(shared, 3)}",
+                        "pair": [one.title, two.title], "shares": shared,
+                        "path": self.os.rel(two.path),
+                        "fix": f"./os show {handle(one)}   ·   ./os show {handle(two)}"})
+        return out
+
     #: Transcripts are pulled again on demand and never opened twice by most
     #: people, so they are never deleted for anybody — but they are the only
     #: thing here that grows without being asked, and nothing else in the folder
@@ -6694,7 +6933,8 @@ class Reviewer:
             "archive_candidates": [{"id": i.ident, "title": i.title, "age": days_since(i.updated)} for i in active
                                    if days_since(i.updated) >= dormant_days
                                    and i.bucket != shelf],
-            "duplicates": [i for i in health["issues"] if i["code"] in ("duplicate-content", "near-duplicate")],
+            "duplicates": [i for i in health["issues"] if i["code"] in ("duplicate-content", "near-duplicate")]
+                          + self.same_write_ups(),
             "unsorted": [{"id": i.ident, "title": i.title} for i in items
                          if i.domain in ("", "unsorted") and i.kind in ("note", "project")][:20],
             "shipped": [{"id": i.ident, "title": i.title} for i in items
@@ -7267,6 +7507,7 @@ def cmd_sort(os_: Zenith, argv: list[str]) -> int:
         with Lock(os_, "sort"):
             result = Sorter(os_, dry=False).run()
             os_.commit("sort")
+            result["relinked"] = os_.relinked
             Indexer(os_).build()
     if as_json:
         print(json.dumps(result, indent=2))
@@ -7311,6 +7552,10 @@ def cmd_sort(os_: Zenith, argv: list[str]) -> int:
         bits.append(f"{result['identified']} named")
     if result["balanced"]:
         bits.append(f"{result['balanced']} tucked into folders")
+    if result.get("relinked"):
+        # Said, so a changed line in a note they wrote is never a surprise.
+        n = result["relinked"]
+        bits.append(f"links kept working in {n} note{'' if n == 1 else 's'}")
     if dry:
         # Under "a preview — nothing has moved", a tick saying "1 folder
         # brought in" read as done.
@@ -7736,9 +7981,17 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
     spine = Scanner(os_).spine_of(dest) or dest
     meta, _ = parse_frontmatter(read_all(spine)) if spine.is_file() else ({}, "")
     ident = dest.stem if dest.is_file() else dest.name
+    # A second write-up of something already here, found by the figures and
+    # names both carry rather than by the name: see Twins. Only for words.
+    same: list = []
+    if spine.is_file() and spine.suffix.lower() in TEXT_SUFFIXES:
+        same = Twins(os_).like(read_text(spine, Twins.READ), skip=(dest, spine))
     if as_json:
         print(json.dumps({"saved": os_.rel(dest), "id": ident, "kind": verdict["kind"],
-                          "title": verdict["title"], "filed": True}, indent=2))
+                          "title": verdict["title"], "filed": True,
+                          "may_repeat": [{"id": it.ident, "title": it.title, "path": os_.rel(it.path),
+                                          "shares": shared} for it, shared in same[:3]]},
+                         indent=2))
         return 0
 
     twin = [i for i in Finder(os_).like(verdict["title"] or what,
@@ -7749,6 +8002,11 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
     if twin:
         Out.warn(f"{twin[0].ident} looks like the same thing: \"{trunc(twin[0].title, 44)}\"")
         Out.note(f"keep just one?  ./os undo   ·   compare:  ./os show {handle(twin[0])}")
+    elif same:
+        it, shared = same[0]
+        Out.warn(f"you may have written this down before, in \"{trunc(it.title, 44)}\": "
+                 f"both mention {Twins.say(shared)}")
+        Out.note(f"look at it:  ./os show {handle(it)}   ·   keep just one?  ./os undo")
     Out.note(f"that's {KIND_WORDS.get(verdict['kind'], verdict['kind'])} — it's in "
              f"{os_.rel(dest)}")
     if dest.parent.name == MEDIA_FOLDER:
@@ -7801,9 +8059,20 @@ def cmd_new(os_: Zenith, argv: list[str]) -> int:
         Indexer(os_).build()
     resolved = KIND_ALIASES.get(kind.lower(), kind)
     meta, _ = parse_frontmatter(read_text(path))
+    # A learning note starts as only a name, so the names and figures in it
+    # are all there is to go on: two of them already in one note is worth a look.
+    same: list = []
+    if NEW_SHAPE.get(kind.lower()) == "learning":
+        same = [(it, shared) for it, shared in Twins(os_).like_title(title)
+                if Path(path) not in (it.path, it.spine)]
     Out.title("started")
     Out.ok(title)
     Out.note(os_.rel(path))
+    if same:
+        it, shared = same[0]
+        Out.warn(f"\"{trunc(it.title, 44)}\" may already cover this: "
+                 f"it mentions {Twins.say(shared)} too")
+        Out.note(f"look at it first:  ./os show {handle(it)}   ·   not needed after all?  ./os undo")
     if resolved == "skill":
         # "/name" alone is Claude Code's way in. Every other AI finds skills
         # the way AGENTS.md says: by the request fitting one.
@@ -8088,51 +8357,200 @@ def cmd_release(os_: Zenith, argv: list[str]) -> int:
     return 0
 
 
-#: Where a markdown link points: `[text](here)`. No colon, so web links and
-#: anything else off this disk are left alone.
-LINK_TARGET = re.compile(r"(\[[^\]\n]*\]\()([^)#:\n]+)")
+#: A markdown link and where it points: `[text](here)`, `![picture](here)`,
+#: `[text](<a name with spaces>)`, `[text](here "a title")`.
+MD_LINK = re.compile(r"""(!?\[[^\]\n]*\]\()(<[^>\n]*>|[^)\s<][^)\n]*?)((?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\))""")
+#: The other way to write one: a line `[name]: here` that `[text][name]` uses.
+MD_REF = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)", re.M)
+#: A fence around code. A link shown inside one is an example, not a link.
+MD_FENCE = re.compile(r"^ {0,3}(```|~~~)", re.M)
+#: Notes bigger than this are not read for links: nobody hand-writes links
+#: into a 2 MB file, and reading thousands of them would make every sort slow.
+RELINK_CAP = 2_000_000
 
 
-def _relink(os_: Zenith, old: Path, new: Path) -> int:
-    """Point every markdown link that reached `old` at `new` instead.
+class Relinker:
+    """Keep links between notes working when ./os moves things.
 
-    Renamed, a note kept every link to it saying the old file name, and
-    `./os check` then reported the broken link the rename had made. Only
-    links change: the name said in someone's own sentences is their writing.
-    Each file is snapshotted first, so undo takes this back with the rename.
-    Returns how many files changed."""
-    before = os.path.normpath(str(old))
-    changed = 0
-    for bucket in os_.buckets():
-        for top, dirs, files in os.walk(os_.root / bucket):
-            dirs[:] = [d for d in dirs if not d.startswith(".")
-                       and d not in IGNORE_FOLDERS and d not in ("node_modules", "__pycache__")]
-            for name in files:
-                path = Path(top) / name
-                if path.suffix.lower() != ".md" or path.is_symlink():
+    Sort tucks notes into subject folders, close moves work into Archive,
+    rename gives something a new name. Each of those left links saying where
+    a thing used to be: a note linking `pizza-dough.md` broke the moment both
+    were sorted into different folders, and `./os check` then reported a
+    broken link that ./os itself had made. The old fix only swapped one name
+    for another, so it could not follow a note into a new folder.
+
+    After the moves of one run, every link is worked out again both ways, in
+    one pass: links in other notes that reach something that moved, and links
+    inside a moved note that reach anything at all. Each file is kept aside
+    first, so ./os undo puts every word back with the move.
+
+    What it never does: change a web address, change a link that was already
+    broken before the move, or touch anything in a `sources/` folder or a
+    `decisions.md`. Those are never rewritten, even to fix a link."""
+
+    def __init__(self, os_: "Zenith", steps: list[dict]):
+        self.os = os_
+        self.root = str(os_.root)
+        mine = MARKER + "/"
+        #: (from, to), in the order they happened, inside the folder only.
+        #: A move in or out of .os/ is a save on its way in, not a move a
+        #: link could have pointed at.
+        self.moves = [(s["src"], s["dst"]) for s in steps
+                      if s.get("action") == "move" and s.get("src") and s.get("dst")
+                      and not s["src"].startswith(mine) and not s["dst"].startswith(mine)]
+        self.made = {s["src"] for s in steps if s.get("action") == "create"}
+
+    # -- where things were, and where they are now ----------------------------
+
+    def forward(self, rel: str) -> str:
+        """Where the thing that was at `rel` before this run is now."""
+        for src, dst in self.moves:
+            if rel == src:
+                rel = dst
+            elif rel.startswith(src + "/"):
+                rel = dst + rel[len(src):]
+        return rel
+
+    def backward(self, rel: str) -> str:
+        """Where the thing now at `rel` was before this run."""
+        for src, dst in reversed(self.moves):
+            if rel == dst:
+                rel = src
+            elif rel.startswith(dst + "/"):
+                rel = src + rel[len(dst):]
+        return rel
+
+    def _abs(self, rel: str) -> str:
+        return os.path.join(self.root, rel)
+
+    def _rel(self, path: str) -> str | None:
+        out = os.path.relpath(path, self.root)
+        return None if out == ".." or out.startswith("../") else out.replace(os.sep, "/")
+
+    # -- one link ------------------------------------------------------------
+
+    def retarget(self, dest: str, was_in: str, now_in: str) -> str | None:
+        """The new way to write `dest`, or None to leave it exactly as it is.
+
+        `was_in` is the folder the note sat in before this run, `now_in` the
+        one it sits in now: the same folder unless the note itself moved."""
+        angle = dest.startswith("<") and dest.endswith(">")
+        raw = dest[1:-1] if angle else dest
+        path, hashmark, anchor = raw.partition("#")
+        if not path or path.startswith(("/", "~", "\\")) or "?" in path \
+                or re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:", path):
+            return None      # a web address, a place on this page, or not ours
+        plain = path if angle else unquote(path)
+        was = os.path.normpath(os.path.join(was_in, plain))
+        inside = self._rel(was)
+        target = os.path.normpath(self._abs(self.forward(inside))) if inside is not None else was
+        if os.path.normpath(os.path.join(now_in, plain)) == target:
+            return None      # still lands where it did
+        if not os.path.lexists(target):
+            return None      # broken before this run: leave it for ./os check to report
+        new = os.path.relpath(target, now_in).replace(os.sep, "/")
+        if path.endswith("/") and not new.endswith("/"):
+            new += "/"
+        if path.startswith("./") and not new.startswith("."):
+            new = "./" + new
+        if angle:
+            return "<" + new.replace("<", "%3C").replace(">", "%3E") + hashmark + anchor + ">"
+        if " " in path and "%" not in path:
+            # written with plain spaces: kept that way, so it reads as theirs
+            new = new.replace("(", "%28").replace(")", "%29")
+        else:
+            new = md_link(new.replace("%", "%25")).replace("#", "%23")
+        return new + hashmark + anchor if hashmark else new
+
+    def rewrite(self, text: str, was_in: str, now_in: str) -> str:
+        """`text` with every link that needs it pointed the right way.
+        Code fences are left alone: a link shown inside one is an example."""
+        if not MD_FENCE.search(text):
+            return self._rewrite_prose(text, was_in, now_in)
+        out, inside, mark = [], False, ""
+        for line in text.splitlines(keepends=True):
+            fence = MD_FENCE.match(line)
+            if fence and (not inside or fence.group(1) == mark):
+                inside, mark = (not inside), fence.group(1)
+                out.append(line)
+            elif inside:
+                out.append(line)
+            else:
+                out.append(self._rewrite_prose(line, was_in, now_in))
+        return "".join(out)
+
+    def _rewrite_prose(self, text: str, was_in: str, now_in: str) -> str:
+        def inline(m: re.Match) -> str:
+            new = self.retarget(m.group(2), was_in, now_in)
+            return m.group(0) if new is None else m.group(1) + new + m.group(3)
+
+        def ref(m: re.Match) -> str:
+            new = self.retarget(m.group(2), was_in, now_in)
+            return m.group(0) if new is None else m.group(1) + new
+        return MD_REF.sub(ref, MD_LINK.sub(inline, text))
+
+    # -- the whole folder ----------------------------------------------------
+
+    def _clues(self) -> list[str]:
+        """Words a note must contain to link to anything that moved: a link
+        into a moved thing has to say its name, one way or another."""
+        out = set()
+        for src, _ in self.moves:
+            name = src.rsplit("/", 1)[-1]
+            out.update({name, quote(name), md_link(name), name.replace(" ", "%20")})
+        return sorted(out)
+
+    def _notes(self):
+        skip = {".git", "node_modules", "__pycache__", ".venv"}
+        for bucket in self.os.buckets():
+            for top, dirs, files in os.walk(self.os.root / bucket):
+                # sources/ is never rewritten, so there is nothing to look at there
+                dirs[:] = [d for d in dirs if not d.startswith(".") and d not in skip
+                           and d not in IGNORE_FOLDERS and d.lower() != "sources"]
+                for name in files:
+                    if not name.lower().endswith((".md", ".markdown")) \
+                            or name.lower() == "decisions.md" or name in Finder.MADE_HERE \
+                            or name.startswith("._"):
+                        continue
+                    yield Path(top) / name
+
+    def run(self) -> int:
+        """Fix every link these moves touched. Returns how many files changed."""
+        if not self.moves:
+            return 0
+        clues = self._clues()
+        changed = 0
+        for path in self._notes():
+            try:
+                if path.is_symlink() or path.stat().st_size > RELINK_CAP:
                     continue
-                text = read_all(path)
-                if old.name not in text and old.name.replace(" ", "%20") not in text:
+                now = self.os.rel(path)
+                if now in self.made:
                     continue
-
-                def swap(m: re.Match) -> str:
-                    if m.group(2).startswith("/"):
-                        return m.group(0)
-                    parts, at = m.group(2).split("/"), top
-                    for i, part in enumerate(parts):
-                        at = os.path.normpath(os.path.join(at, part.replace("%20", " ")))
-                        if at == before:
-                            parts[i] = new.name if " " in part else new.name.replace(" ", "%20")
-                            return m.group(1) + "/".join(parts)
-                    return m.group(0)
-
-                linked = LINK_TARGET.sub(swap, text)
-                if linked != text:
-                    os_.snapshot(path)
-                    write_text(path, linked)
-                    os_.record("edit", os_.rel(path))
-                    changed += 1
-    return changed
+                was = self.backward(now)
+                data = path.read_bytes()
+            except OSError:
+                continue
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if "](" not in text and "]:" not in text:
+                continue
+            if was == now and not any(c in text for c in clues):
+                continue
+            linked = self.rewrite(text, os.path.dirname(self._abs(was)), str(path.parent))
+            if linked == text:
+                continue
+            if not self.os.keep_before(path, was):
+                continue      # couldn't keep a copy for undo: leave it as it is
+            try:
+                write_text(path, linked)
+            except OSError:
+                continue
+            self.os.record("edit", now)
+            changed += 1
+        return changed
 
 
 def cmd_rename(os_: Zenith, argv: list[str]) -> int:
@@ -8202,9 +8620,9 @@ def cmd_rename(os_: Zenith, argv: list[str]) -> int:
                 write_text(headed, set_fields(text, flags, drop=drop,
                                               body=body if retitled else None))
             os_.record("edit", os_.rel(headed))
-        relinked = _relink(os_, item.path, moved) if moved != item.path else 0
         os_.save_state()
         os_.commit(f"renamed {item.ident} -> {moved.stem if moved.is_file() else moved.name}")
+        relinked = os_.relinked
         Indexer(os_).build()
     Out.title("renamed")
     Out.ok(f"{item.title} \u2192 {title}")
@@ -8603,8 +9021,16 @@ def cmd_review(os_: Zenith, argv: list[str]) -> int:
     block("I wasn't sure where these went", report["unsure"],
           lambda r: pad(trunc(r["title"], 40), 42)
                     + paint(f"now in {r['where']}", S.FAINT))
-    block("might be the same thing twice", report["duplicates"],
-          lambda r: paint(trunc(r["message"], 72), S.MUTE))
+    def doubled(r: dict) -> str:
+        if r.get("code") != "same-write-up":
+            return paint(trunc(r["message"], 72), S.MUTE)
+        # Two lines: which two, then what they share and how to look.
+        one, two = r["pair"]
+        return (paint(f"'{trunc(one, 34)}' and '{trunc(two, 34)}'", S.MUTE)
+                + "\n      " + paint(f"both mention {Twins.say(r['shares'], 3)}", S.FAINT)
+                + "\n      " + paint("look:  " + r["fix"], S.FAINT))
+
+    block("might be the same thing twice", report["duplicates"], doubled)
 
     if report.get("routines"):
         # A question, not a fact: it is found by words like "every week", and

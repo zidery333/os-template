@@ -8764,6 +8764,173 @@ def test_a_rename_takes_the_links_to_it_along(t: Case) -> None:
     t.ok("Garden%20Shed/README.md)" in guide.read_text(), "undo puts the links back with the name")
 
 
+def _lands(note: Path, target: str) -> Path:
+    """Where a link written in `note` actually points."""
+    from urllib.parse import unquote
+    raw = target[1:-1] if target.startswith("<") else unquote(target)
+    return Path(os.path.normpath(note.parent / raw.split("#", 1)[0]))
+
+
+def _links(text: str) -> list:
+    """Every link in `text`, leaving out examples shown inside code."""
+    text = re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.S)
+    text = re.sub(r"```.*?```", "", text, flags=re.S)
+    return re.findall(r"\]\((<[^>]*>|[^)\s]+)", text)
+
+
+@test
+def test_sort_keeps_links_between_notes_working(t: Case) -> None:
+    """Once Notes passed 12 things, sort tucked notes into subject folders and
+    every link between them broke: a garden note linking `pizza-dough.md`
+    pointed at nothing once pizza went into Food and it went into Garden, and
+    `./os check` reported the broken link sort itself had made (stranger
+    test, 2026-09-30). Links now follow both ways, and undo takes them back."""
+    notes = t.box.root / "Notes"
+    (notes / "pizza-dough.md").write_text(
+        "# Pizza dough\n\nA recipe. Ingredients: flour, water, salt, yeast. Method: knead, "
+        "rest, bake in the oven.\n\nGoes with [the tomatoes](tomato%20care.md#watering), "
+        "[watering](<tomato care.md>), [online](https://example.com/tomato%20care.md) "
+        "and [an old one](long-gone.md).\n")
+    (notes / "tomato care.md").write_text(
+        "# Tomato care\n\nGardening note for the garden: tomatoes need sun, compost and "
+        "watering, and pruning in the greenhouse.\n\nThe sauce is in [pizza](pizza-dough.md) "
+        "and [the dough again][dough].\n\n```\n[an example](pizza-dough.md)\n```\n\n"
+        "[dough]: ./pizza-dough.md\n")
+    for n in range(12):
+        (notes / f"garden-{n}.md").write_text(
+            f"# Garden job {n}\n\nGardening note: weed the garden beds, compost, plant "
+            f"seedlings, water the greenhouse and lawn. Bed {n}.\n")
+    t.box.run("index")
+    before = t.box.tree()
+    said = t.box.run("sort").stdout
+    pizza = next(notes.rglob("pizza-dough.md"))
+    tomato = next(notes.rglob("tomato care.md"))
+    t.ok(pizza.parent != tomato.parent,
+         f"the two notes went into different folders\n{pizza}\n{tomato}")
+    for note in (pizza, tomato):
+        for target in _links(note.read_text()):
+            if target.startswith("http") or "long-gone" in target:
+                continue
+            t.ok(_lands(note, target).exists(), f"{note.name} → {target} still reaches something")
+    p_text, t_text = pizza.read_text(), tomato.read_text()
+    t.ok("#watering)" in p_text and "%20" in p_text.split("#watering")[0][-40:],
+         f"a link written with %20 and a #place keeps both\n{p_text}")
+    t.ok("[watering](<" in p_text and " care.md>)" in p_text,
+         "a link written in <...> stays in <...>, spaces and all")
+    t.ok("(https://example.com/tomato%20care.md)" in p_text, "a web address is left alone")
+    t.ok("[an old one](long-gone.md)" in p_text, "a link already broken is left as it was")
+    t.ok("```\n[an example](pizza-dough.md)\n```" in t_text, "and so is one shown inside code")
+    ref = re.search(r"^\[dough\]: (\S+)$", t_text, re.M)
+    t.ok(ref and _lands(tomato, ref.group(1)) == pizza,
+         f"a `[name]: where` line follows too\n{t_text}")
+    t.ok("links kept working in 2 notes" in said, f"sort says it fixed them\n{said[-600:]}")
+    broken = [i for i in t.box.json("check", expect=None)["issues"]
+              if i["code"] == "broken-link" and "long-gone" not in i["message"]]
+    t.eq(broken, [], "and check finds no link sort broke")
+    t.box.run("undo")
+    t.eq(t.box.tree(), before, "undo puts every file back exactly, links included")
+
+
+@test
+def test_closing_work_keeps_links_in_and_out(t: Case) -> None:
+    """Closing work moves it into Archive/<year>/Work, three folders down
+    instead of one. Its links out to notes, and the notes' links in to it,
+    all broke. The words in sources/ and decisions.md are never rewritten,
+    not even to fix a link."""
+    t.box.run("new", "work", "Garden Shed", "--domain", "writing")
+    t.box.run("new", "note", "Shed paint colours", "--domain", "writing")
+    t.box.run("index")
+    where = {i["title"]: t.box.root / i["path"] for i in t.box.items()}
+    shed, paint_note = where["Garden Shed"], where["Shed paint colours"]
+    readme = shed / "README.md"
+    to_note = os.path.relpath(paint_note, shed).replace(" ", "%20")
+    readme.write_text(readme.read_text() + f"\n- [colours]({to_note})\n- [this folder](./)\n")
+    (shed / "sources").mkdir()
+    keep_src = f"[colours](../{to_note})\n"
+    (shed / "sources" / "quote.md").write_text(keep_src)
+    keep_dec = f"# Decisions\n\n- 2026-10-01 — green. See [colours]({to_note}).\n"
+    (shed / "decisions.md").write_text(keep_dec)
+    (shed / "plans.md").write_text(f"[colours]({to_note}) and [the shed](README.md)\n")
+    back = os.path.relpath(shed, paint_note.parent).replace(" ", "%20")
+    paint_note.write_text(paint_note.read_text()
+                          + f"\n[the shed]({back}/README.md) · [folder]({back}/) "
+                          + f"· [dec]({back}/decisions.md)\n")
+    before = t.box.tree()
+    t.box.run("close", "garden-shed")
+    moved = next((t.box.root / "Archive").rglob("Garden Shed"))
+    for note in (moved / "README.md", moved / "plans.md", paint_note):
+        for target in _links(note.read_text()):
+            t.ok(_lands(note, target).exists(), f"{note.name} → {target} still reaches something")
+    t.eq((moved / "sources" / "quote.md").read_text(), keep_src,
+         "a file in sources/ is never rewritten, even to fix a link")
+    t.eq((moved / "decisions.md").read_text(), keep_dec, "nor is decisions.md")
+    t.box.run("undo")
+    t.eq(t.box.tree(), before, "undo puts every word back with the folder")
+
+
+@test
+def test_a_second_write_up_of_the_same_thing_is_warned_about(t: Case) -> None:
+    """Saving the same meeting twice in other words filed two notes with no
+    word said: the names matched nothing, so the title check missed it. The
+    old template caught it by the figures and names both write-ups carry.
+    It warns and files anyway, and ordinary notes that share a number or two
+    say nothing."""
+    first = t.box.run("save", "Kitchen budget meeting on 12 March with Sarah Jones and Priya "
+                      "Patel. Sarah thinks £4,500 is enough, Priya wants a 15% contingency, "
+                      "and Tom Baker starts on 3 April.").stdout
+    t.ok("written this down before" not in first, "the first one says nothing")
+    again = t.box.run("save", "Notes from the money talk, 12th March, with Sarah and Priya: "
+                      "£4,500 plus a 15% buffer, Tom Baker to start April 3rd.").stdout
+    t.ok("you may have written this down before" in again, f"the second one is warned about\n{again}")
+    t.ok("./os show kitchen-budget-meeting" in again, "naming the first, with how to look at it")
+    t.ok("12 March" in again and "Sarah" in again, "and saying what they share")
+    t.box.run("index")
+    t.ok(sum("12" in i["title"] or "money talk" in i["title"].lower() for i in t.box.items()) >= 2,
+         "it is still filed: a warning, not a refusal")
+    as_json = t.box.json("save", "Write-up: met Sarah and Priya on 12 March about the kitchen, "
+                         "£4,500 budget and 15% contingency, Tom Baker from 3 April.")
+    t.ok(as_json.get("may_repeat"), "and --json says so too")
+
+    for words in ("Lemon cake recipe. Ingredients: 200 g flour, 200 g sugar, 3 eggs, 250 ml milk. "
+                  "Method: Preheat the oven to 180 C and bake for 45 minutes.",
+                  "Banana bread recipe. Ingredients: 200 g flour, 100 g butter, 250 ml milk. "
+                  "Method: Preheat the oven to 180 C and bake for 60 minutes. Mash the bananas.",
+                  "Scones recipe from Grandma. Ingredients: 200g flour, 50g butter, 150ml milk. "
+                  "Method: Preheat the oven to 220 C. Bake 12 minutes."):
+        said = t.box.run("save", words).stdout
+        t.ok("written this down before" not in said, f"two recipes sharing flour and 200 g are not one\n{said}")
+    for words in ("Call with Sarah about the school run on Monday.",
+                  "Sarah's birthday is in June, she likes gardening and Priya's cooking."):
+        said = t.box.run("save", words).stdout
+        t.ok("written this down before" not in said, f"sharing a name alone is not a second write-up\n{said}")
+
+    tidy = t.box.run("tidy").stdout
+    t.ok("both mention" in tidy and "./os show" in tidy,
+         f"tidy lists the pair, with how to look at them\n{tidy[-1500:]}")
+    t.ok("Lemon cake" not in tidy.split("SAME THING TWICE", 1)[-1].split("\n\n")[0],
+         "and not the recipes")
+    check = t.box.json("check", expect=None)
+    t.ok(not any(i["code"] == "same-write-up" for i in check["issues"]),
+         "./os check doesn't count it against the folder")
+
+
+@test
+def test_a_new_learning_note_says_if_one_already_covers_it(t: Case) -> None:
+    """The old template's own case: a write-up called
+    `roediger-karpicke-testing-effect` filed beside `retrieval-practice`, the
+    same study under names with no word in common."""
+    t.box.run("save", "Retrieval practice: a study by Roediger and Karpicke found students "
+              "who tested themselves kept 61% after a week, against 40% for rereading.")
+    said = t.box.run("new", "learning", "Roediger Karpicke testing effect").stdout
+    t.ok("may already cover this" in said, f"the new one is warned about\n{said}")
+    t.ok("./os show retrieval-practice" in said, "naming the one already here")
+    t.box.run("index")
+    t.ok(any(i["title"] == "Roediger Karpicke testing effect" for i in t.box.items()),
+         "and it is made anyway")
+    other = t.box.run("new", "learning", "How to make sourdough").stdout
+    t.ok("may already cover this" not in other, "a learning note about something else says nothing")
+
+
 @test
 def test_a_rename_can_change_only_the_capitals(t: Case) -> None:
     """`Q3 okr review` is filed as `Q3 Okr Review`, and the obvious repair was

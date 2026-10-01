@@ -3,6 +3,24 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-01.3
+
+- Links between your notes keep working when things move. When sort tucks
+  notes into folders, or you close or rename something, the links that
+  pointed at it are changed to its new place, and so are the links inside
+  it. `./os undo` puts every one back. Web addresses and links that were
+  already broken are left alone, and so are notes kept as sources or as a
+  list of decisions.
+- If you save something you have already written down in other words, like
+  two write-ups of one meeting with the same people, date and figures, you
+  are told, and given the line to type to look at the first one. It is
+  still saved. Notes that only share a number or two, like two recipes
+  with 200 g of flour, say nothing.
+- Starting a learning note tells you if a note you already have mentions
+  the same people or figures.
+- `./os tidy` lists pairs of notes that look like the same thing written up
+  twice.
+
 ## 2026-10-01.2
 
 - A folder you make yourself stays where you put it. Before, once you had
