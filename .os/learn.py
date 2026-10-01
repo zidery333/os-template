@@ -220,7 +220,9 @@ def listing(url: str, limit: int = LIST_LIMIT) -> List[dict]:
         raise RuntimeError("no-ytdlp")
     fields = "%(id)s\t%(view_count)s\t%(upload_date)s\t%(duration)s\t%(title)s"
     done = _run([exe, "--flat-playlist", "--playlist-end", str(limit),
-                 "--ignore-errors", "--print", fields, as_listing(url)])
+                 # `--` first: a "URL" starting with a dash is never read as
+                 # one of yt-dlp's own options (`--exec`, say).
+                 "--ignore-errors", "--print", fields, "--", as_listing(url)])
     rows = []
     for line in done.stdout.splitlines():
         bits = line.split("\t")
@@ -296,7 +298,7 @@ def transcript(root: Path, url: str, force: bool = False) -> dict:
                      # the original-language one that would have downloaded fine.
                      "--ignore-errors",
                      "-o", str(Path(tmp) / "%(id)s"),
-                     f"https://www.youtube.com/watch?v={vid}"])
+                     "--", f"https://www.youtube.com/watch?v={vid}"])
         vtts = sorted(Path(tmp).glob("*.vtt"))
         if not vtts:
             return {"id": vid, "ok": False, "why": why_empty(done)}

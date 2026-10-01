@@ -5742,7 +5742,8 @@ def test_a_card_left_behind_goes_back_beside_its_file(t: Case) -> None:
     (notes / "Recipes" / "Soup.md").write_text("leeks\n")
     t.box.run("sort")
     manual = t.box.tmp / "manual.pdf"
-    manual.write_bytes(b"%PDF-1.4\n\x00\n")
+    # Not byte for byte one of the tax PDFs: that is the same file, not saved twice.
+    manual.write_bytes(b"%PDF-1.4\n\x00 oven\n")
     t.box.run("save", str(manual))
     with (notes / "manual.pdf.card.md").open("a") as fh:
         fh.write("\nOven manual from Neff\n")
@@ -6673,6 +6674,15 @@ def test_the_setup_screen_the_demo_and_the_download_name_an_ai_that_runs_command
          f"decide asks with an example from home\n{said}")
 
 
+def _beside_the_script(script: Path, ours: Path) -> None:
+    """The release script copies main's LICENSE from the template beside it,
+    so a copy of the script needs that too."""
+    licence = script.parent / "template" / "LICENSE"
+    if licence.is_file():
+        (ours.parent / "template").mkdir(parents=True, exist_ok=True)
+        shutil.copy(licence, ours.parent / "template" / "LICENSE")
+
+
 @test
 def test_the_download_ships_no_subject_of_this_folders_own(t: Case) -> None:
     """A subject made here with `./os words --new` has no words but the ones
@@ -6686,6 +6696,7 @@ def test_the_download_ships_no_subject_of_this_folders_own(t: Case) -> None:
     ours = root / "Work" / script.parent.name / script.name
     ours.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(script, ours)
+    _beside_the_script(script, ours)
     t.box.run("words", "--new", "wine", "merlot", "claret")
     out = t.box.tmp / "blank"
     proc = subprocess.run(["bash", str(ours), "build", str(out)], capture_output=True, text=True,
@@ -8292,6 +8303,7 @@ def test_the_release_builds_a_blank_folder(t: Case) -> None:
     ours = root / "Work" / script.parent.name / script.name
     ours.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(script, ours)
+    _beside_the_script(script, ours)
     words = json.loads((root / ".os" / "words.json").read_text())
     words["domains"]["finance"]["learned"] = ["es", "portfolio"]
     (root / ".os" / "words.json").write_text(json.dumps(words, indent=2))
@@ -8317,6 +8329,10 @@ def test_the_release_builds_a_blank_folder(t: Case) -> None:
     readme = (out / "README.md").read_text()
     t.ok("./os snag --export" in readme and "Discord" in readme,
          "the README says where to send what went wrong")
+    t.ok('./os snag "what broke"' in readme, "and how to write a snag down")
+    licence = script.parent / "template" / "LICENSE"
+    if licence.is_file():
+        t.eq((out / "LICENSE").read_text(), licence.read_text(), "main's licence ships with it")
     t.ok("xcode-select --install" in readme, "and what a Mac needs first")
     # The number of checks is counted by the build and put in place of a
     # marker. Nothing read it: with that step broken, the download said
@@ -10485,6 +10501,300 @@ def test_a_group_an_earlier_release_nested_stays_put_after_an_update(t: Case) ->
     after = tree()
     t.eq(sorted(after), sorted(before), "nothing in Notes moved or was renamed")
     t.ok(all(after[k] == v for k, v in before.items()), "and nothing in it was rewritten")
+
+
+# ---------------------------------------------------------------------------
+# batch 6: the small things (2026-10-01)
+# ---------------------------------------------------------------------------
+
+@test
+def test_tidy_lists_every_held_thing_with_the_right_count(t: Case) -> None:
+    """Tidy cut held work to eight before counting it, so it said (8) and
+    the rest were never shown."""
+    for n in range(10):
+        t.box.run("new", "ongoing", f"Keep shelf number {n} dusted", "--anyway")
+    out = t.box.run("tidy").stdout
+    t.ok("KEEPING LEVEL  (10)" in out, f"the count is all ten:\n{out}")
+    t.eq(sum(1 for n in range(10) if f"shelf number {n} dusted" in out), 10,
+         "and all ten are listed")
+
+
+@test
+def test_park_holds_and_unpark_pushes(t: Case) -> None:
+    """`./os park` put work in the archive. Parked work is held, not over."""
+    t.box.run("new", "work", "Paint the fence")
+    t.box.run("park", "paint-the-fence")
+    readme = t.box.root / "Work" / "Paint the Fence" / "README.md"
+    t.ok(readme.is_file(), "parked work stays in Work")
+    t.ok("status: holding" in readme.read_text(), "and is held")
+    t.box.run("unpark", "paint-the-fence")
+    t.ok("status: pushing" in readme.read_text(), "unpark puts it back on the go")
+    t.ok("hold" in t.box.run("help", "park").stdout.lower(), "help for park is hold's")
+
+
+@test
+def test_an_archived_thing_points_at_the_way_back(t: Case) -> None:
+    """Pushing something put away said 'is archive, not work', and starting
+    a new one under its name said nothing about it at all."""
+    t.box.run("new", "work", "Sell the old bike")
+    t.box.run("close", "sell-the-old-bike")
+    pushed = t.box.run("push", "sell-the-old-bike", expect=1)
+    said = pushed.stdout + pushed.stderr
+    t.ok("archived" in said and "./os back sell-the-old-bike" in said,
+         f"push says it is archived and how to bring it back:\n{said}")
+    again = t.box.run("new", "work", "Sell the old bike").stdout
+    t.ok("archive" in again and "./os back" in again,
+         f"a new one under its name warns, and names ./os back:\n{again}")
+    t.ok((t.box.root / "Work" / "Sell the Old Bike").is_dir(), "and is still made")
+    quiet = t.box.run("new", "work", "Sell the old car", "--anyway").stdout
+    t.ok("archive" not in quiet, "--anyway says nothing about it")
+
+
+@test
+def test_undoing_a_close_takes_away_the_folders_it_made(t: Case) -> None:
+    """Undoing a close left Archive/<year>/Work behind, empty."""
+    t.box.run("new", "work", "Clear the gutters")
+    before = t.box.dirs()
+    t.box.run("close", "clear-the-gutters")
+    t.box.run("undo")
+    t.eq(sorted(t.box.dirs() - before), [], "no empty folder is left behind")
+    # One that was there before the close stays, even emptied.
+    t.box.run("new", "work", "Fix the gate")
+    t.box.run("close", "fix-the-gate")
+    t.box.run("close", "clear-the-gutters")
+    t.box.run("undo")
+    year = next((t.box.root / "Archive").iterdir())
+    t.ok((year / "Work" / "Fix the Gate").is_dir(), "the other thing put away is untouched")
+
+
+@test
+def test_hold_and_push_hints_match_the_file(t: Case) -> None:
+    """Hold said to write under ## How often in a file with no such heading,
+    and push said to give a next action that was already there."""
+    t.box.run("new", "work", "Tune the piano")
+    readme = t.box.root / "Work" / "Tune the Piano" / "README.md"
+    held = t.box.run("hold", "tune-the-piano").stdout
+    text = readme.read_text()
+    t.eq(text.count("## How often"), 1, "hold adds ## How often once")
+    t.ok(text.index("## How often") < text.index("## Next action"), "above the rest")
+    t.ok("## How often" in held, "and says to fill it in")
+    t.box.run("push", "tune-the-piano")
+    t.box.run("hold", "tune-the-piano")
+    t.eq(readme.read_text().count("## How often"), 1, "held again, it isn't added twice")
+    readme.write_text(readme.read_text().replace(
+        "## How often\n<!-- Weekly, monthly, every spring. -->",
+        "## How often\nEvery spring"))
+    t.box.run("push", "tune-the-piano")
+    held = t.box.run("hold", "tune-the-piano").stdout
+    t.ok("## How often" not in held, f"filled in, the hint goes:\n{held}")
+    t.box.run("new", "ongoing", "Keep the lawn short")
+    ongoing = t.box.root / "Work" / "Keep the Lawn Short" / "README.md"
+    t.box.run("push", "keep-the-lawn-short")
+    t.box.run("hold", "keep-the-lawn-short")
+    t.eq(ongoing.read_text().count("## How often"), 1, "the held template's own is kept, not doubled")
+    pushed = t.box.run("push", "tune-the-piano").stdout
+    t.ok("give it a next action" in pushed, "an empty next action gets the hint")
+    readme.write_text(readme.read_text().replace("## Next action\n- [ ] ", "## Next action\n- [ ] call the tuner"))
+    t.box.run("hold", "tune-the-piano")
+    pushed = t.box.run("push", "tune-the-piano").stdout
+    t.ok("give it a next action" not in pushed, f"one already written gets none:\n{pushed}")
+    t.box.run("new", "note", "Water the ferns")
+    t.box.run("hold", "water-the-ferns")
+    t.eq((t.box.root / "Work" / "Water the Ferns" / "README.md").read_text().count("## How often"), 1,
+         "a note held, so made work, gets ## How often too")
+
+
+@test
+def test_a_note_pushed_into_work_says_the_way_back(t: Case) -> None:
+    """After a note became work, the hint offered only undo. type: note in
+    the header and ./os sort make it a note again, and now it says so."""
+    t.box.run("new", "note", "Buy a present for Sarah")
+    out = t.box.run("push", "buy-a-present-for-sarah").stdout
+    t.ok("type: note" in out and "./os sort" in out, f"the hint says the way back:\n{out}")
+    readme = t.box.root / "Work" / "Buy a Present for Sarah" / "README.md"
+    readme.write_text(readme.read_text().replace("type: work", "type: note", 1))
+    t.box.run("sort")
+    t.ok(not (t.box.root / "Work" / "Buy a Present for Sarah").exists()
+         and any((t.box.root / "Notes").rglob("*resent*")), "and that way back works")
+
+
+@test
+def test_the_demo_leaves_nothing_behind(t: Case) -> None:
+    """In a new folder the demo left empty Work and Notes folders, and
+    ./os last said 'FILED demo'."""
+    for bucket in ("Work", "Notes", "Archive"):
+        shutil.rmtree(t.box.root / bucket)
+    t.box.run("demo")
+    left = [b for b in ("Work", "Notes", "Archive") if (t.box.root / b).exists()]
+    t.eq(left, [], "no folder the demo made is left")
+    t.ok("demo" not in t.box.run("last").stdout.lower(), "and ./os last doesn't mention it")
+
+
+@test
+def test_the_first_screen_cuts_descriptions_at_a_word(t: Case) -> None:
+    """'pictures' came out as 'pict…'."""
+    blurbs = [spec["blurb"] for spec in json.loads(
+        (t.box.root / ".os" / "config.json").read_text())["buckets"].values()]
+    was = os.environ.get("COLUMNS")
+    try:
+        for width in ("60", "72", "80", "100"):
+            os.environ["COLUMNS"] = width
+            screen = t.box.run().stdout
+            for blurb in blurbs:
+                line = next((l for l in screen.split("\n") if blurb[:12] in l), "")
+                shown = line[line.index(blurb[:12]):].rstrip()
+                if shown.endswith("…"):
+                    kept = shown[:-1]
+                    t.ok(blurb.startswith(kept) and blurb[len(kept)] in " ,—",
+                         f"cut where a word ends at {width} wide: {shown!r}")
+                else:
+                    t.eq(shown, blurb, f"or shown whole at {width} wide")
+    finally:
+        if was is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = was
+
+
+@test
+def test_help_text_says_what_to_type(t: Case) -> None:
+    """Help said 'os save' (which fails typed), sort's help said folders you
+    made get regrouped, and check's crowded-folder warning named the wrong
+    setting."""
+    main = t.box.run("help").stdout
+    bare = [l for l in main.split("\n") if re.match(r"^\s+os\b", l)]
+    t.eq(bare, [], "every command in the main help starts with ./os")
+    for topic in ("save", "new", "learn", "status"):
+        page = t.box.run("help", topic).stdout
+        t.ok(not re.search(r"(?<![\w./])os (?=\S)", page.split("\n\n", 2)[1])
+             and "$ ./os" in page, f"and so does help {topic}:\n{page}")
+    sort = t.box.run("help", "sort").stdout
+    t.ok("folders you made too" not in sort and "stays where you put it" in sort,
+         "sort's help says a folder you made stays put")
+    code = (t.box.root / ".os" / "engine.py").read_text()
+    warning = code[code.index('"category-overflow"'):][:400]
+    t.ok("category_max_items" in warning and "category_split" not in warning,
+         "the crowded-folder warning names the setting that sets its limit")
+
+
+@test
+def test_a_licence_at_the_top_is_left_alone(t: Case) -> None:
+    """The download ships a LICENSE beside AGENTS.md; sort must not file it."""
+    licence = t.box.root / "LICENSE"
+    licence.write_text("MIT License\n")
+    t.box.run("sort")
+    t.ok(licence.is_file() and licence.read_text() == "MIT License\n", "sort leaves it where it is")
+    t.ok("LICENSE" not in t.box.run().stdout, "and ./os doesn't call it unfiled")
+
+
+@test
+def test_a_hobby_said_plainly_is_kept_up(t: Case) -> None:
+    """'Keep that going', 'most mornings' and 'most days' read as something
+    kept up, not something to finish."""
+    os_ = engine.Zenith(t.box.root)
+    for said in ("Sketching most mornings, I want to keep that going",
+                 "Piano practice most days before work"):
+        f = t.box.tmp / "said.md"
+        f.write_text(said + "\n")
+        verdict = engine.Classifier(os_).classify(f)
+        t.ok(verdict["kind"] == "project" and verdict.get("status") == "holding",
+             f"{said!r} is held work ({verdict.get('kind')}, {verdict.get('status')})")
+
+
+@test
+def test_new_file_names_are_cut_where_a_word_ends(t: Case) -> None:
+    """A long name was cut mid-word, like ...-and-the-pepp.md. New names end
+    at a whole word; a name made before is never renamed for it."""
+    long = "Garden notes about the tomatoes and the peppers in the greenhouse"
+    t.eq(engine.slugify(long, 44, at_word=True), "garden-notes-about-the-tomatoes-and-the",
+         "cut at the last hyphen")
+    t.eq(engine.slugify(long, 44), "garden-notes-about-the-tomatoes-and-the-pepp",
+         "matching still uses the plain cut")
+    t.eq(engine.slugify("a" * 60, 44, at_word=True), "a" * 44, "one long word is still cut")
+    old = t.box.root / "Notes" / "garden-notes-about-the-tomatoes-and-the-pepp.md"
+    old.write_text(f"---\ntitle: {long}\ntype: note\nstatus: —\ndomain: garden\ntags: []\n"
+                   "created: 2026-09-01\nupdated: 2026-09-01\n---\n\n# Garden\n\ntomatoes\n")
+    before = old.read_bytes()
+    t.box.run("sort")
+    t.ok(old.is_file() and old.read_bytes() == before, "one named the old way stays as it is")
+    t.box.run("new", "note", "Shed")
+    t.box.run("rename", "shed", long)
+    t.ok((t.box.root / "Notes" / "garden-notes-about-the-tomatoes-and-the.md").is_file(),
+         "a new name ends at a whole word")
+    t.box.run("sort")
+    t.ok((t.box.root / "Notes" / "garden-notes-about-the-tomatoes-and-the.md").is_file(),
+         "and sort keeps it")
+
+
+@test
+def test_learn_never_hands_yt_dlp_an_option_for_a_link(t: Case) -> None:
+    """`./os learn --list -- "--exec=..."` passed the option straight to yt-dlp."""
+    seen = []
+    was_exe, was_run = learn.ytdlp, learn._run
+    try:
+        learn.ytdlp = lambda: "yt-dlp"
+        learn._run = lambda args, timeout=0: (seen.append(args)
+                                               or subprocess.CompletedProcess(args, 0, "", ""))
+        try:
+            learn.listing("--exec=touch /tmp/x")
+        except RuntimeError:
+            pass
+        learn.transcript(t.box.root, "-abcdefghij", force=True)
+    finally:
+        learn.ytdlp, learn._run = was_exe, was_run
+    t.ok(seen, "yt-dlp was asked")
+    for args in seen:
+        t.ok("--" in args and args.index("--") == len(args) - 2,
+             f"the link comes after --: {args[-3:]}")
+
+
+@test
+def test_a_saved_file_asks_for_its_card_and_a_rename_keeps_it_right(t: Case) -> None:
+    """Nothing said the card was what search reads, and a renamed file's
+    card still named the old file."""
+    photo = t.box.tmp / "IMG_4410.jpg"
+    photo.write_bytes(b"\xff\xd8\xff photo of the shed roof")
+    out = t.box.run("save", str(photo)).stdout
+    t.ok("card" in out and "./os edit img-4410" in out, f"saving says to describe it:\n{out}")
+    t.box.run("rename", "img-4410", "Shed roof")
+    card = (t.box.root / "Notes" / "shed-roof.jpg.card.md").read_text()
+    t.ok("img-4410" not in card and "source: shed-roof.jpg" in card
+         and "`shed-roof.jpg`" in card, f"the card names the file it's beside now:\n{card}")
+    t.box.run("undo")
+    t.ok("img-4410" in (t.box.root / "Notes" / "img-4410.jpg.card.md").read_text(),
+         "and undo puts the old name back")
+
+
+@test
+def test_another_os_folder_kept_in_work_isnt_on_the_go(t: Case) -> None:
+    """A copy of another ./os folder kept in Work showed up as on the go."""
+    other = t.box.root / "Work" / "Old Laptop Folder"
+    (other / ".os").mkdir(parents=True)
+    shutil.copy(t.box.root / ".os" / "config.json", other / ".os" / "config.json")
+    (other / "Work" / "Big Plan").mkdir(parents=True)
+    (other / "Work" / "Big Plan" / "README.md").write_text(
+        "---\ntitle: Big Plan\ntype: work\nstatus: pushing\n---\n\n# Big Plan\n")
+    t.box.run("sort")
+    t.ok("Big Plan" not in t.box.run().stdout and "Old Laptop" not in t.box.run().stdout,
+         "neither it nor its work is listed")
+    t.ok((other / "Work" / "Big Plan" / "README.md").is_file(), "and nothing in it moved")
+
+
+@test
+def test_saving_the_same_file_twice_says_where_it_is(t: Case) -> None:
+    """Saving one file twice made garden-notes-2.rtf and said nothing."""
+    rtf = t.box.tmp / "Garden notes.rtf"
+    rtf.write_text("{\\rtf1\\ansi tomatoes in May}")
+    t.box.run("save", str(rtf))
+    again = t.box.run("save", str(rtf)).stdout
+    t.ok("already" in again and "Notes/garden-notes.rtf" in again, f"it says where it is:\n{again}")
+    t.ok(not any((t.box.root / "Notes").glob("garden-notes-2*")), "and makes no second copy")
+    txt = t.box.tmp / "seed list.txt"
+    txt.write_text("Seed list for spring\n\nbeans, peas, chard\n")
+    t.box.run("save", str(txt))
+    t.ok("already" in t.box.run("save", str(txt)).stdout, "a text file too, header and all")
+    rtf.write_text("{\\rtf1\\ansi tomatoes in June}")
+    t.ok("already" not in t.box.run("save", str(rtf)).stdout, "a changed one is saved")
 
 
 def _run_one(name: str, keep: bool, verbose: bool) -> dict:

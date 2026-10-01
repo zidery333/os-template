@@ -852,7 +852,10 @@
         "keep the",
         "keep it",
         "keep everything",
-        "in sync"
+        "in sync",
+        "keep that going",
+        "most mornings",
+        "most days"
       ],
       "patterns": [
         "^#+\\s*(the )?standard\\b",

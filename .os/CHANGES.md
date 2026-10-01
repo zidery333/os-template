@@ -3,6 +3,31 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-01.6
+
+- `./os park` now holds something instead of putting it away, and
+  `./os unpark` puts it back on the go.
+- Things you put away are easier to get back. Trying to push one tells
+  you how to bring it back first, and starting something new under its
+  old name reminds you the old one is waiting in the archive.
+- Saving a file you have already saved no longer makes a second copy.
+  It tells you where the first one is.
+- Saving a photo or a PDF reminds you to say in a line what it is, since
+  that line is what search reads. Renaming one now changes its name in
+  that line too.
+- Undoing a close, and the two-minute demo, no longer leave empty
+  folders behind, and the demo no longer shows up in what happened last
+  time.
+- Holding something gives it a place to say how often you tend to it.
+  The hints after holding or pushing only ask for what is still missing,
+  and when a note turns into work it says how to make it a note again.
+- Smaller things: new file names end on a whole word; the first screen
+  cuts its descriptions at a word; help shows every command the way you
+  type it, starting with `./os`; tidy lists everything you keep up, with
+  the right count; "keep that going", "most days" and "most mornings"
+  now read as something you keep up; another folder like this one kept
+  inside yours is left alone; and the download comes with its licence.
+
 ## 2026-10-01.5
 
 - Saving a video no longer copies it into your folder. It stays where it

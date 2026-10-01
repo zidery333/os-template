@@ -138,10 +138,12 @@
       "f5dac18d51569a6fe05bce8ff5e1ef41dabbbf33",
       "05c5380fceed41979da1084bd54f797b156f0efd",
       "ff08376da471c70558f7e71ce060e8c7084c0ca3",
-      "514e772c224b7f29c7e5f5d77403734a45c4d772"
+      "514e772c224b7f29c7e5f5d77403734a45c4d772",
+      "09b9159a16bd356f45231852db64058b697527ba"
     ],
     ".os/learn.py": [
-      "1b3f236a4556a3114e445c7288f8dd82805cc540"
+      "1b3f236a4556a3114e445c7288f8dd82805cc540",
+      "e565af6fb716a0c3c54bafd82cdd196306b61ca8"
     ],
     ".os/upgrade.py": [
       "b02cb5841cb06fe71994843ae60e0f459e197d38",
@@ -231,7 +233,7 @@
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-01.5",
+  "release": "2026-10-01.6",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
@@ -294,7 +296,8 @@
       "fc092d415f5cd08c5ac69693b31ab5805fdcef4d"
     ],
     "holding": [
-      "18c3c38d55b96fe62b3b082e20cf2788bf60ab1a"
+      "18c3c38d55b96fe62b3b082e20cf2788bf60ab1a",
+      "e0d26564cdea7ae1d359c2035a982ddd46c2421a"
     ],
     "note": [
       "04ba4a019f7770089b0de5e630fd3eff68414206",
