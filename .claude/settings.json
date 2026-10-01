@@ -1,5 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "outputStyle": "Plain words",
   "autoMemoryEnabled": false,
   "permissions": {
     "allow": [
@@ -17,7 +18,7 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh\"",
             "timeout": 15,
-            "statusMessage": "Looking at the folder\u2026"
+            "statusMessage": "Looking at the folder…"
           }
         ]
       }
@@ -54,7 +55,16 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/settle.sh\"",
             "timeout": 60,
             "async": true,
-            "statusMessage": "Updating the list\u2026"
+            "statusMessage": "Updating the list…"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/plain-words.sh\"",
+            "timeout": 10
           }
         ]
       }

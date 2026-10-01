@@ -9,11 +9,10 @@ folder guarantees and needs; how you get there is your call.
 ## First, always
 
 Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one plain
-sentence about where things stand. Then run `./os update --check` and pass on, once, any line
-it prints. **If the folders are empty, this person has never used it**: don't explain the
-system or list commands. Say hello, say in a line or two that whatever they tell you gets
-written down and filed, and ask what's on their mind or what they're into ("nothing yet" is
-fine). `./os brief` says the same.
+sentence about where things stand. Then run `./os update --check` and pass on, once, any line it
+prints. **If the folders are empty, this person has never used it**: don't explain the system or
+list commands. Say hello, say in a line or two that whatever they tell you gets written down and
+filed, and ask what's on their mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
 
 ## Talk like a person
 
@@ -37,11 +36,12 @@ They did not sign up to learn a filing system.
 | `Notes/` About me | A line per fact about them or how they want answers (none yet? `./os new note "About me" --domain personal`) | Every session should know it |
 
 The person never picks one — `./os save` decides and files it immediately.
-**There is no inbox**: if you saved it, it is filed. A PDF or an image lands in
-`Notes/` with a `<name>.card.md`, and search reads the card, not the file: after
-`./os save <file>`, write one sentence of what it is and 3–5 tags into the card,
-and `./os rename` it if a camera or scanner named it. Files dropped in by hand
-aren't filed until `./os sort` adopts them where they lie, and `./os` says so meanwhile.
+**There is no inbox**: if you saved it, it is filed. A PDF or an image lands in `Notes/` with a
+`<name>.card.md`, and search reads the card, not the file: after `./os save <file>`, write one
+sentence of what it is and 3–5 tags into the card, and `./os rename` it if a camera or scanner named
+it. **Never bring a file in from elsewhere without asking.** A video, or anything over 100 MB, stays
+put: `./os save <it>` writes a note in Notes saying where it lives, to fill in the same way; a copy
+in here takes `--copy`. Files dropped in by hand aren't filed until `./os sort` adopts them.
 
 Everything is known by its plain name — the folder or file name, like `Q3 OKR Review`. A name
 follows its thing everywhere: a closed item keeps its name in `Archive/`. **Use the names.**
@@ -118,8 +118,8 @@ Inside an item's own folder, organise however you like: the rules are about the
 top-level folders, and `Work/Some Project/` is yours to shape. Two conventions
 hold everywhere: folders are Title Case With Spaces, and no folder exists before
 something goes in it — no empty `notes/` or `assets/` wrappers, no folder around
-one file. Big media — footage, exports, anything too large to read — goes in
-`Work/Content/`, which `./os` never files, nags or renames.
+one file. Big media copied in — footage, exports, anything too large to read — lives in
+`Work/Content/`, which `./os` never files, nags or renames; search finds it by its note.
 
 ## When they ask for something new
 

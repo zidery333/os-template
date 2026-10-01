@@ -3,6 +3,22 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-01.5
+
+- Saving a video no longer copies it into your folder. It stays where it
+  is, and a short note in Notes says where it lives. Search finds that
+  note by the video's name and by whatever you write in it. Big files
+  over 100 MB are treated the same way. If you do want a copy kept inside
+  the folder, your AI asks you first.
+- If a video a note points at gets moved or deleted, or sits on a drive
+  that isn't plugged in, the folder's check mentions it once, quietly,
+  and changes nothing.
+- Replies now come in plain words by default: a short answer first, then
+  the details, then any questions for you. After each reply, a quick check
+  looks for stuffy words like "leverage" and has them said again plainly.
+  The list of words is yours to add to or trim.
+- Updating keeps your own settings. A setting you switched off stays off.
+
 ## 2026-10-01.4
 
 - Something you keep up, like a garden or a hobby, no longer fills up with

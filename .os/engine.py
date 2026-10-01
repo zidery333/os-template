@@ -2274,6 +2274,7 @@ class Item:
         "path", "bucket", "kind", "ident", "title", "status", "domain", "tags",
         "created", "updated", "summary", "is_dir", "words", "trail",
         "flags", "fingerprint", "spine", "blurb", "managed", "claim", "by_hand",
+        "lives",
     )
 
     def __init__(self, path: Path, bucket: str, kind: str):
@@ -2299,6 +2300,9 @@ class Item:
         #: Its header says `made: by hand`: a folder somebody made and named
         #: themselves, which sort adopted where they put it. See Sorter.stays_put.
         self.by_hand = False
+        #: A note's `lives:` header: where the video it stands for is kept,
+        #: outside this folder or in Work/Content. See footage_note.
+        self.lives = ""
         #: Has the OS ever taken charge of this? True iff its own header says
         #: what it is — a `type:` or a `title:`. The *filename* proves nothing;
         #: anyone can type one. Decided in hydrate(), where the front matter is
@@ -2922,6 +2926,7 @@ class Scanner:
         item.blurb = str(meta.get("description") or "").strip()
         item.claim = str(meta.get("claimed") or "").strip()
         item.by_hand = str(meta.get("made") or "").strip().lower() == BY_HAND
+        item.lives = str(meta.get("lives") or "").strip()
         # There are no numbers any more: filed means the header says what the
         # thing is. The name on disk is the handle every command answers to.
         item.managed = bool(str(meta.get("type") or meta.get("title") or "").strip())
@@ -3059,7 +3064,9 @@ class Scanner:
             it.trail = ["agents"]
             out.append(self.hydrate(it))
         for f in sorted(hooks.glob("*")) if hooks.exists() else []:
-            if ignored(f) or f.is_dir():
+            # A script runs; a word list beside it (plain-words.tsv) is only
+            # read, so it isn't listed as something that runs on its own.
+            if ignored(f) or f.is_dir() or f.suffix.lower() in (".tsv", ".txt", ".md", ".json"):
                 continue
             it = Item(f, TOOLKIT, "hook")
             it.trail = ["hooks"]
@@ -4066,6 +4073,7 @@ HOOK_BLURBS = {
     "session-start.sh": "Tells your AI where things stand, before you say anything.",
     "mark-dirty.sh": "Notices when a file changed.",
     "settle.sh": "Re-reads the folder when you stop typing, so search stays current.",
+    "plain-words.sh": "After each reply, catches stuffy words and has them said again plainly.",
 }
 
 
@@ -4790,7 +4798,25 @@ class Doctor:
                       "  ·  ".join(f"./os show {w}" for w in ways))
         named_twice = {id(g) for group in shared for g in group}
 
-        # 3b. anything of theirs that neither search nor the list can reach
+        # 3b. a note for a video that isn't where it said any more: moved,
+        # deleted, or on a drive that isn't plugged in. Only they know which,
+        # so it's said once, quietly, and nothing is changed.
+        for it in items:
+            if not it.lives or it.kind not in ("note", "project"):
+                continue
+            there = Path(it.lives).expanduser()
+            try:
+                found = (there if there.is_absolute() else root / there).exists()
+            except OSError:
+                found = False
+            if not found:
+                self.flag("hint", "not-there",
+                          f"'{it.title}' says its file is at {it.lives}, and nothing is there "
+                          "now — moved, deleted, or on a drive that isn't plugged in",
+                          self.os.rel(it.spine or it.path),
+                          f"moved? put where it is now on its `lives:` line:  ./os edit {handle(it)}")
+
+        # 3c. anything of theirs that neither search nor the list can reach
         repaired += self._out_of_reach(items, fix)
         self._archived_by_hand()
 
@@ -7725,6 +7751,108 @@ def remember_save(os_: Zenith, text: str, dest: Path) -> None:
     os_.save_state()
 
 
+def in_media_folder(os_: Zenith, path: Path) -> bool:
+    """Is this inside Work/Content, the folder ./os never files or reads?"""
+    shelf = (os_.root / os_.bucket_for_role("project") / MEDIA_FOLDER).resolve()
+    return shelf == path or shelf in path.parents
+
+
+def footage_note(os_: Zenith, target: Path) -> tuple[Path, dict]:
+    """Write a note in Notes that says where a big file lives, and file it.
+
+    Saved, a video used to be copied in whole, into Work/Content, where search
+    never looks: a 2 GB file twice on the disk, and `./os find` couldn't find
+    it. Now the video stays where it is, and this note is what search reads:
+    its name, the file's name, and the sentence and tags written into it. The
+    `lives:` line is how ./os check notices when the file isn't there any more.
+    The caller holds the lock, commits and rebuilds the list."""
+    inside = target == os_.root or os_.root in target.parents
+    lives = where_said(os_, target)
+    files = [target] if target.is_file() else \
+        [p for p in own_paths(target) if p.is_file() and not ignored(p)]
+    try:
+        size = human_size(sum(p.stat().st_size for p in files))
+    except OSError:
+        size = ""
+    video = bool(files) and all(p.suffix.lower() in VIDEO_SUFFIXES for p in files)
+    what = ("A folder of footage" if target.is_dir() else "A video") if video else \
+        ("A big folder" if target.is_dir() else "A big file")
+    title = titleize(target.stem if target.is_file() else target.name)
+    where = (f"It is in {os_.rel(target.parent)}, which ./os leaves alone." if inside else
+             "It stays where it is, outside this folder. Nothing was copied in.")
+    # Its subject comes from its name alone: the folders on the way to it
+    # (Movies, Downloads, a user name) say nothing about what it is.
+    domain = Classifier(os_).score_domain(title, f"{title} {target.name}", target.suffix)[0]
+    # Shown with ~ for the home folder, so it reads as a place and not code.
+    home = str(Path.home())
+    shown = "~" + lives[len(home):] if not inside and lives.startswith(home + os.sep) else lives
+    meta = {"title": title, "type": "note", "domain": domain or "general",
+            "tags": ["video"] if video else [],
+            "summary": f"{what} kept at {shown}", "lives": lives}
+    body = (f"# {title}\n\n{what}. {where}\n\n"
+            f"- Where it lives: {shown}\n"
+            f"- File: {target.name}" + (f" ({size})" if size else "") + "\n"
+            "- What it is: not written yet\n")
+    staged = unique_path(Creator(os_).stage() / f"{slugify(title) or 'footage'}.md")
+    write_text(staged, compose(meta, body))
+    return Sorter(os_).file_one(staged)
+
+
+def where_said(os_: Zenith, path: Path) -> str:
+    """Where a file lives, as a `lives:` line says it: inside this folder
+    from its top, so the line still holds when the folder moves."""
+    return os_.rel(path) if path == os_.root or os_.root in path.parents else str(path)
+
+
+def save_footage(os_: Zenith, target: Path, as_json: bool) -> int:
+    """`./os save` for a video, or anything too big to read: a note that says
+    where it lives, and the file itself left alone."""
+    said = where_said(os_, target)
+    # Saved twice, it is the same file: say where the note already is.
+    known = next((it for it in Scanner(os_).scan()
+                  if it.lives == said and it.kind in ("note", "project")), None)
+    if known is not None:
+        if as_json:
+            print(json.dumps({"saved": os_.rel(known.path), "id": known.ident, "kind": known.kind,
+                              "title": known.title, "filed": True, "lives": said,
+                              "copied": False, "already": True}, indent=2))
+            return 0
+        Out.title("already written down")
+        Out.ok(known.title)
+        Out.note(f"the note that says where it lives is {os_.rel(known.path)}")
+        Out.raw()
+        return 0
+    with Lock(os_, "save"):
+        dest, verdict = footage_note(os_, target)
+        os_.commit("save")
+        Indexer(os_).build()
+    if dest is None:
+        die("I could not write the note for it — nothing was changed")
+    return said_footage(os_, dest, verdict, target, as_json, copied=False)
+
+
+def said_footage(os_: Zenith, dest: Path, verdict: dict, lives: Path, as_json: bool,
+                 copied: bool) -> int:
+    """What `./os save` says once a note for a big file is filed."""
+    said = where_said(os_, lives)
+    if as_json:
+        print(json.dumps({"saved": os_.rel(dest), "id": dest.stem, "kind": verdict["kind"],
+                          "title": verdict["title"], "filed": True, "lives": said,
+                          "copied": copied}, indent=2))
+        return 0
+    Out.title("saved")
+    Out.ok(verdict["title"])
+    if in_media_folder(os_, lives):
+        Out.note(f"{'copied into' if copied else 'it is in'} {said} — ./os leaves that folder alone")
+    else:
+        Out.note(f"left where it is: {said} — nothing was copied in")
+    Out.note(f"a note that says where it lives is in {os_.rel(dest)}")
+    Out.note(f"say what it is in a sentence, and add a few tags:  ./os edit {handle(dest.stem)}")
+    Out.note("wrong spot?  ./os undo")
+    Out.raw()
+    return 0
+
+
 def decision_home(os_: Zenith, text: str) -> Item | None:
     """The item a decision names, when it names one.
 
@@ -7950,6 +8078,9 @@ def bring_in_what_links_point_at(original: Path, copy: Path, home: Path) -> list
 def cmd_save(os_: Zenith, argv: list[str]) -> int:
     """Write something down and put it where it belongs, in one step."""
     as_json = _flag(argv, "--json")
+    # A video, or anything too big to read, is left where it is unless they
+    # asked for a copy in here: see footage_note.
+    copy_in = _flag(argv, "--copy")
     src = _opt(argv, "--file")
     typed = ""      # the words themselves, when words are what was saved
     pointers: list = []     # shortcuts in a saved folder still pointing outside it
@@ -8000,11 +8131,22 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
             # A folder dropped there goes into its bucket under its own name,
             # and what is in it is filed from there: sort does all of that.
             die(f"{resolved.name} is already in this folder — ./os sort files it")
+        elif in_media_folder(os_, resolved) and in_media_folder(os_, resolved.parent):
+            # Already in Work/Content, which search never reads: saved by its
+            # path, it gets a note that says it's there, and stays put.
+            return save_footage(os_, resolved, as_json)
         elif resolved == os_.root or os_.root in resolved.parents:
             die(f"{os_.rel(resolved)} is already in this folder — "
                 "nothing to bring in")
         if resolved in os_.root.parents:
             die("that is a folder this one lives inside — pick something smaller")
+        if landed is None and not copy_in and big_media(os_, resolved):
+            # Footage, or anything too big to read, stays where it is. A copy
+            # doubled it on the disk, into a folder search never reads; the
+            # note is what search finds. --copy brings it into Work/Content.
+            # 100 MB is the folder's own line for too big to read (big_file_mb
+            # in .os/config.json), the same one sort uses for Work/Content.
+            return save_footage(os_, resolved, as_json)
         if landed is None:
             landed = unique_path(Creator(os_).stage() / path.name)
             try:
@@ -8076,8 +8218,15 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
     with Lock(os_, "save", safe="what you typed is safe in "
               + os_.rel(landed) + " — ./os sort files it when the other run is done"):
         dest, verdict = Sorter(os_).file_one(landed)
+        # Brought in with --copy, it goes to Work/Content, where search never
+        # looks: a note in Notes says it's there. One step, so one undo.
+        footage = None
+        if copy_in and dest is not None and in_media_folder(os_, dest.resolve()):
+            footage = footage_note(os_, dest.resolve())
         os_.commit("save")
         Indexer(os_).build()
+    if footage is not None and footage[0] is not None:
+        return said_footage(os_, footage[0], footage[1], dest.resolve(), as_json, copied=True)
 
     if dest is None:
         die("I could not work out where that goes — it is safe in " + os_.rel(landed)
@@ -10594,11 +10743,13 @@ DETAIL = {
              "Write something down. It works out what it is and puts it in the right "
              "folder straight away — you never pick one. Start with the name of "
              "work you already have, and the rest becomes its next action, or, for "
-             "something you keep up, goes under Keeps coming back. Video, "
-             "and anything bigger than 100 MB, goes to Work/Content, which ./os "
-             "leaves alone.",
+             "something you keep up, goes under Keeps coming back. A video, "
+             "or anything bigger than 100 MB, stays where it is: a note in Notes "
+             "says where it lives, and that note is what search finds. --copy "
+             "puts a copy in Work/Content too, which ./os leaves alone.",
              ['os save "the boiler cuts out every night"',
-              "os save ~/Downloads/boiler-manual.pdf"],
+              "os save ~/Downloads/boiler-manual.pdf",
+              "os save ~/Movies/garden-timelapse.mov"],
              "Wrong place? ./os undo puts it back, every time."),
     "new": ('os new <work|ongoing|note|learning|skill|agent> "<name>"',
             "Start something from a blank template, already named and stamped. "
@@ -10968,7 +11119,7 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_release": set(),
     "cmd_rename": set(),
     "cmd_review": {"--json"},
-    "cmd_save": {"--file", "--json"},
+    "cmd_save": {"--copy", "--file", "--json"},
     "cmd_setup": {"--name", "--owner", "--quiet-welcome"},
     "cmd_show": set(),
     "cmd_sort": {"--dry-run", "--json", "-n"},

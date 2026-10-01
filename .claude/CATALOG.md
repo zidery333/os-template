@@ -39,6 +39,7 @@ These run on their own. You never call them.
 | --- | --- |
 | `keep-the-record.sh` | Asks you first when a rewrite would lose decisions or log lines. |
 | `mark-dirty.sh` | Notices when a file changed. |
+| `plain-words.sh` | After each reply, catches stuffy words and has them said again plainly. |
 | `session-start.sh` | Tells your AI where things stand, before you say anything. |
 | `settle.sh` | Re-reads the folder when you stop typing, so search stays current. |
 

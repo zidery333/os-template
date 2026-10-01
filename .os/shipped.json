@@ -115,7 +115,8 @@
       "42a6148b771dcdedcfd6b0db42e4bf8c3ccded83",
       "ae0d5e3192accff7d7634b02ba5d11a9243ae57b",
       "6fe46721e318717b775481de9f383fc554754d43",
-      "8f5181c79ccb7c78873357687d495598f7fec33b"
+      "8f5181c79ccb7c78873357687d495598f7fec33b",
+      "c9fe50a4823f8be584622eca89e72f51f9ff02ca"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
@@ -136,7 +137,8 @@
       "36b2202ca981f6e500993c757b2f5a13f5675390",
       "f5dac18d51569a6fe05bce8ff5e1ef41dabbbf33",
       "05c5380fceed41979da1084bd54f797b156f0efd",
-      "ff08376da471c70558f7e71ce060e8c7084c0ca3"
+      "ff08376da471c70558f7e71ce060e8c7084c0ca3",
+      "514e772c224b7f29c7e5f5d77403734a45c4d772"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540"
@@ -144,10 +146,12 @@
     ".os/upgrade.py": [
       "b02cb5841cb06fe71994843ae60e0f459e197d38",
       "019cc47636454d0117d43d3800524d707ec790aa",
-      "2f3057e0ad322a5699c44c611b12f8ca4ee9ac95"
+      "2f3057e0ad322a5699c44c611b12f8ca4ee9ac95",
+      "bf37f3650e115e8553f2db9bc8433bc042809f40"
     ],
     ".claude/settings.json": [
-      "549c7cdfc1efeb7e3a7af4e220add26b636197cc"
+      "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
+      "48ef7c6634aaae040d1a31968e3e5db58fab14c6"
     ],
     ".gitignore": [
       "110cb56982daa3818afbb83c42b9ac5d6a966009",
@@ -155,6 +159,15 @@
     ],
     ".claude/hooks/keep-the-record.sh": [
       "35ba9345866878510b97c336aee5aa1bdc45048b"
+    ],
+    ".claude/hooks/plain-words.sh": [
+      "e17a4a696afd62ae01743f6b19c83aae9dd9e42c"
+    ],
+    ".claude/hooks/plain-words.tsv": [
+      "6073a3e562fb84b1986f331e4c08ab742f7a85e4"
+    ],
+    ".claude/output-styles/plain-words.md": [
+      "b668a836a6b81808f416024b0b3afeece15b50c4"
     ]
   },
   "keywords": {
@@ -218,7 +231,7 @@
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-01.4",
+  "release": "2026-10-01.5",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
@@ -302,5 +315,11 @@
   },
   "taglines": [
     "One folder for your notes, plans and files."
+  ],
+  "settings_keys": [
+    "$schema",
+    "autoMemoryEnabled",
+    "outputStyle",
+    "permissions"
   ]
 }

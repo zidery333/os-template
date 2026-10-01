@@ -94,9 +94,12 @@ def test(fn):
 class Sandbox:
     """A complete, isolated copy of the OS."""
 
+    #: `.lock` too: copied while a real ./os was running in the folder under
+    #: test, commands in the copy waited on a run that wasn't theirs, and gave
+    #: up if it ran long, so a check could fail only because of when it ran.
     SKIP = {"Work", "Notes", "Archive",
             "backups", "cache", "transcripts", "__pycache__",
-            "registry.json", "state.json", "INDEX.md", ".git"}
+            "registry.json", "state.json", "INDEX.md", ".git", ".lock"}
 
     def __init__(self, name: str = "zenith-test"):
         self.tmp = Path(tempfile.mkdtemp(prefix=name + "-"))
@@ -507,6 +510,177 @@ def test_settings_and_hooks_are_wired(t: Case) -> None:
 
 
 @test
+def test_replies_are_checked_for_plain_words(t: Case) -> None:
+    """The plain-words style and the check after each reply came with the old
+    layout and never shipped with this one: the build took `outputStyle` out
+    of the settings, since the style named the workshop it was made in.
+
+    Now the style ships, points at the word list beside the check, and asks
+    for the reply shape AGENTS.md asks for. The check sends a stuffy word back
+    as feedback, never as a block, and stays quiet when it can't run."""
+    root = t.box.root
+    settings = json.loads((root / ".claude" / "settings.json").read_text())
+    style = root / ".claude" / "output-styles" / "plain-words.md"
+    hooks = root / ".claude" / "hooks"
+    if as_downloaded():
+        text = style.read_text(encoding="utf-8")
+        meta, body = engine.parse_frontmatter(text)
+        t.eq(settings.get("outputStyle"), meta.get("name"), "settings pick the style that ships")
+        t.ok("`.claude/hooks/plain-words.tsv`" in body and (hooks / "plain-words.tsv").is_file(),
+             "the style points at the word list where it ships")
+        # Spelled in pieces: the release stops on any file that names it.
+        for word in ("Template " + "Creator", "os" + "template", "Work/", "machinery"):
+            t.ok(word not in text, f"and names nothing of the folder it was made in: {word}")
+        rules = (root / "AGENTS.md").read_text(encoding="utf-8")
+        t.ok("bullet points that are questions" in rules and "bullet points that are questions" in body,
+             "it asks for AGENTS.md's reply shape: a paragraph, details, then questions")
+        t.ok("No headings, tables, or bullet lists" not in body, "and no longer forbids the bullets")
+    stops = [h for g in settings["hooks"].get("Stop", []) for h in g.get("hooks", [])
+             if "plain-words.sh" in h.get("command", "")]
+    t.eq(len(stops), 1, "the check runs once after each reply")
+    t.ok(not stops[0].get("async") and stops[0].get("timeout"),
+         "waited for, so its note arrives, and never for long")
+
+    t.box.run("index", "--quiet")
+    catalog = (root / ".claude" / "CATALOG.md").read_text(encoding="utf-8")
+    t.ok("`plain-words.sh`" in catalog and "`plain-words.tsv`" not in catalog,
+         "the check is listed with what runs on its own, and its word list isn't")
+
+    # A list of its own, so a word they took out of theirs can't fail this.
+    (hooks / "plain-words.tsv").write_text("# test\nleverage\tuse\nin order to\tto\n", encoding="utf-8")
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+
+    def check(payload, **more) -> tuple[int, str]:
+        proc = subprocess.run(["bash", str(hooks / "plain-words.sh")],
+                              input=payload if isinstance(payload, str) else json.dumps(payload),
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env=dict(env, **more), timeout=30)
+        return proc.returncode, proc.stdout.strip()
+
+    code, said = check({"last_assistant_message": "We should leverage this, in order to win."})
+    t.eq(code, 0, "the check never fails a chat")
+    out = json.loads(said)["hookSpecificOutput"]
+    t.eq(out["hookEventName"], "Stop", "a stuffy word goes back as feedback after the reply")
+    t.ok("leverage" in out["additionalContext"] and "in order to" in out["additionalContext"],
+         f"naming each word and what to say instead: {out['additionalContext']}")
+    t.ok('"decision"' not in said, "and it is not a block, which shows as a hook error")
+    quiet = {
+        "the rewrite itself": {"last_assistant_message": "we should leverage this", "stop_hook_active": True},
+        "a word in backticks": {"last_assistant_message": "the list has `leverage` in it"},
+        "a word in quote marks": {"last_assistant_message": 'it said "leverage" once'},
+        "a plain reply": {"last_assistant_message": "how a delta forms where the river meets the sea"},
+        "nothing at all": {},
+    }
+    for why, payload in quiet.items():
+        t.eq(check(payload), (0, ""), f"quiet for {why}")
+    t.eq(check("}{ not json"), (0, ""), "quiet for something it can't read")
+    t.eq(check({"last_assistant_message": "leverage"}, OS_PRETEND_NO_PYTHON="1"), (0, ""),
+         "quiet with no python3 to read the reply")
+    t.eq(check({"last_assistant_message": "leverage"}, OS_PLAIN_CHECK="off"), (0, ""),
+         "quiet when switched off")
+
+    # A Claude Code that doesn't send the reply: it's read from the chat record.
+    record = t.box.tmp / "chat.jsonl"
+    record.write_text("\n".join(json.dumps(line) for line in (
+        {"type": "user", "message": {"role": "user", "content": "how do I start?"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Run it once."}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Now leverage the list."}]}},
+    )) + "\n", encoding="utf-8")
+    code, said = check({"transcript_path": str(record)})
+    t.ok(code == 0 and "leverage" in said, f"the last reply is read from the chat record: {said}")
+
+    (hooks / "plain-words.tsv").unlink()
+    t.eq(check({"last_assistant_message": "leverage"}), (0, ""), "quiet with no word list")
+
+    # It ships, and an update brings it.
+    import upgrade
+    t.ok({"plain-words.sh", "plain-words.tsv"} <= set(upgrade.SHIPPED_HOOKS)
+         and "plain-words.md" in upgrade.SHIPPED_STYLES, "the check, its list and the style ship")
+    release = next(iter(sorted((SOURCE / "Work").glob("*/release-os.sh"))), None)
+    if release:
+        script = release.read_text(encoding="utf-8")
+        t.ok('settings.pop("outputStyle"' not in script and "SHIPPED_STYLES" in script,
+             "the build keeps outputStyle and copies the style")
+
+
+@test
+def test_an_update_brings_the_reply_style_and_keeps_their_settings(t: Case) -> None:
+    """A folder from before the style shipped gets it, its word list, the
+    check and the two settings that switch them on. What they changed in
+    their settings stays, and a setting they take out stays out."""
+    root = t.box.root
+    hooks, styles = root / ".claude" / "hooks", root / ".claude" / "output-styles"
+    shipped = {p: p.read_bytes() for p in (hooks / "plain-words.sh", hooks / "plain-words.tsv",
+                                           styles / "plain-words.md", root / ".claude" / "settings.json")}
+
+    # As an earlier release had it: no style, no list, no check.
+    for p in (hooks / "plain-words.sh", hooks / "plain-words.tsv", styles / "plain-words.md"):
+        p.unlink()
+
+    def older(conf: dict) -> None:
+        conf.pop("outputStyle", None)
+        conf["hooks"]["Stop"] = [g for g in conf["hooks"]["Stop"] if "plain-words" not in json.dumps(g)]
+    _edit_json(root / ".claude" / "settings.json", older)
+    _release(root, "2026-01-01.1")
+    # Its record of what it was given can't name what it never had. In a
+    # copy that is a release already, the record knows the new ones too.
+    import hashlib
+    had = hashlib.sha1((root / ".claude" / "settings.json").read_bytes()).hexdigest()
+
+    def never_had(d: dict) -> None:
+        d["settings_keys"] = [k for k in d.get("settings_keys") or [] if k != "outputStyle"]
+        for rel in (".claude/hooks/plain-words.sh", ".claude/hooks/plain-words.tsv",
+                    ".claude/output-styles/plain-words.md"):
+            d["files"].pop(rel, None)
+        d["files"][".claude/settings.json"] = [had]
+    _edit_json(root / ".os" / "shipped.json", never_had)
+
+    # Theirs: a setting and a hook of their own.
+    (hooks / "my-stop.sh").write_text("#!/bin/sh\nexit 0\n")
+    (hooks / "my-stop.sh").chmod(0o755)
+
+    def theirs(conf: dict) -> None:
+        conf["env"] = {"MY_THING": "1"}
+        conf["hooks"]["Stop"].append({"hooks": [{"type": "command",
+                                                 "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/my-stop.sh\""}]})
+    _edit_json(root / ".claude" / "settings.json", theirs)
+
+    def bring_back(out: Path) -> None:
+        for p, data in shipped.items():
+            dest = out / p.relative_to(root)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        (out / ".claude" / "hooks" / "plain-words.sh").chmod(0o755)
+        (out / ".claude" / "hooks" / "my-stop.sh").unlink(missing_ok=True)
+    published = _publish(t, "2026-02-01.1", bring_back)
+    done = t.box.run("update", "--from", str(published))
+    conf = json.loads((root / ".claude" / "settings.json").read_text())
+    t.eq(conf.get("outputStyle"), "Plain words", f"the style is switched on\n{done.stdout}")
+    stop = json.dumps(conf["hooks"].get("Stop"))
+    t.ok("plain-words.sh" in stop and "my-stop.sh" in stop and "settle.sh" in stop,
+         f"the check is added beside their own hook\n{stop}")
+    t.eq(stop.count("settle.sh"), 1, "and nothing is added twice")
+    t.eq(conf.get("env"), {"MY_THING": "1"}, "their own setting is kept")
+    for p in (hooks / "plain-words.sh", hooks / "plain-words.tsv", styles / "plain-words.md"):
+        t.ok(p.is_file(), f"{p.name} arrives")
+    t.ok(os.access(hooks / "plain-words.sh", os.X_OK), "and the check can run")
+    t.eq(list((root / ".os" / "upgrades").rglob("*.*")) if (root / ".os" / "upgrades").exists() else [], [],
+         "nothing is left to merge by hand")
+
+    # They switch the style off. The next update leaves it off.
+    _edit_json(root / ".claude" / "settings.json", lambda c: c.pop("outputStyle"))
+    # One that changes the settings too, so theirs are merged again.
+    again = _publish(t, "2026-03-01.1", lambda out: _edit_json(
+        out / ".claude" / "settings.json", lambda c: c["permissions"]["allow"].append("Bash(./os find:*)")),
+        base=published)
+    t.box.run("update", "--from", str(again))
+    conf = json.loads((root / ".claude" / "settings.json").read_text())
+    t.ok("Bash(./os find:*)" in conf["permissions"]["allow"], "the newer settings were merged in")
+    t.ok("outputStyle" not in conf, "and a setting they took out stays out")
+
+
+@test
 def test_replacing_a_record_whole_asks_first(t: Case) -> None:
     """## Decisions and ## Log only ever grow, but that was only words.
 
@@ -556,8 +730,8 @@ def test_replacing_a_record_whole_asks_first(t: Case) -> None:
     t.eq([g.get("matcher") for g in groups], ["Write"], "it is wired to Write alone")
 
     # It ships, and an updated folder gets it too.
-    lists = [re.search(r"^SHIPPED_HOOKS = \((.*?)\)",
-                       (root / ".os" / "upgrade.py").read_text(), re.M).group(1)]
+    lists = [re.search(r"^SHIPPED_HOOKS = \((.*?)\)\n",
+                       (root / ".os" / "upgrade.py").read_text(), re.M | re.S).group(1)]
     # release-os.sh reads upgrade.py's list; one of its own would have to agree.
     # Found without its folder's name, which the release's own scan stops on.
     release = next(iter(sorted((SOURCE / "Work").glob("*/release-os.sh"))), None)
@@ -2903,7 +3077,7 @@ def test_check_finds_real_problems(t: Case) -> None:
     t.box.run("check", "--fix", expect=1)   # still 1: the planted errors need judgement
     t.ok(not (t.box.root / "Notes").exists(),
          "--fix makes no empty folder: Notes/ comes back when something goes in it")
-    for hook in (t.box.root / ".claude" / "hooks").iterdir():
+    for hook in (t.box.root / ".claude" / "hooks").glob("*.sh"):
         t.ok(os.access(hook, os.X_OK), f"--fix made {hook.name} executable again")
 
 
@@ -3231,7 +3405,8 @@ def test_it_repairs_itself_after_a_bad_unzip(t: Case) -> None:
     silently, which is the worst possible first five seconds. Running it by any
     other route has to put that right permanently."""
     launcher = t.box.root / "os"
-    hooks = sorted((t.box.root / ".claude" / "hooks").iterdir())
+    # The scripts: the word list beside them is read, never run.
+    hooks = sorted(h for h in (t.box.root / ".claude" / "hooks").iterdir() if h.suffix == ".sh")
     for f in [launcher, *hooks]:
         f.chmod(0o644)
     t.ok(not os.access(launcher, os.X_OK), "the executable bit really is gone")
@@ -9341,23 +9516,91 @@ def test_a_folder_named_in_ignore_is_left_alone(t: Case) -> None:
 
 
 @test
-def test_saved_footage_goes_to_the_media_folder(t: Case) -> None:
-    """AGENTS.md says big media lives in Work/Content, but `./os save` put 300 MB
-    of video in Notes beside the prose."""
-    clip = t.box.tmp / "GX010042.MP4"
+def test_saved_footage_stays_where_it_is(t: Case) -> None:
+    """Saved, a video was copied in whole, into Work/Content, where search
+    never looks: twice on the disk, and `./os find` couldn't find it. Now it
+    stays where it is, and a note in Notes says where it lives. That note is
+    what search reads. A copy in here takes --copy, and gets a note too."""
+    clip = t.box.tmp / "Camera" / "GX010042.MP4"
+    clip.parent.mkdir()
     clip.write_bytes(b"\x00" * 1024)
     said = t.box.run("save", str(clip))
-    t.ok((t.box.root / "Work" / "Content" / "GX010042.MP4").exists(), "footage goes to Work/Content")
-    t.ok("leaves them alone" in said.stdout, "and it says why")
-    t.ok(not list((t.box.root / "Notes").glob("gx010042*")), "not into Notes")
+    t.ok(clip.is_file(), "the video is still where it was")
+    t.ok(not (t.box.root / "Work" / "Content").exists()
+         and not [p for p in t.box.root.rglob("*") if p.name.lower().endswith(".mp4")],
+         "and no copy of it was made in here")
+    note = t.box.root / "Notes" / "gx010042.md"
+    t.ok(note.is_file(), f"a note says where it lives\n{said.stdout}")
+    meta, body = engine.parse_frontmatter(note.read_text(encoding="utf-8"))
+    t.eq(meta.get("lives"), str(clip.resolve()), "its lives: line is the video's own path")
+    t.eq(meta.get("type"), "note", "it is a note")
+    t.ok("What it is:" in body and "video" in (meta.get("tags") or []),
+         "with a sentence to write and a tag to start from")
+    t.ok("nothing was copied in" in said.stdout and "./os edit gx010042" in said.stdout,
+         f"it says it left the video alone, and how to fill the note in\n{said.stdout}")
+    for words in ("GX010042", "GX010042.MP4"):
+        found = [h["path"] for h in t.box.json("find", words)]
+        t.ok("Notes/gx010042.md" in found, f"search finds it by its file name, {words}: {found}")
+    # The words they write into it are found too.
+    note.write_text(note.read_text(encoding="utf-8").replace(
+        "What it is: not written yet", "What it is: the tomato beds being dug over"), encoding="utf-8")
+    t.box.run("index", "--quiet")
+    t.ok(any(h["path"] == "Notes/gx010042.md" for h in t.box.json("find", "tomato")),
+         "and by what is written in it")
+    again = t.box.run("save", str(clip))
+    t.ok("already written down" in again.stdout.lower() and not (t.box.root / "Notes" / "gx010042-2.md").exists(),
+         "saved again, it says where the note already is")
+    t.eq([i["code"] for i in t.box.json("doctor")["issues"] if i["code"] == "not-there"], [],
+         "check is quiet while the video is there")
+
+    # Moved or deleted, or on a drive not plugged in: check says so once, as
+    # a hint, and changes nothing.
+    clip.rename(clip.with_name("moved.mp4"))
+    before = note.read_text(encoding="utf-8")
+    issues = [i for i in t.box.json("doctor")["issues"] if i["code"] == "not-there"]
+    t.eq([i["level"] for i in issues], ["hint"], "a note pointing at nothing is a quiet hint")
+    t.ok("GX010042" in issues[0]["message"] and "isn't plugged in" in issues[0]["message"],
+         f"that names where it pointed, honestly: {issues[0]['message']}")
+    t.box.run("check", "--fix", expect=None)
+    t.eq(note.read_text(encoding="utf-8"), before, "and nothing is changed for it")
+    t.ok("needs fixing" not in t.box.run().stdout, "the front screen doesn't count it")
+
+    # Anything over the folder's size line is left where it is too.
     big = t.box.tmp / "export.zip"
     big.write_bytes(b"\x00" * 2048)
     config = json.loads((t.box.root / ".os" / "config.json").read_text())
     config.setdefault("thresholds", {})["big_file_mb"] = 0
     (t.box.root / ".os" / "config.json").write_text(json.dumps(config))
     t.box.run("save", str(big))
-    t.ok((t.box.root / "Work" / "Content" / "export.zip").exists(),
-         "so does anything bigger than big_file_mb")
+    t.ok(big.is_file() and (t.box.root / "Notes" / "export.md").is_file()
+         and not list(t.box.root.rglob("export.zip")),
+         "so is anything bigger than big_file_mb, with a note")
+
+    # Asked for, a copy goes in Work/Content, which ./os leaves alone, and
+    # the note points at the copy. One step, so one undo takes both back.
+    reel = t.box.tmp / "Holiday Reel.mov"
+    reel.write_bytes(b"\x00" * 512)
+    copied = t.box.json("save", str(reel), "--copy")
+    kept = t.box.root / "Work" / "Content" / "Holiday Reel.mov"
+    t.ok(kept.is_file() and reel.is_file(), f"--copy puts a copy in Work/Content\n{copied}")
+    t.eq(copied.get("lives"), "Work/Content/Holiday Reel.mov", "and the note points at the copy")
+    t.ok(copied.get("copied") is True, "and says it copied")
+    t.box.run("undo")
+    t.ok(not kept.exists() and not (t.box.root / copied["saved"]).exists(),
+         "one undo takes back the copy and its note")
+
+    # Footage already in Work/Content gets a note by its path, and stays put.
+    shelf = t.box.root / "Work" / "Content"
+    shelf.mkdir(parents=True, exist_ok=True)
+    (shelf / "drone-flyover.mp4").write_bytes(b"\x00" * 256)
+    done = t.box.json("save", "Work/Content/drone-flyover.mp4")
+    t.eq(done.get("lives"), "Work/Content/drone-flyover.mp4", "footage in Work/Content gets a note")
+    t.ok((shelf / "drone-flyover.mp4").is_file(), "and stays where it is")
+
+    # Nothing said to ask first, so an AI pulled footage in unasked.
+    rules = (t.box.root / "AGENTS.md").read_text(encoding="utf-8")
+    t.ok("Never bring a file in from elsewhere without asking" in rules and "--copy" in rules,
+         "AGENTS.md says to ask before bringing a file in, and how a copy is made")
 
 
 @test
@@ -9997,6 +10240,30 @@ def test_the_shipped_change_note_reads_right(t: Case) -> None:
     t.ok(all(h != engine.UNRELEASED for h, _ in entries[1:]), "only the top one is unreleased")
     stamps = [engine._release_key(h) for h, _ in entries if h != engine.UNRELEASED]
     t.eq(stamps, sorted(stamps, reverse=True), "newest first")
+
+
+@test
+def test_a_build_is_named_after_the_last_release(t: Case) -> None:
+    """`release-os.sh build` called what it built <today>.0, which sorts below
+    today's real releases, so the build's own check that the change note is
+    newest first failed. It is named the way a release is: the next number
+    after the last release made from here."""
+    release = next(iter(sorted((SOURCE / "Work").glob("*/release-os.sh"))), None)
+    if release is None:
+        t.ok(True, "only the workshop has the release script")
+        return
+    script = release.read_text(encoding="utf-8")
+    t.ok(".0\"" not in script, "nothing is named <today>.0 any more")
+    t.ok('next_release "$(release_in "$SRC/.os/shipped.json")"' in script,
+         "a build is named after the release this folder last made")
+    func = re.search(r"^next_release\(\) \{.*?^\}", script, re.M | re.S).group(0)
+    today = engine._dt.date.today().strftime("%Y-%m-%d")
+    yesterday = (engine._dt.date.today() - engine._dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    for last, want in ((f"{today}.4", f"{today}.5"), (f"{yesterday}.3", f"{today}.1"), ("", f"{today}.1")):
+        got = subprocess.run(["bash", "-c", func + '\nnext_release "$1"', "-", last],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        t.eq(got, want, f"after {last or 'nothing'} comes {want}")
+        t.ok(engine._release_key(got) > engine._release_key(last), "and it sorts after it")
 
 
 @test

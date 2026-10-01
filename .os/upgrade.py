@@ -12,7 +12,9 @@ Brings the machinery up to date and leaves the person's things alone:
     replaced   os · .os/engine.py · .os/learn.py · .os/upgrade.py · .os/templates/
                .os/tests/ · .os/CHANGES.md (what changed, in words: the
                entries newer than their version are printed at the end)
-               · the shipped skills, helpers and hooks in .claude/ · AGENTS.md
+               · the shipped skills, helpers, hooks and reply style in .claude/
+               (the plain-words style, its word list and the check that reads
+               it after each reply) · AGENTS.md
                — but a shipped file THEY edited is kept, and the new version set
                aside in .os/upgrades/<stamp>/ for them (or their AI) to merge. One
                they deleted stays deleted. A program file changed there and never
@@ -22,9 +24,10 @@ Brings the machinery up to date and leaves the person's things alone:
                the line under the folder's name in .os/config.json, when still
                as released
     merged     .os/config.json and .os/words.json (new settings added, theirs kept)
-               .claude/settings.json they changed (new template hooks and permission
-               rules added, a shipped hook as an older release wrote it renewed, theirs
-               kept) · .gitignore they changed (new lines added; one still as
+               .claude/settings.json they changed (new template hooks, permission
+               rules and settings like outputStyle added, a shipped hook as an older
+               release wrote it renewed, theirs kept; one a release gave them that
+               they took out stays out) · .gitignore they changed (new lines added; one still as
                released is replaced)
     kept       Work/ Notes/ Archive/ · state, snags, undo history · every skill,
                helper or hook that is theirs · CLAUDE.md and GEMINI.md (only made to
@@ -78,7 +81,13 @@ SETTINGS = ".claude/settings.json"
 SHIPPED_SKILLS = ("catchup", "commands", "decide", "find", "handoff", "learn",
                   "make-skill", "save", "tidy", "wrapup")
 SHIPPED_AGENTS = ("builder", "researcher", "reviewer", "student")
-SHIPPED_HOOKS = ("keep-the-record.sh", "mark-dirty.sh", "session-start.sh", "settle.sh")
+SHIPPED_HOOKS = ("keep-the-record.sh", "mark-dirty.sh", "session-start.sh", "settle.sh",
+                 # The check after each reply, and the list of words it looks
+                 # for. The list is theirs to add to: one they changed is kept.
+                 "plain-words.sh", "plain-words.tsv")
+#: How replies read: Claude Code's output style, picked by "outputStyle" in
+#: .claude/settings.json. It points at the word list above.
+SHIPPED_STYLES = ("plain-words.md",)
 
 #: The program itself: replaced every time, but recorded too, so `./os update`
 #: can tell a copy changed here and never published from an older release.
@@ -200,7 +209,8 @@ def record() -> int:
                          if f.is_file() and "__pycache__" not in f.parts)
     for rel in PROGRAM + GUARDED + [SETTINGS, ".gitignore"] + skill_files \
             + [f".claude/agents/{a}.md" for a in SHIPPED_AGENTS] \
-            + [f".claude/hooks/{h}" for h in SHIPPED_HOOKS]:
+            + [f".claude/hooks/{h}" for h in SHIPPED_HOOKS] \
+            + [f".claude/output-styles/{s}" for s in SHIPPED_STYLES]:
         src = TEMPLATE / rel
         if src.is_file():
             digest = sha1_unnamed(src)
@@ -225,6 +235,10 @@ def record() -> int:
     # And every permission rule ever released, so an update can tell a new
     # one (added) from one they took out (left out).
     data["rules"] = sorted(set(data.get("rules") or []) | set(released_rules(TEMPLATE / SETTINGS)))
+    # And every setting at the top of settings.json ever released, like
+    # outputStyle, so one they took out is not put back by the next update.
+    data["settings_keys"] = sorted(set(data.get("settings_keys") or [])
+                                   | {k for k in (read_theirs(TEMPLATE / SETTINGS) or {}) if k != "hooks"})
     release = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--release=")), "")
     if release:
         data["release"] = release
@@ -400,10 +414,11 @@ def released_rules(settings: Path) -> list:
 
 
 def merge_settings(target: Path, source: Path, given: dict | None = None,
-                   rules_given: set | None = None) -> list[str] | None:
+                   rules_given: set | None = None, keys_given: set | None = None) -> list[str] | None:
     """Template hooks added where missing; every hook of theirs kept. A hook
     this folder was given before and no longer has was taken out on purpose,
-    and stays out. None, and nothing written, when theirs can't be read."""
+    and stays out, and so does a setting (`keys_given`: every one released
+    to it). None, and nothing written, when theirs can't be read."""
     ours = json.loads(source.read_text())
     theirs = read_theirs(target)
     if theirs is None or not isinstance(theirs.get("hooks", {}), dict):
@@ -450,7 +465,7 @@ def merge_settings(target: Path, source: Path, given: dict | None = None,
                 added.append(f"{event}: {script}")
                 break
     for k, v in ours.items():
-        if k != "hooks" and k not in theirs:
+        if k != "hooks" and k not in theirs and k not in (keys_given or set()):
             theirs[k] = v
             added.append(k)
     target.write_text(json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
@@ -636,6 +651,7 @@ def main(argv: list[str]) -> int:
         stamp = f"{base}-{n}"
     backup = root / ".os" / "backups" / f"before-upgrade-{stamp}"
     to_back = MACHINERY + GUARDED + [".os/shipped.json", ".claude/skills", ".claude/agents", ".claude/hooks",
+                                     ".claude/output-styles",
                                      SETTINGS, ".os/config.json", ".os/words.json", "CLAUDE.md", "GEMINI.md",
                                      ".gitignore"]
     if not dry:
@@ -732,8 +748,11 @@ def main(argv: list[str]) -> int:
         guarded(f".claude/agents/{name}.md")
     for name in SHIPPED_HOOKS:
         guarded(f".claude/hooks/{name}")
+    for name in SHIPPED_STYLES:
+        guarded(f".claude/output-styles/{name}")
     say(f"  {'would replace' if dry else 'replaced'}  {len(fresh)} shipped file(s) still as released "
-        f"(the {len(SHIPPED_SKILLS)} skills, {len(SHIPPED_AGENTS)} helpers, {len(SHIPPED_HOOKS)} hooks, AGENTS.md); "
+        f"(the {len(SHIPPED_SKILLS)} skills, {len(SHIPPED_AGENTS)} helpers, {len(SHIPPED_HOOKS)} hooks, "
+        "the reply style, AGENTS.md); "
         "anything of your own is untouched")
     # A hook script is taken out by taking it out of settings.json. One still
     # run from there was deleted by accident, and is put back after step 3.
@@ -822,7 +841,8 @@ def main(argv: list[str]) -> int:
         elif sha1(src) in given.get(SETTINGS, []):
             say(f"  kept      {SETTINGS} (yours; the template's has nothing new)")
         else:
-            added = merge_settings(dst, src, given, set(before.get("rules") or []))
+            added = merge_settings(dst, src, given, set(before.get("rules") or []),
+                                   set(before.get("settings_keys") or []))
             if added is None:
                 unreadable(SETTINGS)
             else:
