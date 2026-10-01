@@ -3,6 +3,25 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-01.4
+
+- Something you keep up, like a garden or a hobby, no longer fills up with
+  boxes to tick. Start a save with its name and what you wrote goes under
+  "Keeps coming back" on it, as a plain line. Work you are pushing on still
+  gets it as the next thing to do.
+- `./os tidy` now asks about things you have been keeping up but haven't
+  touched in half a year: still keeping these up? It gives the line to type
+  for each answer. It is only a question, so `./os` and `./os check` never
+  call them stale.
+- With two chats open in one folder, one chat's `./os undo` no longer takes
+  back what the other one just did. It stops, says what the other chat did,
+  and tells you how to take it back anyway if you really mean to.
+- `./os undo` now says what it took back, like the note it removed or the
+  folder it moved back.
+- Lots of notes on one subject, like the garden, no longer end up in a
+  folder inside a folder called the very same thing. One sort made before
+  stays exactly where it is, with everything in it; new notes go beside it.
+
 ## 2026-10-01.3
 
 - Links between your notes keep working when things move. When sort tucks

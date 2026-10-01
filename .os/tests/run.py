@@ -1369,6 +1369,63 @@ def test_two_runs_at_once_keep_each_others_undo(t: Case) -> None:
 
 
 @test
+def test_one_chat_s_undo_never_takes_back_another_chat_s_note(t: Case) -> None:
+    """Two chats in one folder. One saved a note, the other said "undo that"
+    about something of its own, and the first chat's note went (stranger
+    test, 2026-09-30). Each step now says which chat made it, and undo stops
+    at another chat's, says what it was, and says how to take it back
+    anyway. A step with no chat on it, from before, still undoes."""
+    root = t.box.root
+    was = {v: os.environ.pop(v, None)
+           for v in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "TERM_SESSION_ID")}
+    try:
+        as_chat("chat-one")
+        t.box.run("save", "the shed door sticks in wet weather")
+        note = next(i for i in t.box.items() if "shed door" in i["title"].lower())
+        state = json.loads((root / ".os" / "state.json").read_text())
+        t.eq(state["undo"][-1].get("chat"), "chat-one", "the step says which chat made it")
+
+        as_chat("chat-two")
+        stopped = t.box.run("undo", expect=1)
+        t.ok("another chat" in stopped.stdout, f"the other chat's undo stops:\n{stopped.stdout}")
+        t.ok(f"saved {note['path']}" in stopped.stdout, "and says what that chat did")
+        t.ok("./os undo --other-chat" in stopped.stdout, "and how to take it back anyway")
+        t.ok((root / note["path"]).exists(), "and the note is still there")
+
+        as_chat("chat-one")
+        mine = t.box.run("undo")
+        t.ok(f"took back: saved {note['path']}" in mine.stdout,
+             f"the chat that made it can undo it, and is told what went:\n{mine.stdout}")
+        t.ok(not (root / note["path"]).exists(), "and it goes")
+
+        t.box.run("new", "work", "Paint the fence")
+        as_chat("chat-two")
+        forced = t.box.run("undo", "--other-chat")
+        t.ok("took back: made Work/Paint the Fence" in forced.stdout,
+             f"--other-chat takes it back all the same:\n{forced.stdout}")
+
+        # A step written before chats were told apart, and one made where no
+        # chat has an id: neither stops anybody.
+        as_chat("chat-one")
+        t.box.run("new", "work", "Sweep the chimney")
+        state = json.loads((root / ".os" / "state.json").read_text())
+        state["undo"][-1].pop("chat", None)
+        (root / ".os" / "state.json").write_text(json.dumps(state))
+        as_chat("chat-two")
+        t.ok("took back" in t.box.run("undo").stdout, "an old step with no chat on it still undoes")
+        as_chat("chat-one")
+        t.box.run("new", "work", "Clear the gutters")
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        t.ok("took back" in t.box.run("undo").stdout,
+             "and so does a run that can't tell which chat it is")
+    finally:
+        for var, value in was.items():
+            os.environ.pop(var, None)
+            if value is not None:
+                os.environ[var] = value
+
+
+@test
 def test_a_sort_stopped_partway_can_still_be_undone(t: Case) -> None:
     """Ctrl-C during a sort said "./os undo still works", but the moves made
     before it were only written down when the run finished. Undo then reversed
@@ -3093,6 +3150,54 @@ def test_tidy_reports_decay(t: Case) -> None:
 
 
 @test
+def test_tidy_asks_about_held_work_nobody_has_touched_in_half_a_year(t: Case) -> None:
+    """Something held is never nagged, and so it never came back up at all,
+    even a year on (stranger test, 2026-09-30). The weekly pass asks once:
+    still keeping these up? It is a question, not a fault, so ./os and
+    ./os check stay quiet about it and the health score doesn't move."""
+    root = t.box.root
+    for name in ("Keep the pond clean", "Practise the piano"):
+        t.box.run("new", "ongoing", name)
+    t.box.run("index")
+
+    def backdate(title: str, day: str) -> Path:
+        item = next(i for i in t.box.items() if i["title"] == title)
+        spine = root / item["path"] / "README.md"
+        meta, body = engine.parse_frontmatter(spine.read_text())
+        meta["updated"] = meta["created"] = day
+        spine.write_text(engine.compose(meta, body))
+        return spine
+
+    before = t.box.json("check", expect=None)
+    pond = backdate("Keep the pond clean", "2025-06-01")
+    backdate("Practise the piano", (engine._dt.date.today()
+                                    - engine._dt.timedelta(days=100)).isoformat())
+    report = t.box.json("tidy")
+    t.eq([r["title"] for r in report["still_keeping"]], ["Keep the pond clean"],
+         "held work untouched for 180 days is asked about, and only that")
+    t.eq(report["stale"] + report["archive_candidates"], [], "it isn't called stale")
+    tidy = t.box.run("tidy").stdout
+    t.ok("STILL KEEPING THESE UP?" in tidy, f"tidy asks the question:\n{tidy}")
+    t.ok("./os hold keep-the-pond-clean" in tidy and "./os close keep-the-pond-clean" in tidy,
+         "with the line to type for each answer")
+    t.ok("nothing stale, nothing stuck" not in tidy, "and doesn't say all is well under it")
+
+    after = t.box.json("check", expect=None)
+    t.eq(after["score"], before["score"], "the health score doesn't move")
+    t.ok(not any("pond" in i["message"].lower() for i in after["issues"]),
+         "./os check says nothing about it")
+    t.ok("pond" not in t.box.run().stdout.lower().split("keeping level")[0]
+         and "haven't touched" not in t.box.run().stdout,
+         "and ./os doesn't list it as gone quiet")
+
+    t.box.run("hold", "Keep the pond clean")
+    t.eq(t.box.json("tidy")["still_keeping"], [], "./os hold says it is still kept up")
+    pond = backdate("Keep the pond clean", "2025-06-01")
+    pond.write_text(pond.read_text().rstrip("\n") + f"\n- {engine.today()} — cleared the weed\n")
+    t.eq(t.box.json("tidy")["still_keeping"], [], "and so does a Log line dated today")
+
+
+@test
 def test_a_log_line_written_by_hand_counts_as_a_touch(t: Case) -> None:
     """AGENTS.md and /wrapup have the Log line written by hand, and only ./os
     commands change `updated:`. Work done today was still called quiet."""
@@ -3756,6 +3861,50 @@ def test_saved_work_that_names_work_is_its_next_step(t: Case) -> None:
 
 
 @test
+def test_words_saved_about_something_kept_up_never_become_a_to_do(t: Case) -> None:
+    """Held work has no next action. "Garden Upkeep: mow the lawn" was
+    written onto it as a box to tick, and so was a note about how the roses
+    did, so something kept up filled with to-dos (stranger test, 2026-09-30).
+    They go under Keeps coming back, still on the item they name."""
+    root = t.box.root
+    t.box.run("new", "ongoing", "Garden Upkeep")
+    readme = root / "Work" / "Garden Upkeep" / "README.md"
+    said = t.box.run("save", "Garden Upkeep: mow the lawn")
+    t.ok("Keeps coming back" in said.stdout, f"it says where the words went:\n{said.stdout}")
+    t.box.run("save", "Garden upkeep - the roses did well this year")
+    text = readme.read_text()
+    kept = text.split("## Keeps coming back", 1)[1].split("\n## ", 1)[0]
+    t.ok("- Mow the lawn\n" in kept and "- The roses did well this year\n" in kept,
+         f"both are under Keeps coming back:\n{kept}")
+    t.ok("[ ]" not in kept, "as plain lines, with the template's empty box filled, not kept")
+    t.ok("## Next action" not in text, "and no next action is made")
+    t.ok(text.index("## Keeps coming back") < text.index("## Decisions"),
+         "the section stays above Decisions")
+    t.eq(len([i for i in t.box.items() if "garden" in i["title"].lower()]), 1,
+         "and there is still only one Garden Upkeep")
+
+    # Held work that has no such section yet gets one, in the right place.
+    t.box.run("new", "work", "Bike Care")
+    t.box.run("hold", "Bike Care")
+    bike = root / "Work" / "Bike Care" / "README.md"
+    t.box.run("save", "Bike care: oil the chain")
+    text = bike.read_text()
+    t.ok("## Keeps coming back\n- Oil the chain\n" in text, f"the section is made:\n{text}")
+    t.ok(text.index("## Keeps coming back") < text.index("## Decisions")
+         < text.index("## Log"), "before Decisions and Log")
+    t.ok("[ ] Oil the chain" not in text, "and it is not a next action")
+
+    # Pushed work still gets its next action, as before.
+    t.box.run("push", "Bike Care")
+    t.box.run("save", "Bike care: buy new brake pads")
+    t.ok("- [ ] Buy new brake pads" in bike.read_text(), "pushed work still gets a box to tick")
+    t.box.run("undo")
+    t.box.run("undo")
+    t.ok("Oil the chain" in bike.read_text() and "brake pads" not in bike.read_text(),
+         "and undo takes each one back in turn")
+
+
+@test
 def test_everyday_ways_of_naming_work_reach_it(t: Case) -> None:
     """Only "Name: step" reached the work. "Name - step", "Name, step", the
     bare name, a plural and a name typed without its accent each made a second
@@ -3772,8 +3921,12 @@ def test_everyday_ways_of_naming_work_reach_it(t: Case) -> None:
             ("Garden Upkeep: mow the lawn", "Garden Upkeep", "Mow the lawn")):
         said = t.box.run("save", words)
         t.ok(where in said.stdout, f"{words!r} says it went to {where}")
-        t.ok(f"- [ ] {step}\n" in (t.box.root / "Work" / where / "README.md").read_text(),
-             f"{words!r} is a next action there")
+        readme = (t.box.root / "Work" / where / "README.md").read_text()
+        if where == "Garden Upkeep":    # held: what keeps coming back, not a next action
+            t.ok(f"- {step}\n" in readme.split("## Keeps coming back", 1)[-1].split("##", 1)[0],
+                 f"{words!r} is under Keeps coming back there")
+        else:
+            t.ok(f"- [ ] {step}\n" in readme, f"{words!r} is a next action there")
     bare = t.box.run("save", "Kitchen Renovation")
     t.ok("you already have Kitchen Renovation" in bare.stdout, "the bare name finds the one it names")
     t.eq(sorted(p.name for p in (t.box.root / "Work").iterdir()), before, "no second item is made")
@@ -5951,6 +6104,58 @@ def test_a_tag_never_names_a_folder_that_hides_what_is_in_it(t: Case) -> None:
     t.eq(len([i for i in t.box.items() if i["path"].startswith("Work/")]), 14,
          "and every one is still on the list")
     t.eq(len(t.box.json("find", "plum jam")), 14, "and found")
+
+
+@test
+def test_a_group_inside_a_group_never_takes_its_name(t: Case) -> None:
+    """Fourteen garden notes, each saying "garden" twice, so each tagged
+    `garden`, and sort put every one of them into Notes/Garden/Garden: a
+    folder inside one of the same name, holding all of them (found in a
+    blank copy, 2026-10-01). A group inside a group is only made when it
+    splits the notes: never after its parent, never holding all of them."""
+    root = t.box.root
+    jobs = ("tomatoes need staking", "roses want feeding", "compost the leaves",
+            "plant garlic in October", "prune the apple tree", "sow sweet peas in pots",
+            "scarify the lawn", "slugs ate the lettuce", "lift the dahlias before frost",
+            "water butts are full", "raspberries fruit on new canes",
+            "mulch the beds with bark", "cut the hedge in August", "grow beans up a wigwam")
+    for job in jobs:
+        t.box.run("save", f"Garden note: {job}. The garden looks good.")
+    t.box.run("sort")
+    garden = root / "Notes" / "Garden"
+    t.ok(garden.is_dir(), "the garden notes have a group of their own")
+    inside = sorted(p.name for p in garden.iterdir() if p.is_dir())
+    t.eq(inside, [], f"and no group inside it, let alone one called Garden: {inside}")
+    t.eq(len(list(garden.glob("*.md"))), len(jobs), "every note sits in Notes/Garden")
+    t.box.run("sort")
+    t.eq(sorted(p.name for p in garden.iterdir() if p.is_dir()), [],
+         "and a second sort leaves them there")
+
+    # Made by an earlier release: it stays exactly where it is, with what is
+    # in it. What a released engine filed is never moved (decided 2026-09-30).
+    nested = garden / "Garden"
+    nested.mkdir()
+    (nested / engine.CATEGORY_MARKER).write_text(json.dumps(
+        {"name": "Garden", "trail": ["Garden", "Garden"], "auto": True}))
+    old = sorted(garden.glob("*.md"))[:3]
+    for note in old:
+        note.rename(nested / note.name)
+    t.box.run("sort")
+    t.box.run("save", "Garden note: net the brassicas. The garden needs it.")
+    t.box.run("sort")
+    t.box.run("sort")
+    t.ok(all((nested / note.name).is_file() for note in old),
+         "a Garden inside Garden made before stays put, every note in it")
+    t.eq(len(list(garden.glob("*.md"))), len(jobs) - len(old) + 1,
+         "and new notes go to Notes/Garden beside it")
+
+    # A tag that splits them still makes a group inside, named after it.
+    for n, job in enumerate(("plant out the tomatoes", "pinch out the tomatoes",
+                             "feed the tomatoes", "pick the tomatoes")):
+        t.box.run("save", f"Garden tomatoes {n}: {job}, the tomatoes are doing well.")
+    t.box.run("sort")
+    t.eq(sorted(p.name for p in garden.iterdir() if p.is_dir()), ["Garden", "Tomatoes"],
+         "a tag only some of them have still groups those ones")
 
 
 @test
@@ -9968,6 +10173,51 @@ def test_update_brings_the_newest_version_and_keeps_theirs(t: Case) -> None:
     record(older, "--release=2025-12-01.1")
     back = t.box.run("update", "--from", str(older), expect=1)
     t.ok("newer than the published" in back.stderr, "going backwards takes --anyway")
+
+
+@test
+def test_a_group_an_earlier_release_nested_stays_put_after_an_update(t: Case) -> None:
+    """Notes/Garden/Garden was made by sort before 2026-10-01.4. Sort no longer
+    makes one, but what a released engine filed is never moved, renamed,
+    regrouped or rewritten by an update or by the sort after it (decided
+    2026-09-30). The folder, and every note in it, stays byte for byte."""
+    root = t.box.root
+    record = lambda where, *more: subprocess.run(
+        [sys.executable, str(where / ".os" / "upgrade.py"), "--record", *more],
+        capture_output=True, text=True, check=True)
+    for job in ("tomatoes need staking", "roses want feeding", "compost the leaves",
+                "plant garlic in October", "prune the apple tree", "sow sweet peas in pots",
+                "scarify the lawn", "slugs ate the lettuce", "lift the dahlias before frost",
+                "water butts are full", "raspberries fruit on new canes",
+                "mulch the beds with bark", "cut the hedge in August", "grow beans up a wigwam"):
+        t.box.run("save", f"Garden note: {job}. The garden looks good.")
+    t.box.run("sort")
+    garden = root / "Notes" / "Garden"
+    nested = garden / "Garden"                  # as the earlier release left it
+    nested.mkdir()
+    (nested / engine.CATEGORY_MARKER).write_text(json.dumps(
+        {"name": "Garden", "trail": ["Garden", "Garden"], "auto": True}))
+    for note in sorted(garden.glob("*.md")):
+        note.rename(nested / note.name)
+    record(root, "--release=2026-01-01.1")
+
+    def tree() -> dict:
+        return {str(f.relative_to(root)): f.read_bytes() for f in (root / "Notes").rglob("*")
+                if f.is_file() and f.name not in t.box.GENERATED_FILES}
+
+    before = tree()
+    published = t.box.tmp / "published"
+    shutil.copytree(root, published, ignore=shutil.ignore_patterns("Work", "Notes", "Archive", "backups"))
+    (published / ".os" / "engine.py").write_text(
+        (published / ".os" / "engine.py").read_text() + "\n# a newer engine\n")
+    record(published, "--release=2026-02-01.1")
+    t.box.run("update", "--from", str(published))
+    t.ok("# a newer engine" in (root / ".os" / "engine.py").read_text(), "the update went in")
+    t.box.run("sort")
+    t.box.run("sort")
+    after = tree()
+    t.eq(sorted(after), sorted(before), "nothing in Notes moved or was renamed")
+    t.ok(all(after[k] == v for k, v in before.items()), "and nothing in it was rewritten")
 
 
 def _run_one(name: str, keep: bool, verbose: bool) -> dict:

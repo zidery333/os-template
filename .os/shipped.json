@@ -135,7 +135,8 @@
       "43efdf1f8b6271f90307868c486a50579fa32bcd",
       "36b2202ca981f6e500993c757b2f5a13f5675390",
       "f5dac18d51569a6fe05bce8ff5e1ef41dabbbf33",
-      "05c5380fceed41979da1084bd54f797b156f0efd"
+      "05c5380fceed41979da1084bd54f797b156f0efd",
+      "ff08376da471c70558f7e71ce060e8c7084c0ca3"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540"
@@ -217,7 +218,7 @@
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-01.3",
+  "release": "2026-10-01.4",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

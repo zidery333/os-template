@@ -1256,7 +1256,7 @@ DEFAULT_THRESHOLDS = {
     "category_split": 12, "category_max_items": 99, "max_categories_per_bucket": 9,
     "stale_project_days": 30, "dormant_project_days": 75, "rules_max_lines": 160,
     "skill_body_max_lines": 120, "duplicate_similarity": 0.86, "min_classify_score": 2.0,
-    "big_file_mb": 100,
+    "big_file_mb": 100, "held_check_days": 180,
 }
 DEFAULT_BEHAVIOUR = {
     "keep_undo_steps": 20, "keep_backups": 3, "colour": "auto",
@@ -1733,9 +1733,12 @@ class Zenith:
                 now = self.root / self._where_now(step["src"], n + 1)
                 if now.is_file() and not now.is_symlink():
                     step["digest"] = content_print(now)
+        # Which chat did it, so another chat's ./os undo can stop before
+        # taking it back: see cmd_undo. Blank when there is no telling.
         entry = {"at": now_iso(), "label": label, "steps": self._pending,
                  "snapshots": dict(self._snapshots), "after": after,
-                 "blobs": self._run_dir.name if self._run_dir else ""}
+                 "blobs": self._run_dir.name if self._run_dir else "",
+                 "chat": this_chat()}
         undo = self.state.setdefault("undo", [])
         undo.append(entry)
         keep = int(self.behaviour.get("keep_undo_steps", 20))
@@ -3776,22 +3779,31 @@ class Sorter:
 
     # -- pass 3: balance ----------------------------------------------------
 
-    def _cluster_key(self, group: list[Item], depth_cap: int) -> dict[str, str]:
+    def _cluster_key(self, group: list[Item], depth_cap: int, parent: str = "") -> dict[str, str]:
         """Assign each item in `group` a second-level folder, deterministically.
 
         Named after a tag, so never one ./os would skip, as the first level
         isn't: 14 video projects tagged `content` went into
         Work/General/Content, where ./os never looks, and the next sort took
-        General away with all of them in it (review, 2026-09-30)."""
+        General away with all of them in it (review, 2026-09-30).
+
+        Never named after the group it sits in, and never after a tag every
+        one of them has. Fourteen garden notes, each tagged `garden`, went
+        into Notes/Garden/Garden: a folder inside a folder of the same name,
+        with everything in it and nothing beside it (found 2026-10-01). A
+        sub-group that takes all of them splits nothing, so it isn't made."""
         tally: dict[str, int] = {}
         safe: dict[str, bool] = {}
+        mine = name_key(parent, True) if parent else ""
         for it in group:
             for t in it.tags[:5]:
                 if t and t != "unsorted" and safe.setdefault(
-                        t, not group_trouble(self.os, titleize(t))):
+                        t, not group_trouble(self.os, titleize(t))
+                        and name_key(titleize(t), True) != mine):
                     tally[t] = tally.get(t, 0) + 1
         floor = max(2, len(group) // 8)
-        ranked = [t for t, n in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0])) if n >= floor]
+        ranked = [t for t, n in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+                  if floor <= n < len(group)]
         ranked = ranked[: min(9, depth_cap)]
         mapping: dict[str, str] = {}
         for it in group:
@@ -3847,10 +3859,20 @@ class Sorter:
                 crowded = len(group) > split if not nested_now else len(group) >= collapse
                 if not crowded:
                     continue
-                mapping = self._cluster_key(group, max_cats)
+                mapping = self._cluster_key(group, max_cats, cat)
+                # The groups _cluster_key no longer makes: one named after its
+                # parent, or after a tag every one of them has. One an earlier
+                # release made stays exactly where it is, with all that is in
+                # it: what a released engine filed is never moved (decided
+                # 2026-09-30). Only new ones aren't made.
+                everyone = set.intersection(*(set(i.tags[:5]) for i in group))
+                refused = {name_key(cat, True)} | {name_key(titleize(t), True) for t in everyone}
                 for it in group:
                     sub = mapping.get(str(it.path))
-                    if sub:
+                    if len(it.trail) == 2 and it.trail[0] == cat \
+                            and name_key(it.trail[1], True) in refused:
+                        plan[str(it.path)] = list(it.trail)
+                    elif sub:
                         plan[str(it.path)] = [cat, sub]
             self._leave_theirs(pool, plan)
         return plan
@@ -5739,6 +5761,37 @@ class Undo:
         undo = self.os.state.get("undo") or []
         return undo[-1] if undo else None
 
+    @staticmethod
+    def describe(entry: dict, limit: int = 4) -> list[str]:
+        """What a step did, in a few plain lines: "saved Notes/lemon-cake.md",
+        "moved Work/Fix the Boiler to Archive/2026/Work/Fix the Boiler". Undo
+        said only "put back the last 'save'", which named nothing, so nobody
+        could tell whose words had just gone."""
+        steps = entry.get("steps") or []
+        made = [st["src"] for st in steps if st.get("action") == "mkdir"]
+        lines: list[str] = []
+        for st in steps:
+            act, src, dst = st.get("action"), str(st.get("src") or ""), str(st.get("dst") or "")
+            if act == "move" and src.startswith(f"{MARKER}/cache/"):
+                line = f"saved {dst}"
+            elif act == "move":
+                line = f"moved {src} to {dst}"
+            elif act == "mkdir":
+                line = f"made {src}"
+            elif act == "create":
+                if any(src.startswith(d + "/") for d in made):
+                    continue        # inside a folder it made, which says it
+                line = f"made {src}"
+            elif act == "edit":
+                line = f"changed {src}"
+            else:
+                continue
+            if line not in lines:
+                lines.append(line)
+        if len(lines) > limit:
+            lines = lines[:limit] + [f"...and {len(lines) - limit} more"]
+        return lines
+
     def written_since(self, entry: dict) -> list:
         """Files the step changed or made that have been written in since.
         Undoing it would take those later words out too, so it asks first."""
@@ -6911,6 +6964,7 @@ class Reviewer:
         health = Doctor(self.os).run(items=items)
         stale_days = int(self.os.thresholds.get("stale_project_days", 30))
         dormant_days = int(self.os.thresholds.get("dormant_project_days", 75))
+        held_days = int(self.os.thresholds.get("held_check_days", 180))
 
         shelf = self.os.bucket_for_role("archive")
         active = [i for i in items if i.kind == "project" and i.status in (PUSHING, "")]
@@ -6928,6 +6982,18 @@ class Reviewer:
                       if stale_days <= days_since(i.updated) < dormant_days],
             "holding": [{"id": i.ident, "title": i.title, "age": days_since(i.updated)} for i in
                         sorted(holding, key=lambda x: days_since(x.updated))],
+            # Held work untouched for half a year: asked about here, in the
+            # weekly pass, and nowhere else. Something paused or kept up never
+            # came back up at all, even after a year (stranger test,
+            # 2026-09-30). It is a question, not a fault: never stale in ./os,
+            # never in ./os check, never off the health score. "Touched" is
+            # what it is everywhere else: the header's `updated:` date, which
+            # every ./os command on it moves (./os hold too), or the newest
+            # dated Log line if that is later. A file's own date is only used
+            # when the header has none: a copy or a checkout changes that.
+            "still_keeping": [{"id": i.ident, "title": i.title, "age": days_since(i.updated)}
+                              for i in sorted(holding, key=lambda x: -days_since(x.updated))
+                              if days_since(i.updated) >= held_days],
             # Only work being pushed can look abandoned. Something held is quiet
             # by design, so it is never offered up for the archive on age alone.
             "archive_candidates": [{"id": i.ident, "title": i.title, "age": days_since(i.updated)} for i in active
@@ -7746,19 +7812,54 @@ def work_named_first(os_: Zenith, text: str) -> tuple:
     return best, words[:upto]
 
 
+def keeps_coming_back(body: str, line: str) -> str:
+    """`body` with one more line under `## Keeps coming back`, the section held
+    work has where pushed work has a next action.
+
+    Made where the held template has it, before Decisions and Log, when the
+    item has none yet. A plain line, not a box to tick: something kept up is
+    never done, and a box on it read as one more thing to do. The template's
+    empty `- [ ]` is filled with it rather than left above it."""
+    section = re.search(r"^##\s+Keeps coming back[ \t]*\n(.*?)(?=^##\s|\Z)", body, re.M | re.S)
+    entry = f"- {line}"
+    if section:
+        inside = section.group(1)
+        placeholder = re.compile(r"^[-*][ \t]*\[ \][ \t]*$", re.M)
+        if placeholder.search(inside):
+            inside = placeholder.sub(lambda _m: entry, inside, count=1)
+        else:
+            kept = inside.rstrip("\n")
+            inside = (kept + "\n" if kept else "") + entry + "\n\n"
+        return body[:section.start(1)] + inside + body[section.end(1):]
+    later = re.search(r"^##\s+(?:Open questions|Decisions|Log)\b.*$", body, re.M | re.I)
+    if later:
+        return (body[:later.start()].rstrip("\n") + "\n\n## Keeps coming back\n"
+                + entry + "\n\n" + body[later.start():])
+    return body.rstrip() + "\n\n## Keeps coming back\n" + entry + "\n"
+
+
 def add_next_step(os_: Zenith, item: Item, said: str, text: str, landed: Path,
                   as_json: bool) -> int:
     """Write saved words into the work they name, as its next action. `landed`
-    is where they were written down first, and goes once they are in."""
+    is where they were written down first, and goes once they are in.
+
+    Held work has no next action: what is said about it goes under `## Keeps
+    coming back` instead. "Garden Upkeep: mow the lawn" made a box to tick
+    on something kept up, and a note about the roses became one too (stranger
+    test, 2026-09-30). It still goes to the item it names: saved as a note
+    instead, it would be a second thing under the same name."""
     step = re.sub(r"\s+", " ", text.strip()[len(said):]).strip(" :;,-–—")
     step = step[:1].upper() + step[1:]
+    held = item.status == HOLDING
     with Lock(os_, "save", safe="what you typed is safe in " + os_.rel(landed)
               + " — ./os sort files it when the other run is done"):
         text_was = read_to_rewrite(item.spine)
         _meta, body = parse_frontmatter(text_was)
         section = re.search(r"^##\s+Next action[ \t]*\n(.*?)(?=^##\s|\Z)", body, re.M | re.S)
         empty = re.compile(r"^([-*][ \t]*\[ \])[ \t]*$", re.M)
-        if step and section and empty.search(section.group(1)):
+        if step and held:
+            body = keeps_coming_back(body, step)
+        elif step and section and empty.search(section.group(1)):
             filled = empty.sub(lambda m: m.group(1) + " " + step, section.group(1), count=1)
             body = body[:section.start(1)] + filled + body[section.end(1):]
         elif step and section:
@@ -7771,13 +7872,14 @@ def add_next_step(os_: Zenith, item: Item, said: str, text: str, landed: Path,
             os_.snapshot(item.spine)
             write_text(item.spine, set_fields(text_was, {"updated": today()}, body=body))
             os_.record("edit", os_.rel(item.spine))
-            os_.commit(f"{item.ident} next action")
+            os_.commit(f"{item.ident} {'keeps coming back' if held else 'next action'}")
             Indexer(os_).build()
         landed.unlink()
     remember_save(os_, text, item.path)
     if as_json:
         print(json.dumps({"saved": os_.rel(item.path), "id": item.ident, "kind": "project",
-                          "title": item.title, "filed": True, "added_to": item.ident}, indent=2))
+                          "title": item.title, "filed": True, "added_to": item.ident,
+                          "under": "keeps coming back" if held else "next action"}, indent=2))
         return 0
     Out.title("saved")
     if not step:
@@ -7786,9 +7888,13 @@ def add_next_step(os_: Zenith, item: Item, said: str, text: str, landed: Path,
         Out.raw()
         return 0
     Out.ok(f"added to {item.title}: {trunc(step, 60)}")
-    Out.note(f"it's the next action in {os_.rel(item.spine)}   ·   ./os show {handle(item)}")
-    if item.status == HOLDING:
-        Out.note(f"that one is being held — on the go again?  ./os push {handle(item)}")
+    if held:
+        Out.note(f"it's under Keeps coming back in {os_.rel(item.spine)}   ·   "
+                 f"./os show {handle(item)}")
+        Out.note(f"a one-off to do instead?  ./os undo, then ./os push {handle(item)} "
+                 "and save it again")
+    else:
+        Out.note(f"it's the next action in {os_.rel(item.spine)}   ·   ./os show {handle(item)}")
     Out.note("wrong spot?  ./os undo")
     Out.raw()
     return 0
@@ -8183,6 +8289,15 @@ def claim_label() -> str:
         if value:
             return one_line(value).replace(" ", "-")[:40]
     return f"pid-{os.getppid()}"
+
+
+def this_chat() -> str:
+    """The chat running this, by the id its AI or terminal gives it, or ""
+    when there is none. The last resort in claim_label, the id of the
+    process that started us, is a different number on every command inside
+    Claude Code, so it would make every chat look like a stranger to itself."""
+    label = claim_label()
+    return "" if label.startswith("pid-") else label
 
 
 def claim_owner(label: str) -> str:
@@ -9010,9 +9125,25 @@ def cmd_review(os_: Zenith, argv: list[str]) -> int:
     block("not touched in a while", report["stale"],
           lambda r: pad(trunc(r["title"], 44), 46)
                     + paint(f"{r['age']}d ago", S.AMBER))
-    block("keeping level", report.get("holding", [])[:8],
+    asked = {r["id"] for r in report.get("still_keeping", [])}
+    block("keeping level", [r for r in report.get("holding", []) if r["id"] not in asked][:8],
           lambda r: pad(trunc(r["title"], 44), 46)
                     + paint(f"last tended {r['age']}d ago", S.FAINT))
+    if report.get("still_keeping"):
+        # A question only they can answer. Held work is quiet on purpose, so
+        # this is never a warning, and only the weekly pass asks it.
+        rows = report["still_keeping"]
+        Out.raw("  " + paint("STILL KEEPING THESE UP?", S.B, S.GOLD)
+                + paint(f"  ({len(rows)})", S.FAINT))
+        for r in rows[:12]:
+            Out.raw("    " + pad(trunc(r["title"], 44), 46)
+                    + paint(f"untouched {r['age']}d", S.FAINT))
+        if len(rows) > 12:
+            Out.note(f"...and {len(rows) - 12} more")
+        first = handle(rows[0]["id"])
+        Out.note(f"still keeping it up?  ./os hold {first}   (or add a line to its ## Log)")
+        Out.note(f"it's over?            ./os close {first}")
+        Out.raw()
     block("gone quiet — still pushing these?", report["archive_candidates"],
           lambda r: pad(trunc(r["title"], 40), 42)
                     + paint(f"./os hold {handle(r['id'])}", S.FAINT))
@@ -9056,7 +9187,7 @@ def cmd_review(os_: Zenith, argv: list[str]) -> int:
 
     if not any([report["unfiled"], report["stale"], report["archive_candidates"],
                 report["duplicates"], report["shipped"], report["unsure"],
-                report.get("routines")]):
+                report.get("routines"), report.get("still_keeping")]):
         Out.ok("nothing stale, nothing stuck, nothing doubled up")
     Out.raw()
     return 0
@@ -9105,11 +9236,30 @@ def cmd_back(os_: Zenith, argv: list[str]) -> int:
 
 def cmd_undo(os_: Zenith, argv: list[str]) -> int:
     anyway = _flag(argv, "--anyway")
+    theirs = _flag(argv, "--other-chat")
     undo = Undo(os_)
     entry = undo.peek()
     if entry is None:
         Out.title("undo")
         Out.warn("nothing to undo — I haven't changed anything yet")
+        Out.raw()
+        return 1
+    # Undo takes back the newest step, whoever made it. With two chats in one
+    # folder, one chat's "undo that" took back the note the other had just
+    # saved (stranger test, 2026-09-30). Compared only when both chats have a
+    # real id: a step from before this was written down has none, and works
+    # as it always did.
+    mine, made_by = this_chat(), str(entry.get("chat") or "")
+    if not theirs and mine and made_by and made_by != mine:
+        when = str(entry.get("at", ""))[:16].replace("T", " ")
+        Out.title("undo")
+        Out.warn(f"the last change here was made in another chat: "
+                 f"'{entry.get('label', '')}' at {when}, which")
+        for line in Undo.describe(entry):
+            Out.note(line)
+        Out.note("undo only takes back this chat's own changes, and that one is newer; "
+                 "nothing has changed")
+        Out.note("to take it back anyway:  ./os undo --other-chat")
         Out.raw()
         return 1
     # Undo puts files back as the step found them. Words written in one since
@@ -9136,6 +9286,8 @@ def cmd_undo(os_: Zenith, argv: list[str]) -> int:
     else:
         changes = f"{result['restored']} change" + ("" if result["restored"] == 1 else "s")
         Out.ok(f"put back the last '{result['label']}' — {changes} reversed")
+        for line in Undo.describe(entry):
+            Out.note("took back: " + line)
         for f in result["failed"][:10]:
             Out.warn("couldn't put this one back: " + str(f))
     # Said every time, never capped: this is where words written after the
@@ -10441,7 +10593,8 @@ DETAIL = {
     "save": ('os save "<anything>"   |   os save <a file on your computer>',
              "Write something down. It works out what it is and puts it in the right "
              "folder straight away — you never pick one. Start with the name of "
-             "work you already have, and the rest becomes its next action. Video, "
+             "work you already have, and the rest becomes its next action, or, for "
+             "something you keep up, goes under Keeps coming back. Video, "
              "and anything bigger than 100 MB, goes to Work/Content, which ./os "
              "leaves alone.",
              ['os save "the boiler cuts out every night"',
@@ -10593,9 +10746,11 @@ DETAIL = {
                ['os decide fix-the-boiler "a new one, not another repair"'],
                "./os save does this by itself when the words name the item, and "
                "refuses when it cannot tell which one you meant."),
-    "undo": ("os undo [--anyway]", "Reverse the last thing Zenith itself did — a save, a "
-             "filing, a close, a new.",
-             ["os undo", "os undo --anyway"],
+    "undo": ("os undo [--anyway] [--other-chat]", "Reverse the last thing Zenith itself did — a save, a "
+             "filing, a close, a new — and say what it took back. When the last thing was "
+             "done in another chat, it stops and says what that was; --other-chat takes "
+             "it back all the same.",
+             ["os undo", "os undo --anyway", "os undo --other-chat"],
              "It restores where files went AND what they said, twenty steps back. "
              "It cannot undo edits you made by hand in a text editor — the "
              "folder's history can, back to the last checkpoint (./os help "
@@ -10819,7 +10974,7 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_sort": {"--dry-run", "--json", "-n"},
     "cmd_status": {"--json"},
     "cmd_test": None,      # forwards everything to the suite
-    "cmd_undo": {"--anyway"},
+    "cmd_undo": {"--anyway", "--other-chat"},
     "cmd_update": {"--anyway", "--check", "--dry-run", "--from", "-n"},
     "cmd_words": {"--json", "--new"},
     "cmd_snag": {"--clear", "--export", "--json"},
