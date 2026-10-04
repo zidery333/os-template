@@ -20,6 +20,7 @@ form is `personal`, Postgres indexes is `engineering`. Put every learned note in
 The headings are already in the file, each with a comment saying what belongs
 under it. Fill them in and delete the comment as you go; delete a heading only
 where the note genuinely has nothing for it (`## Kit` is the usual one).
+`## Who to trust` is the exception: it starts empty, so leave it and its comment.
 
 Leave the `---` block at the top alone. Don't improvise headings and don't nest
 the method underneath something else — the numbered steps are the point of the
@@ -34,3 +35,11 @@ across a stamp, so the line you found it on is often its second half.
 
 Same subject again? Append a dated section under `## The method` and extend
 `## Sources`. Never rewrite what's there.
+
+`## Who to trust` fills up from what happens when they try the advice, one
+dated line each time, and an old line is never changed:
+
+```
+- 2026-10-04 — Sam Lee: clamp the glue-up for 30 minutes [04:12]. Tried it
+  twice; both joints came apart the next day. Check his times elsewhere first.
+```

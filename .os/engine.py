@@ -1272,7 +1272,8 @@ def find_root(start: Path | None = None) -> Path:
 DEFAULT_THRESHOLDS = {
     "category_split": 12, "category_max_items": 99, "max_categories_per_bucket": 9,
     "stale_project_days": 30, "dormant_project_days": 75, "rules_max_lines": 160,
-    "skill_body_max_lines": 120, "duplicate_similarity": 0.86, "min_classify_score": 2.0,
+    "skill_body_max_lines": 120, "above_log_max_lines": 150,
+    "duplicate_similarity": 0.86, "min_classify_score": 2.0,
     "big_file_mb": 100, "held_check_days": 180,
 }
 DEFAULT_BEHAVIOUR = {
@@ -1562,10 +1563,29 @@ class Zenith:
         like anything else and this never becomes a permanent blocklist."""
         kept = [r for r in (self.state.get("taken_back") or [])
                 if (self.root / r).exists()]
-        if kept != (self.state.get("taken_back") or []):
+        said = [r for r in (self.state.get("taken_back_said") or []) if r in kept]
+        if kept != (self.state.get("taken_back") or []) or \
+                said != (self.state.get("taken_back_said") or []):
             self.state["taken_back"] = kept
+            self.state["taken_back_said"] = said
             self.save_state()
         return set(kept)
+
+    def first_time_taken_back(self, rels: list[str], write: bool = True) -> list[str]:
+        """Those of `rels`, words taken back with `os undo`, that nobody has
+        been told about yet. Written down as told, unless `write` is False.
+
+        Undo keeps them on purpose, and check and sort then listed every one
+        on every run after, for good: the owner had five on 2026-10-04, and
+        deleted them by hand to make it stop. So the first check or sort after
+        an undo says where they are and how to throw them away, and after that
+        neither says it again."""
+        said = self.state.get("taken_back_said") or []
+        new = [r for r in rels if r and r not in said]
+        if new and write:
+            self.state["taken_back_said"] = (said + new)[-60:]
+            self.save_state()
+        return new
 
     def rel(self, path: Path) -> str:
         """Path relative to the root, always with forward slashes so it reads the
@@ -1628,8 +1648,8 @@ class Zenith:
 
     # -- history / undo -----------------------------------------------------
 
-    def record(self, action: str, src: str, dst: str = "") -> None:
-        self._pending.append({"action": action, "src": src, "dst": dst})
+    def record(self, action: str, src: str, dst: str = "", **more) -> None:
+        self._pending.append({"action": action, "src": src, "dst": dst, **more})
 
     # -- content snapshots, so undo restores what a file said, not just where --
 
@@ -3144,11 +3164,14 @@ ROLE_FOR_KIND = {
 PUSHING, HOLDING = "pushing", "holding"
 
 #: Words that used to mean these, in files written before the merge, and the
-#: ones people type. Anything not here is left alone and shown as written.
+#: ones people type. Anything not here is left alone and shown as written,
+#: and ./os check names it: typed by hand, `status: paused` took that work
+#: off every list, neither on the go nor kept level.
 STATUS_ALIASES = {
     "active": PUSHING, "in-progress": PUSHING, "in progress": PUSHING,
     "open": PUSHING, "doing": PUSHING, "started": PUSHING,
     "ongoing": HOLDING, "maintained": HOLDING, "area": HOLDING,
+    "paused": HOLDING, "on hold": HOLDING, "on-hold": HOLDING, "waiting": HOLDING,
     "shipped": "done", "complete": "done", "completed": "done", "closed": "done",
 }
 
@@ -3936,6 +3959,14 @@ class Sorter:
                     elif sub:
                         plan[str(it.path)] = [cat, sub]
             self._leave_theirs(pool, plan)
+            # A General holding one thing is a folder around one file: the one
+            # note alone in its subject went into it by itself. That one stays
+            # loose in the bucket instead. One already in a General stays: what
+            # an earlier release filed stays exactly where it is (decided
+            # 2026-09-30), so this only stops a new group of one being made.
+            alone = [it for it in pool if plan[str(it.path)][:1] == ["General"]]
+            if len(alone) == 1 and alone[0].trail[:1] != ["General"]:
+                plan[str(alone[0].path)] = []
         return plan
 
     def stays_put(self, it: Item) -> bool:
@@ -4801,10 +4832,13 @@ class Doctor:
                 age = 0
             words = staged_words(path)
             if self.os.rel(path) in refused:
+                # Said once, by the first check or sort after the undo: see
+                # Zenith.first_time_taken_back. Listed every time as JSON.
                 self.flag("hint", "taken-back-capture",
-                          f"'{words}' was taken back with ./os undo and is still "
-                          "sitting in staging — sort leaves it alone",
-                          self.os.rel(path), f'./os save "{self.os.rel(path)}"  to file it after all')
+                          f"'{words}' was taken back with ./os undo, so it is kept here, "
+                          "not filed — you'll only be told this once",
+                          self.os.rel(path), f'./os save "{self.os.rel(path)}"  to file it after all  '
+                          "·  ./os sort --forget  to throw away all you took back")
                 continue
             stale = age >= STALE_STAGE_DAYS
             when = "today" if age < 1 else f"{age} days ago"
@@ -5085,6 +5119,19 @@ class Doctor:
         for it in items:
             if it.kind != "project" or it.status in CLOSED_STATUSES:
                 continue
+            # A status ./os can't read, typed by hand, took that work off every
+            # list: neither on the go nor kept level, and nothing said so. The
+            # words people type for a pause are read as holding (STATUS_ALIASES);
+            # any other is named here. The header is theirs and only they know
+            # which of the two it is, so --fix leaves it as they wrote it.
+            if it.status not in LIVE_STATUSES:
+                self.flag("warn", "status-unread",
+                          f"'{it.title}' says `status: {it.status}`, a word ./os can't read, "
+                          "so it's on no list: not on the go, and not kept level",
+                          self.os.rel(it.spine or it.path),
+                          f"./os hold {handle(it)}   or   ./os push {handle(it)}  "
+                          "if it has a next action")
+                continue
             # Only work being pushed can go stale. Something you are holding is
             # *supposed* to sit still between the times you tend to it — nagging
             # about that is the system misunderstanding its own vocabulary.
@@ -5119,12 +5166,71 @@ class Doctor:
             # a link shown inside a code fence is an example, not a link
             text = re.sub(r"^ {0,3}(```|~~~).*?^ {0,3}\1", "", read_text(it.spine, 80_000),
                           flags=re.S | re.M)
-            for m in re.finditer(r"\[[^\]]*\]\(([^)#:]+\.md)\)", text):
-                target = (it.spine.parent / m.group(1).replace("%20", " ")).resolve()
+            # Read the way rename reads them (link_file): `<a note.md>`, one
+            # with a title after it and one with %27 in it are links too.
+            for m in MD_LINK.finditer(text):
+                plain = link_file(m.group(2))
+                if not plain or not plain.endswith(".md"):
+                    continue
+                target = (it.spine.parent / plain).resolve()
                 if not target.exists():
-                    self.flag("hint", "broken-link", f"'{it.title}' links to something that isn't there: {m.group(1)}",
+                    self.flag("hint", "broken-link", f"'{it.title}' links to something that isn't there: {plain}",
                               self.os.rel(it.spine))
                     break
+
+        # 10. a page grown out of shape. A README ended up with two
+        # `## Decisions` after two helpers added to it: ./os decide wrote under
+        # the first, ./os show read the second, and this said nothing. Counted
+        # under each `# ` title, so a note of two recipes, each with its own
+        # `## Method`, is not one heading written twice. And the part above a
+        # `## Log`, read first every time anyone picks the thing up, grown past
+        # what anyone reads. The Log itself is meant to grow, and is never
+        # counted. Both ends of the page are read, as search reads them: a
+        # second heading added to a long README lands at the bottom.
+        cap = int(self.os.thresholds.get("above_log_max_lines", 150))
+        for it in items:
+            if it.kind not in ("project", "note") or not it.spine or not it.spine.exists() \
+                    or it.spine.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            _meta, body = parse_frontmatter(read_ends(it.spine))
+            under: set[str] = set()
+            twice: dict[str, str] = {}
+            above, fence, log = 0, "", False
+            for line in body.split("\n"):
+                mark = re.match(r" {0,3}(```|~~~)", line)
+                head = SECTION_RE.match(line)
+                if fence:
+                    # A heading shown inside a code block is an example.
+                    if mark and mark.group(1) == fence:
+                        fence = ""
+                elif mark:
+                    fence = mark.group(1)
+                elif re.match(r"#\s", line):
+                    under = set()
+                elif head:
+                    word = head.group(1).rstrip("#").strip()
+                    log = log or word.casefold() == "log"
+                    if word.casefold() in under:
+                        twice.setdefault(word.casefold(), word)
+                    under.add(word.casefold())
+                if not log and line.strip():
+                    above += 1
+            if twice:
+                said = " and ".join(f"## {w}" for w in list(twice.values())[:3])
+                self.flag("hint", "heading-twice",
+                          f"'{it.title}' has {said} more than once, and ./os only reads one "
+                          f"of {'them' if len(twice) == 1 else 'each'}",
+                          self.os.rel(it.spine),
+                          "move what's under the second one up under the first, then take "
+                          "out the second heading")
+            if log and above > cap:
+                self.flag("hint", "long-above-log",
+                          f"'{it.title}' has {above} lines above its ## Log, past the {cap} "
+                          "that stay quick to read, and that part is read first every time "
+                          "anyone picks it up",
+                          self.os.rel(it.spine),
+                          "move the long parts into a file of their own beside it, with a line "
+                          "saying where, or raise above_log_max_lines in .os/config.json")
 
         # Errors are always serious. Warnings matter but saturate. Hints are
         # texture — a folder with 400 items will always have some, and that is
@@ -5295,6 +5401,10 @@ class Finder:
     #: much in all for one search. Enough for the notes a person keeps in a
     #: piece of work, and never a whole code project on every search.
     INSIDE_FILES, INSIDE_CHARS, INSIDE_LOOKED, INSIDE_BUDGET = 40, 60_000, 4_000, 30_000_000
+    #: How much of the things' own pages one search reads whole, in all.
+    #: Past it a page is read as read_ends reads it, its start and its end
+    #: (see _page).
+    PAGES_BUDGET = 30_000_000
     #: How far in the names of the files in a thing's own folder are matched:
     #: this many folders down, out of this many names looked at. Names cost
     #: nothing to read, so they go much further than the words do; what lies
@@ -5313,9 +5423,12 @@ class Finder:
     def __init__(self, os_: "Zenith", scanner: "Scanner | None" = None):
         self.os = os_
         self.scanner = scanner or Scanner(os_)
-        #: When nothing matched: a near word for each word typed that is in
-        #: nothing, to offer as a search of its own. Never searched for.
+        #: A near word for each word typed that is in nothing, to offer as a
+        #: search of its own. Never searched for.
         self.near: dict[str, str] = {}
+        #: Every word typed that something had in it, in the last search.
+        self.matched: set[str] = set()
+        self._pages_left = self.PAGES_BUDGET
         #: For a thing found by words in another file in its folder, that file
         #: (by the thing's path), so a hit can say where it was.
         self.found_in: dict[str, Path] = {}
@@ -5477,6 +5590,24 @@ class Finder:
             level, depth = below, depth + 1
         return got
 
+    def _page(self, path: Path) -> str:
+        """A thing's own page, as search reads it: all of it.
+
+        `read_ends` keeps the start and the end of a long page, which is
+        where a long log's newest lines are, and search read pages that way
+        too: a word in the middle of a book-length note was never found. A
+        page is read whole now, until PAGES_BUDGET of them has been read in
+        one search, so a folder full of long ones still answers quickly;
+        past that, the start and the end, as before."""
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return read_ends(path)
+        if size > self._pages_left:
+            return read_ends(path)
+        self._pages_left -= size
+        return read_text(path, -1)
+
     # -- scoring ------------------------------------------------------------
 
     def _pass(self, items: list[Item], terms: list["Term"],
@@ -5487,7 +5618,7 @@ class Finder:
             hay_meta = unaccented(nfc(f"{it.domain} {' '.join(it.tags)} {it.status} {it.blurb}").lower())
             raw = ""
             if it.spine and it.spine.exists() and it.spine.suffix.lower() in TEXT_SUFFIXES:
-                _, raw = parse_frontmatter(read_ends(it.spine))
+                _, raw = parse_frontmatter(self._page(it.spine))
             # An RTF is read itself, not only its card: TextEdit goes on saving
             # into the same file, and a card written before that, or before
             # cards carried the words at all, knows none of it. The card's own
@@ -5531,14 +5662,17 @@ class Finder:
 
             score, snippet, found_in, shown = 0.0, (it.blurb or it.summary), None, False
             for term in terms:
-                score += 10 * term.weight(hay_title)
-                score += 4 * term.weight(hay_meta)
+                in_title, in_meta = term.weight(hay_title), term.weight(hay_meta)
+                score += 10 * in_title
+                score += 4 * in_meta
                 hits, found = 0, []        # (worth, form, page) for each page it is in
                 for one in pages:
                     n, w, f = term.count(one[2])
                     if n:
                         hits += n
                         found.append((w, f, one))
+                if hits or in_title or in_meta:
+                    self.matched.add(term.word)
                 if not hits:
                     continue
                 score += min(hits, 8) * 1.2 * found[0][0]
@@ -5573,7 +5707,7 @@ class Finder:
     # -- the search ---------------------------------------------------------
 
     def search(self, query: str, limit: int = 20, kind: str = "", bucket: str = "") -> list[tuple[float, Item, str]]:
-        self.near = {}
+        self.near, self.matched, self._pages_left = {}, set(), self.PAGES_BUDGET
         terms = [t for t in re.split(r"\s+", unaccented(nfc(query).lower().strip())) if t]
         if not terms:
             return []
@@ -5592,22 +5726,22 @@ class Finder:
 
         vocabulary: set[str] = set()
         hits = self._pass(items, [Term(t) for t in terms], vocabulary)
-        if hits:
-            return hits[:limit]
 
-        # Nothing matched. A near word it knows may be what they meant: every
-        # word in the folder is already in hand from the pass above, so this
-        # costs no reads. It is only offered, never searched for. Searched for,
-        # a real word was swapped for another one: bike for bake, june for
-        # jungle, valve for valet, and the notes shown were about something
-        # else (review, 2026-09-30).
+        # A word nothing has in it. A near word it knows may be what they
+        # meant: every word in the folder is already in hand from the pass
+        # above, so this costs no reads. It is only offered, never searched
+        # for. Searched for, a real word was swapped for another one: bike
+        # for bake, june for jungle, valve for valet, and the notes shown were
+        # about something else (review, 2026-09-30). Offered when the other
+        # words found something, too: `lemon recipie` showed the lemon notes
+        # and said nothing about recipie, where `recipie` alone offered recipe.
         for term in terms:
-            if len(term) < 4 or term in vocabulary:
+            if len(term) < 4 or term in vocabulary or term in self.matched:
                 continue
             near = difflib.get_close_matches(term, vocabulary, n=1, cutoff=0.75)
             if near and near[0] != term:
                 self.near[term] = near[0]
-        return []
+        return hits[:limit]
 
     def like(self, title: str, kinds: tuple = (), threshold: float = 0.82,
              archived: bool = False) -> list:
@@ -5772,16 +5906,41 @@ class Finder:
         return shell_word(said)
 
 
+#: What `./os close <name>` can say about how a thing ended, and the line each
+#: writes in its ## Log.
+CLOSED_AS = {"done": "Closed as done", "dropped": "Closed as dropped"}
+
+
+def with_log_line(body: str, entry: str) -> str:
+    """`body` with one more line at the end of its `## Log`, which is made at
+    the bottom when there is none. Last, like a decision (see write_decision),
+    because the newest line goes at the bottom."""
+    lines = body.split("\n")
+    start = next((n for n, line in enumerate(lines)
+                  if re.match(r"##\s+Log\s*$", line, re.I)), None)
+    if start is None:
+        return body.rstrip() + "\n\n## Log\n" + entry + "\n"
+    end = next((n for n in range(start + 1, len(lines)) if SECTION_RE.match(lines[n])),
+               len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    lines.insert(end, entry)
+    return "\n".join(lines)
+
+
 class Archivist:
     def __init__(self, os_: "Zenith"):
         self.os = os_
         self.finder = Finder(os_)
 
-    def archive(self, ident: str) -> Path:
+    def archive(self, ident: str, how: str = "") -> Path:
         item = the_one(self.os, ident, "close", finder=self.finder)
         shelf = self.os.bucket_for_role("archive")
         if item.bucket == shelf:
             die(f"{ident} is already in the archive — ./os back {handle(item)} brings it out")
+        if how and not (item.spine and item.spine.exists()):
+            die(f"{ident} has no page to write '{how}' on, so nothing was changed.\n"
+                f"     to put it away without it:   ./os close {handle(item)}")
         dest = self.os.root / shelf / today()[:4] / item.bucket / item.path.name
         if item.spine and item.spine.exists():
             # Before the header is touched, not after the move: undo restores
@@ -5789,7 +5948,7 @@ class Archivist:
             # afterwards would put the archived header back on a live item.
             text = read_to_rewrite(item.spine)
             self.os.snapshot(item.spine)
-            meta, _body = parse_frontmatter(text)
+            meta, body = parse_frontmatter(text)
             # What it was before it left, so ./os back can put it back as it was
             # rather than waking every filed note up as work with a next action.
             was = str(meta.get("status") or "").strip()
@@ -5798,10 +5957,44 @@ class Archivist:
                 changes["was"] = was
             changes["origin"] = self.os.rel(item.path)
             changes["updated"] = today()
-            write_text(item.spine, set_fields(text, changes))
+            # Finished and given up looked the same in the archive a year on.
+            # Said when it is closed, it goes in its own Log, where its story is.
+            said = with_log_line(body, f"- {today()} · {CLOSED_AS[how]}") if how else None
+            write_text(item.spine, set_fields(text, changes, body=said))
+        gone_from = item.path.parent
         moved = self.os.move_item(item.path, dest)
+        self._take_away_emptied(gone_from)
         self.os.commit(f"archive {ident}")
         return moved
+
+    def _take_away_emptied(self, folder: Path) -> None:
+        """Take away the group this close left empty, and each group around it
+        left empty too. Sort did it, but only on its next run, so the group
+        stood empty until then.
+
+        Only a group ./os made, with nothing left in it but its own mark and
+        what a computer leaves. A folder somebody made is never taken away, and
+        neither is a group with anything else in it. Its mark goes in the step,
+        so ./os undo makes it again as a group, not as a folder that looks like
+        somebody's own."""
+        groups = [self.os.root / name for name, spec in self.os.buckets().items()
+                  if spec.get("categorize")]
+        while Scanner.is_category(folder) and any(g in folder.parents for g in groups):
+            inside = list(folder.iterdir())
+            litter = [p for p in inside if p.is_file() and not p.is_symlink()
+                      and (p.name in (CATEGORY_MARKER, ".DS_Store", "Thumbs.db", "desktop.ini")
+                           or p.name.startswith("._"))]
+            if len(litter) < len(inside):
+                return
+            try:
+                mark = (folder / CATEGORY_MARKER).read_text(encoding="utf-8")
+                for p in litter:
+                    p.unlink()
+                folder.rmdir()
+            except (OSError, ValueError):
+                return
+            self.os.record("rmdir", self.os.rel(folder), mark=mark)
+            folder = folder.parent
 
     def restore(self, ident: str) -> Path:
         item = the_one(self.os, ident, "back", finder=self.finder, archived=True)
@@ -6005,6 +6198,17 @@ class Undo:
                             p.unlink()
                         path.rmdir()
                         restored += 1
+                elif step["action"] == "rmdir" and "mark" in step:
+                    # A group a close took away once it was empty: made again
+                    # with its mark, before what was in it goes back. Without
+                    # the mark it would look like a folder somebody made, and
+                    # sort would never touch it again. A folder of that name
+                    # there by now is somebody's, and is left as it is.
+                    path = self.os.root / step["src"]
+                    if not path.exists() and not path.is_symlink():
+                        path.mkdir(parents=True)
+                        write_text(path / CATEGORY_MARKER, step["mark"])
+                        restored += 1
             except OSError as exc:
                 failed.append(f"{step.get('dst') or step.get('src', '?')}: {exc}")
 
@@ -6058,6 +6262,10 @@ class Undo:
         if back:
             self.os.state["taken_back"] = (
                 (self.os.state.get("taken_back") or []) + back)[-60:]
+            # Taken back again under a name already told about once: this is
+            # a new undo, and the first check or sort after it says so.
+            self.os.state["taken_back_said"] = [
+                r for r in (self.os.state.get("taken_back_said") or []) if r not in back]
 
         self.os.state["undo"] = undo
         self.os.save_state()
@@ -7215,6 +7423,11 @@ class Creator:
         else:
             status = ""
             shape = NEW_SHAPE.get(asked, "")
+            # About me is a list of facts about them, each marked with how
+            # sure it is. None of an ordinary note's headings fit that, so it
+            # has a form of its own: templates/about-me.md.
+            if not shape and slugify(title) == ABOUT_THEM:
+                shape = ABOUT_THEM
         tags = tags or []
         if not domain:
             # Nobody wants to be asked for a subject. Guess it from the title,
@@ -7665,6 +7878,12 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
 def cmd_sort(os_: Zenith, argv: list[str]) -> int:
     dry = _flag(argv, "--dry-run", "-n")
     as_json = _flag(argv, "--json")
+    forget = _flag(argv, "--forget")
+    anyway = _flag(argv, "--anyway")
+    if forget:
+        return forget_taken_back(os_, anyway and not dry, as_json)
+    if anyway:
+        die("--anyway goes with --forget:   ./os sort --forget --anyway")
     if dry:
         result = Sorter(os_, dry=True).run()
     else:
@@ -7676,6 +7895,9 @@ def cmd_sort(os_: Zenith, argv: list[str]) -> int:
     if as_json:
         print(json.dumps(result, indent=2))
         return 1 if result.get("skipped") else 0
+    # Words taken back with ./os undo are said once, then never again here.
+    # A preview writes nothing down, so says them again next time.
+    taken = os_.first_time_taken_back(result.get("taken_back", [])[:20], write=not dry)
 
     def report_skipped() -> None:
         for entry in result.get("skipped", [])[:20]:
@@ -7683,13 +7905,16 @@ def cmd_sort(os_: Zenith, argv: list[str]) -> int:
         for rel in result.get("waiting", [])[:20]:
             Out.note(f"left {rel} for now — it's empty and seconds old, so somebody "
                      "is probably still writing it")
-        for rel in result.get("taken_back", [])[:20]:
+        for rel in taken:
             Out.note(f"left {rel} alone — you took it back with ./os undo · "
                      f'./os save "{rel}" files it after all')
+        if taken:
+            Out.note("you'll only be told this once · to throw away all you took back:  "
+                     "./os sort --forget")
 
     Out.title("filing", "a preview — nothing has moved" if dry else "")
     if not result["moves"]:
-        if result.get("skipped") or result.get("waiting") or result.get("taken_back"):
+        if result.get("skipped") or result.get("waiting") or taken:
             report_skipped()
             Out.note("everything else is filed already")
         else:
@@ -7731,6 +7956,82 @@ def cmd_sort(os_: Zenith, argv: list[str]) -> int:
         Out.note("didn't like any of that?  ./os undo puts it all back")
     Out.raw()
     return 1 if result.get("skipped") else 0
+
+
+def forget_taken_back(os_: Zenith, anyway: bool, as_json: bool) -> int:
+    """`os sort --forget`: throw away the words taken back with ./os undo,
+    when somebody asks, and only then.
+
+    Undo keeps them on purpose so it never loses words, and sort leaves them
+    where they are, so nothing ever cleared them: on 2026-10-04 the owner
+    deleted five by hand out of a hidden folder. It is part of sort because
+    sort is what finds them and says how to file them after all; the other
+    way out belongs beside that one. This is the one place ./os deletes words
+    somebody wrote, so it asks the way undo does: the first time it says
+    exactly what would be lost and changes nothing, and --anyway goes ahead.
+    ./os undo can't bring them back after."""
+    stage = (os_.dot / "cache" / STAGING).resolve()
+
+    def kept() -> list[tuple[str, str]]:
+        """Each one, and what it says. Only what sits in the staging folder
+        itself: a state file edited by hand must never point this at a note."""
+        out = []
+        for rel in sorted(os_.taken_back()):
+            path = os_.root / rel
+            if path.parent.resolve() != stage:
+                continue
+            if path.is_dir() and not path.is_symlink():
+                n = sum(1 for p in path.rglob("*") if p.is_file())
+                out.append((rel, f"a folder with {n} file{'' if n == 1 else 's'} in it"))
+            else:
+                out.append((rel, staged_words(path)))
+        return out
+
+    gone: list[str] = []
+    failed: list[str] = []
+    if not anyway:
+        lost = kept()           # only looking, so it waits on nobody
+    else:
+        with Lock(os_, "sort"):
+            lost = kept()
+            for rel, _words in lost:
+                path = os_.root / rel
+                try:
+                    if path.is_dir() and not path.is_symlink():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    gone.append(rel)
+                except OSError as exc:
+                    failed.append(f"{rel}: {exc}")
+            os_.taken_back()    # crosses off what is no longer there
+    if as_json:
+        print(json.dumps({"taken_back": [{"path": r, "words": w} for r, w in lost],
+                          "forgotten": gone, "failed": failed}, indent=2))
+        return 1 if failed or (lost and not anyway) else 0
+    Out.title("forget", "what you took back with ./os undo")
+    if not lost:
+        Out.ok("nothing taken back with ./os undo is being kept — nothing to throw away")
+        Out.raw()
+        return 0
+    if not anyway:
+        Out.warn(f"these {len(lost)} would be thrown away for good:" if len(lost) > 1
+                 else "this would be thrown away for good:")
+        for rel, words in lost:
+            Out.note(f"'{words}'   {rel}")
+        Out.note("nothing has been thrown away yet")
+        Out.note('to keep one, file it first:  ./os save "<where it is>"')
+        Out.note("to throw them away (./os undo can't bring them back):  "
+                 "./os sort --forget --anyway")
+        Out.raw()
+        return 1
+    if gone:
+        Out.ok(f"threw away {len(gone)} thing{'' if len(gone) == 1 else 's'} "
+               "you took back with ./os undo")
+    for line in failed:
+        Out.warn(f"couldn't throw away {line}")
+    Out.raw()
+    return 1 if failed else 0
 
 
 def cmd_index(os_: Zenith, argv: list[str]) -> int:
@@ -8161,6 +8462,97 @@ def add_next_step(os_: Zenith, item: Item, said: str, text: str, landed: Path,
     return 0
 
 
+#: A save that says what to call them or how they want answers: "Call me
+#: Sam", "From now on, answer in French", "I prefer bullet points", "Keep
+#: answers short". Filed like anything else, "Call me Sam" became a piece of
+#: work called Call Me Sam, and the next chat still didn't know their name.
+#: "Call me back about the quote" is a job, not a name, and is filed as one.
+ABOUT_THEM_SAID = re.compile(
+    r"^\s*(?:please[,\s]+)?(?:call\s+me(?!\s+(?:back|later|when|if|at|on|about|after|before"
+    r"|tomorrow|tonight|today|asap)\b)|from\s+now\s+on|i\s+prefer"
+    r"|keep\s+(?:your\s+|the\s+)?answers)\b", re.I)
+
+
+def add_about_them(os_: Zenith, text: str, as_json: bool) -> int:
+    """Write saved words about them into their About me note, as one line
+    marked (said): they said it themselves. With no About me yet, one is
+    started in the same step, so one ./os undo takes back the line and the
+    note both. Every chat starts by reading that note: see _about_them."""
+    words = re.sub(r"\s+", " ", text.strip())
+    words = words[:1].upper() + words[1:]
+    if words[-1] not in ".!?…":
+        words += "."
+    entry = f"- {words} (said)"
+
+    def said(line: str) -> str:
+        """A line as compared, so the same thing said twice is written once."""
+        line = re.sub(r"^\s*[-*]\s+|\s*\((?:said|guessed|unsure)\)\s*$", "", line.strip())
+        return re.sub(r"\s+", " ", line).strip(" .!?…").lower()
+
+    with Lock(os_, "save"):
+        note = about_them_note(os_, Scanner(os_).scan())
+        if note is None:
+            # Under personal when this folder has that subject, as AGENTS.md
+            # has `./os new note "About me" --domain personal` make it.
+            domain = "personal" if "personal" in (os_.taxonomy.get("domains") or {}) else ""
+            spine = unique_path(os_.root / os_.bucket_for_role("note") / f"{ABOUT_THEM}.md")
+            text_was = Creator(os_).render("note", "About me", "", domain, [], shape=ABOUT_THEM)
+        else:
+            spine = note.spine
+            text_was = read_to_rewrite(spine)
+        _meta, body = parse_frontmatter(text_was)
+        already = note is not None and any(said(line) == said(entry) for line in body.split("\n"))
+        if not already:
+            # Where an About me made in the ordinary note form keeps what it
+            # says; anywhere else, at the end, so the newest is last.
+            lines = body.split("\n")
+            start = next((n for n, line in enumerate(lines)
+                          if re.match(r"##\s+What it says\s*$", line, re.I)), None)
+            if start is not None:
+                end = next((n for n in range(start + 1, len(lines))
+                            if SECTION_RE.match(lines[n])), len(lines))
+                while end > start + 1 and not lines[end - 1].strip():
+                    end -= 1
+                lines.insert(end, entry)
+                body = "\n".join(lines)
+            else:
+                kept = body.rstrip()
+                last = kept.split("\n")[-1].lstrip()
+                body = kept + ("\n" if last.startswith(("- ", "* ")) else "\n\n") + entry + "\n"
+            if note is not None:
+                os_.snapshot(spine)
+            write_text(spine, set_fields(text_was, {"updated": today()}, body=body))
+            if note is None:
+                os_.created(spine)
+            else:
+                os_.record("edit", os_.rel(spine))
+            os_.commit("save")
+            Indexer(os_).build()
+    ident = note.ident if note is not None else spine.stem
+    title = note.title if note is not None else "About me"
+    if as_json:
+        print(json.dumps({"saved": os_.rel(spine), "id": ident, "kind": "note", "title": title,
+                          "filed": True, "added_to": ident, "already": already,
+                          "started": note is None}, indent=2))
+        return 0
+    if already:
+        Out.title("already written down")
+        Out.ok(os_.rel(spine))
+        Out.note(f"that's already in {title} — nothing new written")
+        Out.note(f"to change it:  ./os edit {handle(ident)}")
+        Out.raw()
+        return 0
+    Out.title("saved")
+    Out.ok(f"added to {title}: {trunc(words, 60)}")
+    if note is None:
+        Out.note(f"there was no {title} note yet, so this started one")
+    Out.note(f"it's in {os_.rel(spine)}, which every new chat reads first   ·   "
+             f"./os show {handle(ident)}")
+    Out.note("wrong spot?  ./os undo")
+    Out.raw()
+    return 0
+
+
 def cmd_decide(os_: Zenith, argv: list[str]) -> int:
     """Write one settled thing into the item it was settled about.
 
@@ -8338,6 +8730,11 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
             # learn to sail" is a thought in a sentence, though, and is saved.
             if not DECISION_SAID.match(text):
                 die('That reads like a decision — use ./os decide <name> "<text>"')
+        # "Call me Sam" is a line in their About me note, not a thing of its
+        # own: see add_about_them. One line only; several that open "From now
+        # on" are a page of notes, and are filed as one.
+        if ABOUT_THEM_SAID.match(text) and "\n" not in text.strip():
+            return add_about_them(os_, text, as_json)
         already = said_before(os_, text)
         if already is not None:
             Out.title("already written down")
@@ -8604,31 +9001,105 @@ def _set_phase(os_: Zenith, argv: list[str], phase: str) -> int:
 CLAIM_STALE_HOURS = 12
 
 
-def claim_label() -> str:
-    """Who this chat is, as far as the folder can tell.
+def session_label() -> str:
+    """The id an AI or a terminal gives this chat, or "" when there is none.
 
-    Two AI sessions in one folder are two runs of the same program: nothing
-    tells them apart but this. Claude Code sets CLAUDE_CODE_SESSION_ID, a
-    terminal sets TERM_SESSION_ID, and failing both the process that started
-    us will do. That fallback is weak inside Claude Code: the process is one
-    tool call's shell, gone by the next call. Reading only CLAUDE_SESSION_ID,
-    which Claude Code doesn't set, a chat's claim called that chat gone on its
-    very next command. CLAUDE_SESSION_ID is still read, for anything that
-    sets it."""
+    Claude Code sets CLAUDE_CODE_SESSION_ID and a terminal sets
+    TERM_SESSION_ID. Reading only CLAUDE_SESSION_ID, which Claude Code doesn't
+    set, a chat's claim called that chat gone on its very next command.
+    CLAUDE_SESSION_ID is still read, for anything that sets it."""
     for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "TERM_SESSION_ID"):
         value = str(os.environ.get(var) or "").strip()
         if value:
             return one_line(value).replace(" ", "-")[:40]
-    return f"pid-{os.getppid()}"
+    return ""
+
+
+#: Shells. One started to run a single command (`bash -c "./os claim x"`) is
+#: how most AIs run each command, and it is gone by the next one.
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "tcsh", "csh", "busybox"}
+#: Programs that only start one command and wait for it, so they come and go
+#: with it too.
+ONE_COMMAND = {"timeout", "time", "sudo", "doas", "xargs", "script", "caffeinate"}
+#: The walk up the process table gives one answer for the whole of a run.
+_CHAT_PROCESS: dict = {}
+
+
+def _process(pid: int) -> tuple[int, list[str]] | None:
+    """The parent of a running process and the words that started it, or None
+    when this computer won't say. Linux keeps both under /proc; a Mac has no
+    /proc, and `ps` answers there. Anything odd is None, never an error."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        words = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+        # The name in brackets can hold spaces and brackets of its own.
+        return int(stat.rpartition(")")[2].split()[1]), [w for w in words.split("\0") if w]
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        said = subprocess.run(["ps", "-ww", "-o", "ppid=", "-o", "args=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=3).stdout.split()
+        return int(said[0]), said[1:]
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def _only_one_command(words: list[str]) -> bool:
+    """Is this a process that lives for one command only: a shell started
+    with -c, or a program like `timeout` that runs one thing and waits?
+
+    A shell started any other way is somebody's terminal, typing command
+    after command, and lasts as long as they do."""
+    name = Path(words[0]).name.lstrip("-") if words else ""
+    if name in ONE_COMMAND:
+        return True
+    if name not in SHELLS:
+        return False
+    for word in words[1:]:
+        if not word.startswith("-"):
+            return False          # what it runs, or a script: the options are over
+        if not word.startswith("--") and "c" in word:
+            return True           # -c, -lc, -ec: the one command comes next
+    return False
+
+
+def chat_process() -> int:
+    """The process that lasts as long as the chat: the AI itself, or the
+    terminal somebody is typing into.
+
+    An AI that gives no session id runs each command in a shell of its own,
+    and that shell is gone by the next command. Labelled by it, a chat's own
+    claim read "that chat is gone" at once, and any other chat could take it
+    straight over. So this walks up past every shell and program there for
+    one command only, to the first thing that outlasts them. When the
+    process table can't be read, on any computer, it is the process that
+    started this one, as it always was."""
+    if "pid" not in _CHAT_PROCESS:
+        pid = os.getppid()
+        for _ in range(12):
+            seen = _process(pid)
+            if seen is None or seen[0] <= 1 or not _only_one_command(seen[1]):
+                break
+            pid = seen[0]
+        _CHAT_PROCESS["pid"] = pid
+    return _CHAT_PROCESS["pid"]
+
+
+def claim_label() -> str:
+    """Who this chat is, as far as the folder can tell.
+
+    Two AI sessions in one folder are two runs of the same program: nothing
+    tells them apart but this. The id the AI or terminal gives the chat comes
+    first; failing that, the process that lasts as long as the chat does."""
+    return session_label() or f"pid-{chat_process()}"
 
 
 def this_chat() -> str:
     """The chat running this, by the id its AI or terminal gives it, or ""
-    when there is none. The last resort in claim_label, the id of the
-    process that started us, is a different number on every command inside
-    Claude Code, so it would make every chat look like a stranger to itself."""
-    label = claim_label()
-    return "" if label.startswith("pid-") else label
+    when there is none. The last resort in claim_label, a process id, is a
+    best guess: good enough to say who is holding something, but a wrong one
+    here would stop a chat's ./os undo of its own change."""
+    return session_label()
 
 
 def claim_owner(label: str) -> str:
@@ -8815,6 +9286,24 @@ MD_FENCE = re.compile(r"^ {0,3}(```|~~~)", re.M)
 RELINK_CAP = 2_000_000
 
 
+def link_file(dest: str) -> str | None:
+    """The file a link points at, spelt the way it is on disk, or None when
+    it is not a file in here: a web address, a place on the same page, a
+    path from the top of the disk.
+
+    `dest` is where MD_LINK or MD_REF says it points, its title already left
+    off. `<Mum's soup.md>` loses its brackets, and `Mum%27s%20soup.md`
+    becomes Mum's soup.md. ./os check turned only %20 back into a space, so
+    a link with %27 in it was a file nobody had, and called broken though it
+    worked. Rename and check read links the same way, here."""
+    angle = dest.startswith("<") and dest.endswith(">")
+    path = (dest[1:-1] if angle else dest).partition("#")[0]
+    if not path or path.startswith(("/", "~", "\\")) or "?" in path \
+            or re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:", path):
+        return None
+    return path if angle else unquote(path)
+
+
 class Relinker:
     """Keep links between notes working when ./os moves things.
 
@@ -8883,10 +9372,9 @@ class Relinker:
         angle = dest.startswith("<") and dest.endswith(">")
         raw = dest[1:-1] if angle else dest
         path, hashmark, anchor = raw.partition("#")
-        if not path or path.startswith(("/", "~", "\\")) or "?" in path \
-                or re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:", path):
+        plain = link_file(dest)
+        if plain is None:
             return None      # a web address, a place on this page, or not ours
-        plain = path if angle else unquote(path)
         was = os.path.normpath(os.path.join(was_in, plain))
         inside = self._rel(was)
         target = os.path.normpath(self._abs(self.forward(inside))) if inside is not None else was
@@ -8984,7 +9472,13 @@ class Relinker:
             if "](" not in text and "]:" not in text:
                 continue
             if was == now and not any(c in text for c in clues):
-                continue
+                # Any letter of a name can be written as %XX, and a web page
+                # writes Mum's%20fish%2C%20chips.md, which is none of the ways
+                # above. Read as the letters they stand for, every way of
+                # writing the name says it.
+                decoded = unquote(text) if "%" in text else ""
+                if not any(c in decoded for c in clues):
+                    continue
             linked = self.rewrite(text, os.path.dirname(self._abs(was)), str(path.parent))
             if linked == text:
                 continue
@@ -9120,15 +9614,15 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
                           for s, i, sn in hits], indent=2))
         return 0
     Out.title("found", f'"{query}"')
+    # Offered as a command to type, never searched for on its own: `bike` is
+    # a real word, and bake is not what they asked for.
+    words = [finder.near.get(w, w) for w in re.split(r"\s+", unaccented(nfc(query).lower().strip())) if w]
+    more = (["--kind", kind] if kind else []) + (["--in", bucket] if bucket else [])
+    offer = paint("./os find " + " ".join(shell_word(w) for w in words + more), S.GOLD)
     if not hits:
         Out.warn("nothing matched — try fewer words, or a different one")
         if finder.near:
-            # Offered as a command to type, never searched for on its own:
-            # `bike` is a real word, and bake is not what they asked for.
-            words = [finder.near.get(w, w) for w in re.split(r"\s+", unaccented(nfc(query).lower().strip())) if w]
-            more = (["--kind", kind] if kind else []) + (["--in", bucket] if bucket else [])
-            Out.raw("  " + paint("try a near word:  ", S.MUTE)
-                    + paint("./os find " + " ".join(shell_word(w) for w in words + more), S.GOLD))
+            Out.raw("  " + paint("try a near word:  ", S.MUTE) + offer)
         Out.raw()
         return 1
     for score, item, snippet in hits:
@@ -9140,6 +9634,11 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
             Out.raw("          " + paint("in " + trunc(where[len(os_.rel(item.path)) + 1:], 71), S.MUTE))
         if snippet:
             Out.raw("          " + paint(trunc(snippet, 74), S.FAINT))
+    if finder.near:
+        # The other words found these. This one is in nothing, and may be a slip.
+        missed = " or ".join(f'"{w}"' for w in finder.near)
+        Out.raw()
+        Out.raw("  " + paint(f"nothing has {missed} in it — try a near word:  ", S.MUTE) + offer)
     Out.raw()
     return 0
 
@@ -9395,6 +9894,11 @@ def cmd_doctor(os_: Zenith, argv: list[str]) -> int:
     if as_json:
         print(json.dumps(result, indent=2))
         return 0 if not any(i["level"] == "error" for i in result["issues"]) else 1
+    # Words taken back with ./os undo are said once, then never again here.
+    told = set(os_.first_time_taken_back(
+        [i["path"] for i in result["issues"] if i["code"] == "taken-back-capture"]))
+    result["issues"] = [i for i in result["issues"]
+                        if i["code"] != "taken-back-capture" or i["path"] in told]
     Out.title("check", f"{result['items']} things looked at")
     for line in result.get("repaired", []):
         Out.ok("fixed: " + line)
@@ -9543,12 +10047,15 @@ def cmd_close(os_: Zenith, argv: list[str]) -> int:
     should not claim more than it knows."""
     if not argv or not argv[0].strip():
         die("which one?   ./os close fix-the-boiler      (run ./os to see the names)")
+    how = _how_it_ended(os_, argv)
     _one_name(os_, argv, "close")
     with Lock(os_, "archive"):
-        dest = Archivist(os_).archive(argv[0])
+        dest = Archivist(os_).archive(argv[0], how)
         Indexer(os_).build()
     Out.title("put away")
     Out.ok(os_.rel(dest))
+    if how:
+        Out.note(f"its ## Log now says it was {how}")
     Out.note("it still turns up in ./os find — nothing gets deleted here")
     Out.note("still going, just quietly?  ./os back it, then ./os hold it")
     # ./os back looks among what is put away first. Two put away under one
@@ -9561,6 +10068,23 @@ def cmd_close(os_: Zenith, argv: list[str]) -> int:
     Out.note(f"changed your mind?  ./os back {back}")
     Out.raw()
     return 0
+
+
+def _how_it_ended(os_: Zenith, argv: list[str]) -> str:
+    """`done` or `dropped` said after the name of what is being closed, taken
+    off the end of argv; "" when neither was.
+
+    Close doesn't guess which, since things leave because they stopped being
+    carried. Said, it goes in the thing's own Log. A live thing whose name
+    ends in the word, typed without quotes, is still that name, and is asked
+    about the way it always was."""
+    words = [a for a in argv if a != "--"]
+    if len(words) < 2 or argv[-1] != words[-1] or words[-1].strip().lower() not in CLOSED_AS:
+        return ""
+    whole = Finder(os_).by_id(" ".join(words))
+    if whole is not None and whole.kind != "archive":
+        return ""
+    return argv.pop().strip().lower()
 
 
 def cmd_back(os_: Zenith, argv: list[str]) -> int:
@@ -9758,6 +10282,21 @@ they ask. "Capture" is not a word they use."""
 #: known in every session after. A folder of that name works too.
 ABOUT_THEM = "about-me"
 ABOUT_THEM_LINES = 15
+#: Of those, how many are the newest. A save adds its line at the end, so
+#: with only the first lines shown, everything said after the fifteenth was
+#: written down and never reached another chat.
+ABOUT_THEM_NEWEST = 5
+
+
+def about_them_note(os_: Zenith, items: list) -> Item | None:
+    """Their About me note, or None. The one nearest the top when there are
+    two, so the brief reads, and `./os save` writes in, the same one."""
+    archive = os_.bucket_for_role("archive")
+    notes = sorted((i for i in items if i.kind == "note" and i.bucket != archive
+                    and ABOUT_THEM in (slugify(i.title), slugify(i.ident))
+                    and i.spine and i.spine.is_file()),
+                   key=lambda i: len(i.path.parts))
+    return notes[0] if notes else None
 
 
 def _about_them(os_: Zenith, items: list) -> list[str]:
@@ -9765,21 +10304,26 @@ def _about_them(os_: Zenith, items: list) -> list[str]:
 
     Nothing when there is no such note. Headings, `<!-- prompts -->` and empty
     template bullets are left out: what is wanted is what they said."""
-    archive = os_.bucket_for_role("archive")
-    notes = sorted((i for i in items if i.kind == "note" and i.bucket != archive
-                    and ABOUT_THEM in (slugify(i.title), slugify(i.ident))
-                    and i.spine and i.spine.is_file()),
-                   key=lambda i: len(i.path.parts))
-    if not notes:
+    note = about_them_note(os_, items)
+    if note is None:
         return []
-    note = notes[0]
     _, body = parse_frontmatter(read_text(note.spine, 60_000))
     lines = [line.strip() for line in COMMENT_RE.sub("", body).split("\n")]
     said = [line for line in lines if line and not line.startswith("#")
             and not re.fullmatch(r"[-*]\s*(\[[ xX]\])?\s*", line)]
+    def shown(line: str) -> str:
+        return "  " + (line if len(line) <= 200 else line[:199].rsplit(" ", 1)[0] + " …")
+
     out = [f"About them ({os_.rel(note.spine)}):"]
-    out += ["  " + (line if len(line) <= 200 else line[:199].rsplit(" ", 1)[0] + " …")
-            for line in said[:ABOUT_THEM_LINES]]
+    if len(said) <= ABOUT_THEM_LINES:
+        out += [shown(line) for line in said]
+    else:
+        first = ABOUT_THEM_LINES - ABOUT_THEM_NEWEST
+        left_out = len(said) - ABOUT_THEM_LINES
+        out += [shown(line) for line in said[:first]]
+        out.append(f"  … {left_out} more line{'' if left_out == 1 else 's'} in "
+                   f"{os_.rel(note.spine)}, between these and the newest: read it for all of them")
+        out += [shown(line) for line in said[-ABOUT_THEM_NEWEST:]]
     if note.is_dir:
         more = sorted(p.name for p in note.path.iterdir() if p.is_file() and p != note.spine
                       and p.suffix.lower() == ".md" and not p.name.endswith(".card.md"))
@@ -10874,7 +11418,7 @@ _os_complete() {
   fi
   case "$prev" in
     new)   COMPREPLY=( $(compgen -W "work ongoing note learning skill agent" -- "$cur") ) ;;
-    sort)  COMPREPLY=( $(compgen -W "--dry-run --json" -- "$cur") ) ;;
+    sort)  COMPREPLY=( $(compgen -W "--dry-run --forget --json" -- "$cur") ) ;;
     check) COMPREPLY=( $(compgen -W "--fix --json" -- "$cur") ) ;;
     help)  COMPREPLY=( $(compgen -W "%s" -- "$cur") ) ;;
     *)     COMPREPLY=( $(compgen -f -- "$cur") ) ;;
@@ -10895,7 +11439,7 @@ _os() {
   case ${words[2]} in
     new) _values 'kind' work ongoing note learning skill agent ;;
     open|edit|done|back|rename|claim|release|decide) _message 'a name like fix-the-boiler' ;;
-    sort) _values 'flag' --dry-run --json ;;
+    sort) _values 'flag' --dry-run --forget --json ;;
     check) _values 'flag' --fix --json ;;
     help) _describe -t commands 'os' cmds ;;
     *) _files ;;
@@ -10941,7 +11485,9 @@ DETAIL = {
              "Write something down. It works out what it is and puts it in the right "
              "folder straight away — you never pick one. Start with the name of "
              "work you already have, and the rest becomes its next action, or, for "
-             "something you keep up, goes under Keeps coming back. A video, "
+             "something you keep up, goes under Keeps coming back. Start with "
+             "\"call me\", \"from now on\", \"I prefer\" or \"keep answers\", and "
+             "it becomes a line in your About me note. A video, "
              "or anything bigger than 100 MB, stays where it is: a note in Notes "
              "says where it lives, and that note is what search finds. --copy "
              "puts a copy in Work/Content too, which ./os leaves alone.",
@@ -11048,9 +11594,9 @@ DETAIL = {
              "have saved, archive included, the notes kept inside a piece of "
              "work's folder, and the name of every file in a folder, a PDF or a "
              "photo too. Plurals and word endings are fine — 'meetings' finds "
-             "'meeting'. When nothing matches, it offers a near word as a "
-             "command to type, and never searches for a different word on its "
-             "own. Skills and helpers are "
+             "'meeting'. When a word you typed is in nothing, it offers a near "
+             "word as a command to type, and never searches for a different "
+             "word on its own. Skills and helpers are "
              "left out unless you ask for them with --kind skill.",
              ["os find boiler", "os find garden --kind project",
               "os find weekly --kind skill"],
@@ -11080,12 +11626,14 @@ DETAIL = {
                ['os rename fix-the-boiler "Replace the boiler"'],
                "Renaming by hand leaves the title and the folder saying different "
                "things — this is the one that keeps them together. ./os undo reverses it."),
-    "close": ("os close <name>   |   os back <name>",
+    "close": ("os close <name> [done|dropped]   |   os back <name>",
               "Put something away in Archive/, or take it back out. Closed means "
               "no longer live — not necessarily finished. Things leave because you "
               "stopped carrying them, and that is as true of shipped work as of "
-              "abandoned work.",
-              ["os close fix-the-boiler", "os back fix-the-boiler"],
+              "abandoned work. To say which, put done or dropped after the name, "
+              "and a dated line saying so goes in its ## Log.",
+              ["os close fix-the-boiler", "os back fix-the-boiler",
+               "os close fix-the-boiler done"],
               "Nothing is deleted, and things in the archive still turn up in "
               "./os find. If it is not over, just quiet, ./os hold it instead."),
     "decide": ('os decide <name> "<what was settled>"',
@@ -11121,7 +11669,7 @@ DETAIL = {
                    "this folder alone. To see or take back a hand "
                    "edit, an AI uses git: git diff shows what changed since, and git "
                    "restore puts a file back."),
-    "sort": ("os sort [--dry-run]",
+    "sort": ("os sort [--dry-run]   |   os sort --forget [--anyway]",
              "Take charge of anything you dropped in by hand. A folder you made "
              "keeps its name, and nothing in it is rewritten. A loose file, or "
              "one left at the top of this folder, keeps its own name and ending "
@@ -11131,9 +11679,14 @@ DETAIL = {
              "work, under its own name. As Notes and Work fill up, it also "
              "groups the loose notes it filed itself by subject. A folder you "
              "made stays where you put it.",
-             ["os sort --dry-run     # show me first, change nothing", "os sort"],
+             ["os sort --dry-run     # show me first, change nothing", "os sort",
+              "os sort --forget      # what you took back with ./os undo, and what throwing it away loses",
+              "os sort --forget --anyway"],
              "./os save files things the moment you say them, so this is for the "
-             "times you dragged a pile of files in from Finder instead."),
+             "times you dragged a pile of files in from Finder instead. Words you "
+             "take back with ./os undo are kept, and sort leaves them alone and "
+             "says so once. --forget lists them and changes nothing; with --anyway "
+             "it throws them away for good."),
     "check": ("os check [--fix]",
               "Look for anything broken, like half-written skills or dead links, "
               "and anything of yours that ./os find and the list can't reach: a "
@@ -11324,7 +11877,7 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_save": {"--copy", "--file", "--json"},
     "cmd_setup": {"--name", "--owner", "--quiet-welcome"},
     "cmd_show": set(),
-    "cmd_sort": {"--dry-run", "--json", "-n"},
+    "cmd_sort": {"--anyway", "--dry-run", "--forget", "--json", "-n"},
     "cmd_status": {"--json"},
     "cmd_test": None,      # forwards everything to the suite
     "cmd_undo": {"--anyway", "--other-chat"},

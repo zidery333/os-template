@@ -27,7 +27,9 @@ not fitting.
 ## Start where they already are
 
 `./os find "$ARGUMENTS"` first. Already covered? Extend that note and cite its
-name — never write a rival one. Then, in one message, only what changes the
+name — never write a rival one. Read its `## Who to trust` before any source:
+whoever's advice held up when they tried it is read first, whoever's failed them
+last or not at all, and say which. Then, in one message, only what changes the
 answer. *For using*: what they'll do with it, and whether they've never tried,
 are doing it badly, or are improving. If `$ARGUMENTS` says, skip the question.
 
@@ -108,6 +110,9 @@ neither means the note is enough — say so and stop.
 - Quiet about risk **unless a source is reckless**: a claim the base rate
   contradicts earns one line, once, then teach.
 - Same subject again? Read only what's new and append.
+- They tried a source's advice and it worked, or didn't, in this chat or a later
+  one? A dated line under that note's `## Who to trust`: who, what they said,
+  what happened. Never change an old line; a new result is a new line.
 - One craft per note. "Learn photography" is a bookshelf; get them to the thing
   they are actually stuck on.
 

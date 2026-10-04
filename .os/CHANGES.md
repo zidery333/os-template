@@ -3,6 +3,38 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-04.1
+
+- `./os close <name> done` or `./os close <name> dropped` says how
+  something ended. A dated line goes in its Log, so later you can tell
+  what was finished from what was given up.
+- Saying "call me Sam", "from now on…", "I prefer…" or "keep answers…"
+  through `./os save` adds one line to your About me note, instead of
+  starting a piece of work. A new About me note says how sure each line
+  is: said, guessed or unsure. Every new chat sees its first lines and
+  its newest ones, so nothing you said lately gets cut off.
+- `status: paused`, `on hold` or `waiting`, typed by hand, now keeps the
+  work on your lists as something you keep up. `./os check` names any
+  other status it can't read.
+- `./os check` points out a page with the same heading twice, like two
+  `## Decisions`, and a page that has grown very long above its Log.
+- Words taken back with `./os undo` are mentioned once, then left in
+  peace. `./os sort --forget` shows what they are, and
+  `./os sort --forget --anyway` throws them away.
+- Search reads all of a long note, not just its start and end. When one
+  word of a search matches nothing, it offers the search with a near word.
+- When your AI works without asking you first, the guard on your Log and
+  Decisions now also stops a shell command like `sed -i` from rewriting
+  them, and asks you.
+- Smaller things: links written with `%27`, `<…>` or a title are no longer
+  called broken, and a rename keeps them working; sort no longer makes a
+  group folder for one note, and closing the last thing in a group takes
+  the empty group away; `/learn` keeps a "Who to trust" list of whose
+  advice worked; a claim made from an AI other than Claude no longer slips
+  away between commands; and updating gives a hook nobody changed its new
+  settings, and adds new words to a subject list you've edited without
+  bringing back any you took out (from the update after this one).
+
 ## 2026-10-01.6
 
 - `./os park` now holds something instead of putting it away, and

@@ -727,7 +727,7 @@ def test_replacing_a_record_whole_asks_first(t: Case) -> None:
     settings = json.loads((root / ".claude" / "settings.json").read_text())
     groups = [g for g in settings["hooks"].get("PreToolUse", [])
               if "keep-the-record.sh" in json.dumps(g)]
-    t.eq([g.get("matcher") for g in groups], ["Write"], "it is wired to Write alone")
+    t.eq([g.get("matcher") for g in groups], ["Write|Bash"], "it is wired to Write and shell commands, not Edit")
 
     # It ships, and an updated folder gets it too.
     lists = [re.search(r"^SHIPPED_HOOKS = \((.*?)\)\n",
@@ -1373,6 +1373,135 @@ def test_undo_of_a_close_puts_the_header_back_too(t: Case) -> None:
 
 
 @test
+def test_close_says_whether_it_was_done_or_dropped(t: Case) -> None:
+    """The archive couldn't tell finished from dropped: a year on, work that
+    shipped and work given up looked the same. `./os close <name> done` or
+    `dropped` writes a dated line saying which into its ## Log, and undo
+    takes that back with the rest. With neither word, close is as it was."""
+    root, day = t.box.root, engine.today()
+    for name in ("Paint the fence", "Learn the banjo", "Clear the loft", "Get it done"):
+        t.box.run("new", "work", name)
+    (root / "Notes" / "bin-day.md").write_text(
+        "---\ntitle: Bin day\ntype: note\ndomain: home\ntags: []\ncreated: 2026-09-01\n"
+        "updated: 2026-09-01\n---\n\n# Bin day\n\nThe bins go out on Tuesday.\n", encoding="utf-8")
+
+    def page(title: str) -> str:
+        item = next(i for i in t.box.items() if i["title"] == title)
+        path = root / item["path"]
+        return (path / "README.md" if path.is_dir() else path).read_text()
+
+    def last_logged(title: str) -> str:
+        return page(title).split("## Log", 1)[-1].strip().split("\n")[-1]
+
+    t.box.run("close", "paint-the-fence", "done")
+    t.eq(last_logged("Paint the fence"), f"- {day} · Closed as done",
+         "a finished one says so in its own Log")
+    said = t.box.run("close", "bin-day", "dropped").stdout
+    t.eq(last_logged("Bin day"), f"- {day} · Closed as dropped",
+         "a note with no Log gets one to say it in")
+    t.ok("dropped" in said, f"and close says what it wrote\n{said}")
+    t.box.run("close", "learn-the-banjo")
+    t.ok("Closed as" not in page("Learn the banjo"), "with neither word, no line is written")
+
+    before, folders = t.box.tree(), t.box.dirs()
+    t.box.run("close", "Clear the loft", "done")
+    t.box.run("undo")
+    t.eq(t.box.tree(), before, "undo takes the line back with everything else")
+    t.eq(t.box.dirs(), folders, "and leaves no folder behind")
+    for args in (["clear-the-loft", "finished"], ["Get", "it", "done"]):
+        t.box.run("close", *args, expect=2)
+    t.eq(t.box.tree(), before, "any other word, or a name ending in done unquoted, is refused as before")
+    t.box.run("close", "Get it done", "dropped")
+    t.eq(last_logged("Get it done"), f"- {day} · Closed as dropped",
+         "a name ending in done takes the word too, in quotes")
+    helped = t.box.run("help", "close").stdout
+    t.ok("done" in helped and "dropped" in helped, f"./os help close says how\n{helped}")
+
+
+def _a_group(trail: list) -> str:
+    """The mark ./os writes in a group it made, as an earlier release wrote it."""
+    return json.dumps({"name": trail[-1], "trail": trail, "auto": True,
+                       "created": "2026-09-01", "engine": "3.0.0"}, indent=2) + "\n"
+
+
+@test
+def test_close_takes_away_the_group_it_leaves_empty(t: Case) -> None:
+    """Closing the last thing in a group left the group standing empty until
+    a sort came by. Close takes it away now, and any group around it that is
+    empty too; a group with anything left in it stays. Undo makes them again,
+    each still marked as a group, with the thing back inside."""
+    root = t.box.root
+
+    def put(rel: str, text: str) -> None:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+
+    def head(title: str, kind: str, domain: str, status: str = "—") -> str:
+        return (f"---\ntitle: {title}\ntype: {kind}\nstatus: {status}\ndomain: {domain}\n"
+                f"tags: []\ncreated: 2026-09-01\nupdated: 2026-09-01\n---\n\n# {title}\n\n")
+
+    put("Notes/Food/.category", _a_group(["Food"]))
+    put("Notes/Food/Baking/.category", _a_group(["Food", "Baking"]))
+    put("Notes/Food/Baking/scones.md", head("Scones", "note", "cooking") + "220C, 12 minutes.\n")
+    put("Notes/Money/.category", _a_group(["Money"]))
+    put("Notes/Money/council-tax.md", head("Council tax", "note", "finance") + "Band C.\n")
+    put("Notes/Money/water-bill.md", head("Water bill", "note", "finance") + "Paid in April.\n")
+    put("Work/General/.category", _a_group(["General"]))
+    put("Work/General/Fix the Gate/README.md", head("Fix the gate", "work", "home", "pushing")
+        + "## Next action\n- [ ] Buy a new hinge\n")
+    t.box.run("index")
+
+    before, folders = t.box.tree(), t.box.dirs()
+    t.box.run("close", "scones")
+    t.ok(not (root / "Notes" / "Food").exists(),
+         "the group it emptied is taken away, and the empty one around it")
+    t.box.run("undo")
+    t.eq(t.box.tree(), before, "undo puts the note back in its groups, marks and all")
+    t.eq(t.box.dirs(), folders, "with every folder as it was")
+    t.ok(engine.Scanner.is_category(root / "Notes" / "Food" / "Baking"),
+         "still a group ./os made, not a folder that looks like somebody's own")
+
+    t.box.run("close", "council-tax")
+    t.ok(engine.Scanner.is_category(root / "Notes" / "Money")
+         and (root / "Notes" / "Money" / "water-bill.md").is_file(),
+         "a group with something left in it stays")
+    t.box.run("close", "fix-the-gate")
+    t.ok(not (root / "Work" / "General").exists(), "in Work too")
+
+
+@test
+def test_sort_never_makes_a_group_of_one(t: Case) -> None:
+    """Once Notes passed twelve things, the one note alone in its subject was
+    put into General by itself: a folder around one file. It stays loose in
+    Notes now. A General an earlier release made with one note in it stays
+    exactly where it is, with its note (decided 2026-09-30)."""
+    notes = t.box.root / "Notes"
+    for n in range(12):
+        (notes / f"garden-{n}.md").write_text(
+            f"# Garden job {n}\n\nGardening note: weed the garden beds, compost, plant "
+            f"seedlings, water the greenhouse and lawn. Bed {n}.\n")
+    (notes / "pizza-dough.md").write_text(
+        "# Pizza dough\n\nA recipe. Ingredients: flour, water, salt, yeast. Method: knead, "
+        "rest, bake in the oven.\n")
+    t.box.run("sort")
+    t.ok(any(i["trail"] for i in t.box.items() if i["bucket"] == "Notes"), "Notes is grouped by now")
+    t.ok((notes / "pizza-dough.md").is_file() and not (notes / "General").exists(),
+         f"the one note alone in its subject stays loose in Notes\n"
+         f"{sorted(str(p.relative_to(notes)) for p in notes.rglob('*.md'))}")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "and the next sort has nothing to do")
+
+    t.box.run("close", "pizza-dough")
+    (notes / "General").mkdir()
+    (notes / "General" / ".category").write_text(_a_group(["General"]))
+    (notes / "General" / "council-tax.md").write_text(
+        "---\ntitle: Council tax\ntype: note\nstatus: —\ndomain: finance\ntags: []\n"
+        "created: 2026-09-01\nupdated: 2026-09-01\n---\n\n# Council tax\n\nBand C.\n")
+    before = t.box.tree()
+    t.box.run("sort")
+    t.eq(t.box.tree(), before, "a General an earlier release made stays as it is, with its one note")
+
+
+@test
 def test_a_flip_between_phases_can_be_taken_back(t: Case) -> None:
     """`os undo` takes back the *last* thing, including a hold or a push.
 
@@ -1924,6 +2053,116 @@ def test_a_claim_made_in_claude_code_is_that_chat_s(t: Case) -> None:
                 os.environ[var] = value
 
 
+@test
+def test_words_taken_back_are_said_once_and_go_only_when_asked(t: Case) -> None:
+    """Words taken back with ./os undo: said once, then quiet, gone on request.
+
+    They are kept on purpose, so undo never loses words. But ./os check listed
+    every one on every run after, and ./os sort said a line for each, for good.
+    On 2026-10-04 the owner had five, wanted them gone, and had to find the
+    hidden folder and delete them by hand."""
+    stage = t.box.root / ".os" / "cache" / engine.STAGING
+
+    def kept(words: str) -> Path:
+        return next(p for p in stage.iterdir() if words in p.read_text(encoding="utf-8"))
+
+    t.box.run("save", "Ring the plumber about the boiler before the winter")
+    t.box.run("undo")
+    plumber = kept("plumber")
+    rel = plumber.relative_to(t.box.root).as_posix()
+
+    first = t.box.run("check")
+    t.ok(rel in first.stdout, "the first check after an undo says where the words are kept")
+    t.ok("./os sort --forget" in first.stdout, "and how to throw them away")
+    t.ok(rel not in t.box.run("check").stdout, "after that, check is quiet about them")
+    t.ok(plumber.name not in t.box.run("sort").stdout, "and so is sort")
+    t.eq([i["level"] for i in t.box.json("check", expect=None)["issues"]
+          if i["code"] == "taken-back-capture"], ["hint"],
+         "asked for everything as JSON, check still lists them")
+
+    # the next undo is said once too, by whichever of the two runs first
+    t.box.run("save", "Order more seed for the bird table")
+    t.box.run("undo")
+    seed = kept("bird table")
+    told = t.box.run("sort")
+    t.ok(seed.name in told.stdout and "./os sort --forget" in told.stdout,
+         "sort says it when sort runs first")
+    t.ok(seed.name not in t.box.run("check").stdout, "and check doesn't say it again")
+
+    # words from a run that died were never taken back, and are not theirs to lose here
+    orphan = stage / "20200101-000000-ring-the-accountant.md"
+    orphan.write_text("---\nsaved: 2020-01-01T00:00:00\n---\n\n"
+                      "ring the accountant about the VAT thing\n", encoding="utf-8")
+
+    asked = t.box.run("sort", "--forget", expect=1)
+    t.ok(plumber.exists() and seed.exists(), "asked once, nothing is thrown away")
+    t.ok("plumber" in asked.stdout and "bird table" in asked.stdout,
+         "it says exactly what would be lost")
+    t.ok("accountant" not in asked.stdout, "and only what was taken back")
+    t.ok("./os sort --forget --anyway" in asked.stdout, "and what to type to go ahead")
+
+    t.box.run("sort", "--forget", "--anyway")
+    t.ok(not plumber.exists() and not seed.exists(), "told to go ahead, they are gone")
+    t.ok(orphan.exists(), "and words never taken back are left where they are")
+    t.eq([i for i in t.box.json("check", expect=None)["issues"]
+          if i["code"] == "taken-back-capture"], [], "check has nothing left to list")
+    t.ok("nothing" in t.box.run("sort", "--forget").stdout,
+         "with none left, asking again says so")
+
+
+@test
+def test_a_claim_lasts_from_one_command_to_the_next_without_a_session_id(t: Case) -> None:
+    """An AI that sets no session id runs each command in a shell of its own.
+
+    Labelled by that shell, which is gone by the next command, a chat's own
+    claim read "that chat is gone" at once, and any other chat could take it
+    straight over. The label is now the process that outlasts those shells:
+    the AI itself, the same for every command that chat runs."""
+    was = {v: os.environ.pop(v, None)
+           for v in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "TERM_SESSION_ID")}
+    env = dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1")
+    # `; exit` after it, so the shell can't hand itself over to ./os and drop
+    # out of the picture: it stays in between, the way it does for an AI.
+    line = shlex.quote(str(t.box.root / "os")) + " claim paint-the-fence; exit $?"
+
+    def in_a_shell(*program: str) -> subprocess.CompletedProcess:
+        return subprocess.run([*program, "sh", "-c", line], capture_output=True, text=True,
+                              cwd=str(t.box.root), env=env, timeout=180)
+    try:
+        t.box.run("new", "work", "Paint the fence", "--domain", "design")
+        t.eq(in_a_shell().returncode, 0, "the claim is made from a shell of its own")
+        t.box.run("index")
+        spine = t.box.root / next(i["path"] for i in t.box.items()
+                                  if i["title"] == "Paint the fence") / "README.md"
+        label, _ = engine.read_claim(engine.parse_frontmatter(spine.read_text())[0]["claimed"])
+        t.ok(not engine.claim_gone(label),
+             f"it names something still running once that shell has gone: {label}")
+        t.ok("(this chat)" in t.box.run().stdout,
+             "the same chat's next command knows the claim as its own")
+
+        # another chat: another program that lasts, running shells of its own
+        other = in_a_shell(sys.executable, "-c",
+                           "import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)")
+        t.eq(other.returncode, 1, "another chat is turned away while the first is still going")
+        t.ok(f"claimed by {label}" in other.stdout, "and told who has it")
+
+        # the process table can't always be read: then it is the process that
+        # started this one, as it always was
+        real = engine._process
+        engine._process = lambda pid: None
+        engine._CHAT_PROCESS.clear()
+        try:
+            t.eq(engine.claim_label(), f"pid-{os.getppid()}", "it falls back safely")
+        finally:
+            engine._process = real
+            engine._CHAT_PROCESS.clear()
+    finally:
+        for var, value in was.items():
+            os.environ.pop(var, None)
+            if value is not None:
+                os.environ[var] = value
+
+
 # ---------------------------------------------------------------------------
 # learning from source material  (.os/learn.py — the one part that goes online)
 # ---------------------------------------------------------------------------
@@ -2331,6 +2570,80 @@ def test_find_reads_the_notes_inside_a_piece_of_work(t: Case) -> None:
     finder = engine.Finder(os_)
     item = finder.by_id("kitchen-refit")
     t.eq(len(finder._inside(item)), engine.Finder.INSIDE_FILES, "and only so many files")
+
+
+@test
+def test_a_link_is_read_however_markdown_lets_it_be_written(t: Case) -> None:
+    """A link can be written `Mum%27s%20soup.md`, `<Mum's soup.md>`, or with
+    a title after it. ./os check turned only %20 back into a space, so the
+    first was called broken though it worked, and a broken one in <…> or with
+    a title was never mentioned. Rename looked only in notes that spelt the
+    old name one of three set ways, so a link written the way a web page
+    writes one, `Mum's%20fish%2C%20chips.md`, was left pointing at nothing."""
+    notes = t.box.root / "Notes"
+    for name in ("Mum's soup", "Mum's fish, chips", "Bread tips"):
+        (notes / f"{name}.md").write_text(f"# {name}\n\nA few words about {name}.\n",
+                                          encoding="utf-8")
+    t.box.run("new", "work", "Garden Shed")
+    bread = notes / "Bread tips.md"
+    bread.write_text(bread.read_text() + "\n- [soup](Mum%27s%20soup.md)"
+                     "\n- [fish](Mum's%20fish%2C%20chips.md)"
+                     "\n- [the shed](<../Work/Garden Shed/README.md>)"
+                     '\n- [the shed again](../Work/Garden%20Shed/README.md "the shed")\n',
+                     encoding="utf-8")
+    t.box.run("index")
+
+    def broken() -> list:
+        return [i["message"] for i in t.box.json("check", expect=None)["issues"]
+                if i["code"] == "broken-link"]
+    t.eq(broken(), [], "a link with %27 in it is not called broken")
+    t.box.run("rename", "Mum's soup", "Gran's soup")
+    t.box.run("rename", "Mum's fish, chips", "Fish supper")
+    t.box.run("rename", "garden-shed", "Mum's Shed")
+    text = bread.read_text()
+    for target in _links(text):
+        t.ok(_lands(bread, target).exists(), f"{target} still reaches something\n{text}")
+    t.ok("[fish](fish-supper.md)" in text, f"a link written the way a web page writes one follows\n{text}")
+    t.ok("[the shed](<../Work/Mum's Shed/README.md>)" in text, "one in <…> stays in <…>")
+    t.ok('(../Work/Mum%27s%20Shed/README.md "the shed")' in text,
+         "one written encoded stays encoded, and keeps its title")
+    t.eq(broken(), [], "and check finds nothing the renames broke")
+    (notes / "Old links.md").write_text("# Old links\n\n[a](<Gone note.md>)\n", encoding="utf-8")
+    (notes / "Older links.md").write_text('# Older links\n\n[b](gone-too.md "an old one")\n',
+                                          encoding="utf-8")
+    t.box.run("index")
+    said = broken()
+    t.ok(any(m.endswith(": Gone note.md") for m in said), f"a broken link in <…> is reported\n{said}")
+    t.ok(any(m.endswith(": gone-too.md") for m in said), f"and one with a title\n{said}")
+
+
+@test
+def test_find_reads_the_middle_of_a_long_note_and_puts_one_word_right(t: Case) -> None:
+    """Search read the start and the end of a long page, and not the middle,
+    so a word in the middle of a book-length note was never found. And a
+    search of several words with one misspelt showed what the others found
+    and said nothing about it, where one word misspelt is offered put right.
+    It is offered now, as a command to type, and never searched for in its
+    place: a real word swapped for another one showed the wrong notes
+    (review, 2026-09-30)."""
+    rain = "The rain kept on all week and the river rose past the old mill.\n" * 4_000
+    (t.box.root / "Notes" / "long-novel.md").write_text(
+        "# Long novel\n\n" + rain + "Chapter nine: the lighthouse keeper.\n" + rain,
+        encoding="utf-8")
+    t.box.run("index")
+    t.eq([h["path"] for h in t.box.json("find", "lighthouse", expect=None)],
+         ["Notes/long-novel.md"], "a word in the middle of a long note is found")
+    for text in ("Notes on Gran's lemon cake recipe: 200g butter, 200g sugar, four eggs",
+                 "The boiler keeps cutting out at night, worth knowing the reset button"):
+        t.box.run("save", text)
+    lemon = t.box.json("find", "lemon")
+    t.eq(t.box.json("find", "lemon recipie"), lemon, "the word spelt right finds what it finds")
+    said = t.box.run("find", "lemon recipie").stdout
+    t.ok('nothing has "recipie" in it' in said and "./os find lemon recipe" in said,
+         f"and the misspelt one is offered put right\n{said}")
+    t.ok("searched for" not in said, f"never searched for in its place\n{said}")
+    said = t.box.run("find", "boiler reset").stdout
+    t.ok("near word" not in said, f"a search whose every word is found offers nothing\n{said}")
 
 
 @test
@@ -3105,6 +3418,99 @@ def test_check_only_offers_the_fix_it_can_make(t: Case) -> None:
 
 
 @test
+def test_a_status_typed_by_hand_keeps_work_on_the_list(t: Case) -> None:
+    """`status: paused` typed into a header took that work off every list:
+    not on the go, not kept level, and ./os check said nothing. The words
+    people type for it are read as holding now, and any other word ./os
+    can't read is named by check, with the line to type that puts it back.
+    Their header is left as they wrote it."""
+    root = t.box.root
+    typed = {"Paint the shed": "paused", "Renew the passport": "On hold",
+             "Fix the boiler": "waiting", "Sell the car": "someday"}
+    readmes = {}
+    for name, word in typed.items():
+        t.box.run("new", "work", name)
+        readme = next(p for p in (root / "Work").rglob("README.md")
+                      if p.parent.name.lower() == name.lower())
+        readme.write_text(re.sub(r"^status: .*$", f"status: {word}", readme.read_text(),
+                                 count=1, flags=re.M))
+        readmes[name] = readme
+    held = {r["title"].lower() for r in t.box.json("tidy")["holding"]}
+    for name in ("Paint the shed", "Renew the passport", "Fix the boiler"):
+        t.ok(name.lower() in held, f"`status: {typed[name]}` is read as kept level: {held}")
+
+    unread = [i for i in t.box.json("check", expect=None)["issues"]
+              if i["code"] == "status-unread"]
+    t.eq(len(unread), 1, "check names the one status it can't read, and only that one")
+    t.ok("sell the car" in unread[0]["message"].lower() and "someday" in unread[0]["message"],
+         f"it says which work, and the word it can't read: {unread[0]['message']}")
+    t.ok("./os hold sell-the-car" in unread[0]["fix"] and "./os push sell-the-car" in unread[0]["fix"],
+         f"with the line to type: {unread[0]['fix']}")
+    t.box.run("check", "--fix", expect=None)
+    t.ok("status: someday" in readmes["Sell the car"].read_text(),
+         "check --fix leaves their header as they wrote it")
+
+    t.box.run("hold", "sell-the-car")
+    t.ok(not any(i["code"] == "status-unread"
+                 for i in t.box.json("check", expect=None)["issues"]),
+         "once held, check says nothing more about it")
+    t.ok("sell the car" in {r["title"].lower() for r in t.box.json("tidy")["holding"]},
+         "and it is on the list again")
+
+
+@test
+def test_check_notices_a_page_grown_out_of_shape(t: Case) -> None:
+    """A README ended up with two `## Decisions` after two helpers added to
+    it: ./os decide writes under the first, ./os show reads the second, and
+    check said nothing. Nor did it when the part above `## Log`, read first
+    every time anyone picks the work up, grew past what anyone reads. The
+    Log itself is meant to grow, and is never counted."""
+    root = t.box.root
+    t.box.run("new", "work", "Build the shed")
+    readme = root / "Work" / "Build the Shed" / "README.md"
+
+    def said(code: str) -> list:
+        return [i for i in t.box.json("check", expect=None)["issues"] if i["code"] == code]
+
+    t.eq(said("heading-twice") + said("long-above-log"), [], "a fresh piece of work says neither")
+
+    thresholds = json.loads((root / ".os" / "config.json").read_text())["thresholds"]
+    t.ok("above_log_max_lines" in thresholds,
+         "the limit sits in .os/config.json beside the others")
+    cap = int(thresholds.get("above_log_max_lines", 150))
+    log = "\n".join(f"- {engine.today()} — dug the footing, row {n}" for n in range(cap * 2))
+    readme.write_text(readme.read_text().rstrip("\n") + "\n" + log + "\n")
+    t.eq(said("long-above-log"), [], "a long Log is never flagged")
+
+    filler = "\n".join(f"- measured board {n}" for n in range(cap + 1))
+    readme.write_text(readme.read_text().replace(
+        "## Log\n", f"## Where it stands\n{filler}\n\n## Log\n", 1))
+    long = said("long-above-log")
+    t.eq(len(long), 1, "the part above the Log grown long is said once")
+    t.eq(long[0]["level"], "hint", "quietly")
+    t.eq(long[0]["path"], "Work/Build the Shed/README.md", "naming the file")
+    t.ok(str(cap) in long[0]["message"] and long[0]["fix"],
+         f"with the limit, and what to do: {long[0]}")
+
+    readme.write_text(readme.read_text().rstrip("\n")
+                      + f"\n\n## Decisions\n- {engine.today()} · cedar, not pine\n")
+    twice = said("heading-twice")
+    t.eq(len(twice), 1, "two ## Decisions in one file are said once")
+    t.eq(twice[0]["level"], "hint", "quietly")
+    t.ok("Decisions" in twice[0]["message"] and twice[0]["path"] == "Work/Build the Shed/README.md"
+         and twice[0]["fix"], f"naming the heading, the file and what to do: {twice[0]}")
+
+    # Two recipes in one note, each with its own `## Method`, are two
+    # sections under two titles, not one heading written twice. Nor is one
+    # shown inside a code block.
+    (root / "Notes" / "bakes.md").write_text(
+        "# Bread\n\n## Method\nKnead.\n\n# Scones\n\n## Method\nRub in.\n\n"
+        "## Tips\n```\n## Tips\n```\n")
+    t.box.run("sort")
+    t.eq(len(said("heading-twice")), 1, "a note of two recipes, or a heading in a code block, is not")
+
+
+@test
 def test_index_matches_the_disk(t: Case) -> None:
     """The map is the territory."""
     t.box.fill_inbox(70)
@@ -3669,6 +4075,103 @@ def test_a_guess_it_was_unsure_about_comes_back(t: Case) -> None:
         if spine.exists() and spine.suffix == ".md":
             meta, _ = engine.parse_frontmatter(spine.read_text())
             t.ok("saved" not in meta, f"{item['path']} kept a `saved:` timestamp")
+
+
+@test
+def test_call_me_sam_is_a_line_in_about_me_not_work(t: Case) -> None:
+    """`./os save "Call me Sam"` made a piece of work called Call Me Sam, and
+    the next chat still didn't know their name. A save that opens with "call
+    me", "from now on", "I prefer" or "keep answers" is about them: it is one
+    line in their About me note, which is started if there is none, and
+    `./os undo` takes it back. Everything else is filed as it always was."""
+    root = t.box.root
+    note = root / "Notes" / "about-me.md"
+
+    def work() -> list:
+        return [i["title"] for i in t.box.items() if i["kind"] == "project"]
+
+    said = t.box.run("save", "Call me Sam").stdout
+    t.ok(note.is_file(), f"with no About me yet, the save starts one\n{said}")
+    t.ok("- Call me Sam. (said)" in note.read_text(), "the line is in it, marked as said")
+    t.eq(work(), [], "and no work was made")
+    t.ok("About me" in said and "Notes/about-me.md" in said, f"the save says where it went\n{said}")
+    t.ok("Call me Sam. (said)" in t.box.run("brief").stdout, "and the next chat is told")
+
+    t.box.run("undo")
+    t.ok(not note.exists(), "undo takes back the note the save started")
+
+    t.box.run("new", "note", "About me", "--domain", "personal")
+    for words in ("From now on, answer in French", "I prefer bullet points",
+                  "Keep answers under 100 words", "please call me Sam"):
+        t.box.run("save", words)
+    text = note.read_text()
+    for line in ("- From now on, answer in French. (said)", "- I prefer bullet points. (said)",
+                 "- Keep answers under 100 words. (said)", "- Please call me Sam. (said)"):
+        t.ok(line in text, f"an About me already there gets the line: {line}\n{text}")
+    t.eq(work(), [], "and still no work")
+    t.eq(sorted(p.name for p in (root / "Notes").rglob("*.md")), ["about-me.md"],
+         "nor a note of its own for any of them")
+    got = t.box.json("save", "I prefer bullet points")
+    t.eq(note.read_text(), text, "said again, it is not written twice")
+    t.eq(got.get("saved"), "Notes/about-me.md", "and the save says where it already is")
+    t.box.run("undo")
+    t.ok("call me Sam" not in note.read_text() and "bullet points" in note.read_text(),
+         "undo takes back only the last line")
+
+    for words in ("Call the plumber about the boiler before Friday",
+                  "Call me back about the boiler quote on Friday"):
+        t.box.run("save", words)
+        t.ok(words not in note.read_text(), f"anything else is filed as before: {words}")
+    t.gte(len(work()), 1, "as work, when it reads as work")
+
+
+@test
+def test_the_newest_lines_about_them_still_reach_the_next_chat(t: Case) -> None:
+    """The brief showed only the first 15 lines of About me, and a save adds
+    its line at the end. From the sixteenth on, "from now on" was written
+    down and never seen by another chat. A long note shows its first lines
+    and its newest ones, and says how many it skipped and where they are."""
+    t.box.run("new", "note", "About me", "--domain", "personal")
+    for n in range(1, 21):
+        t.box.run("save", f"I prefer rule number {n}")
+    brief = t.box.run("brief").stdout
+    t.ok("I prefer rule number 1. (said)" in brief, f"the first lines are still there\n{brief}")
+    t.ok("I prefer rule number 20. (said)" in brief, "and so is the newest")
+    t.ok("more lines in Notes/about-me.md" in brief, "with how many were left out, and where")
+    t.lte(brief.count("I prefer rule number"), 15, "and no more lines than before")
+
+
+@test
+def test_about_me_has_a_form_of_its_own(t: Case) -> None:
+    """About me was made in the form every note has (In one line, What it
+    says, Why it matters to me), and none of it fits a list of facts about a
+    person. The old layout ended each such line with how sure it was: (said),
+    (guessed) or (unsure). About me has a short form of its own that says so,
+    whether `./os new note` makes it or a save does."""
+    root = t.box.root
+    form = root / ".os" / "templates" / "about-me.md"
+    t.ok(form.is_file(), "there is a form for it")
+    t.lte(len(form.read_text().strip().split("\n")), 25, "and it is short: it ships to strangers")
+
+    t.box.run("new", "note", "About me", "--domain", "personal")
+    note = root / "Notes" / "about-me.md"
+    made = note.read_text()
+    for mark in ("(said)", "(guessed)", "(unsure)"):
+        t.ok(mark in made, f"`./os new note \"About me\"` says what {mark} means\n{made}")
+    t.ok("## What it says" not in made, "with none of an ordinary note's headings")
+    t.eq(engine.parse_frontmatter(made)[0].get("domain"), "personal", "under the subject asked for")
+    t.ok("About them" not in t.box.run("brief").stdout, "an empty form puts nothing in the brief")
+
+    t.box.run("undo")
+    t.box.run("save", "Call me Sam")
+    made = note.read_text()
+    t.ok("(guessed)" in made and "- Call me Sam. (said)" in made,
+         f"a save that starts About me uses the same form\n{made}")
+    t.ok("## What it says" not in made, "and not the ordinary one")
+
+    t.box.run("new", "note", "Boiler manual")
+    t.ok("## What it says" in (root / "Notes" / "boiler-manual.md").read_text(),
+         "any other note keeps the ordinary form")
 
 
 @test
@@ -6824,6 +7327,89 @@ def test_a_release_remembers_the_words_that_tell_a_note_from_work(t: Case) -> No
 
 
 @test
+def test_an_update_gives_a_hook_group_nobody_changed_its_new_matcher(t: Case) -> None:
+    """Once someone had changed .claude/settings.json at all, every group of
+    hooks the template shipped kept its old matcher for good, even one they
+    never touched: the guard on Write could never be pointed at anything
+    more. A group still exactly as a release wrote it takes the new one. One
+    they changed, and one of their own, stay as they are."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+
+    def change(out: Path) -> None:
+        def newer(conf: dict) -> None:
+            # Added to, not set: the guard's own matcher has changed since
+            # this check was written, and a release that sets the same one
+            # again changes nothing.
+            conf["hooks"]["PreToolUse"][0]["matcher"] += "|NotebookEdit"
+            conf["hooks"]["PostToolUse"][0]["matcher"] = "Write|Edit"
+        _edit_json(out / ".claude" / "settings.json", newer)
+    published = _publish(t, "2026-02-01.1", change)
+
+    settings = root / ".claude" / "settings.json"
+
+    def theirs(conf: dict) -> None:
+        conf["hooks"].setdefault("UserPromptSubmit", []).append(
+            {"hooks": [{"type": "command", "command": "echo mine"}]})
+        conf["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"] = 7
+    _edit_json(settings, theirs)
+
+    done = t.box.run("update", "--from", str(published))
+    conf = json.loads(settings.read_text())
+    new = json.loads((published / ".claude" / "settings.json").read_text())
+    t.eq(conf["hooks"]["PreToolUse"], new["hooks"]["PreToolUse"],
+         f"a group nobody changed takes the new matcher\n{done.stdout}")
+    t.ok("keep-the-record.sh" in done.stdout, "and the update says which one")
+    after = conf["hooks"]["PostToolUse"][0]
+    t.eq((after.get("matcher"), after["hooks"][0].get("timeout")), ("Write|Edit|NotebookEdit", 7),
+         "a group they changed keeps its matcher and what they changed in it")
+    t.ok("echo mine" in json.dumps(conf["hooks"].get("UserPromptSubmit")), "and one of their own is kept")
+    import upgrade
+    guard = {"matcher": "Write", "hooks": [{"type": "command", "timeout": 10,
+             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/keep-the-record.sh\""}]}
+    t.ok(upgrade.hook_group_sha(guard) in upgrade.shipped_hashes(SOURCE, "hook_groups").get("PreToolUse", []),
+         "and the guard on Write as the releases so far wrote it is known as released, so it is renewed too")
+
+
+@test
+def test_an_update_adds_new_keywords_to_a_list_they_changed(t: Case) -> None:
+    """A subject's keywords took a release's new words only while nobody had
+    touched them: one word of their own, and they never got another. Now
+    the words that are new since the release they had are added to theirs.
+    A word they took out stays out, and with no record of what that release
+    had, nothing is added at all."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    words = root / ".os" / "words.json"
+    first = json.loads(words.read_text())["domains"]["engineering"]["keywords"][0]
+    published = _publish(t, "2026-02-01.1", lambda out: _edit_json(
+        out / ".os" / "words.json", lambda w: w["domains"]["engineering"]["keywords"].append("zig")))
+
+    def theirs(w: dict) -> None:
+        w["domains"]["engineering"]["keywords"].remove(first)
+        w["domains"]["engineering"]["keywords"].append("my-own-word")
+    _edit_json(words, theirs)
+
+    done = t.box.run("update", "--from", str(published))
+    have = json.loads(words.read_text())["domains"]["engineering"]["keywords"]
+    t.ok("zig" in have, f"a keyword list they changed gets the new word\n{done.stdout}")
+    t.ok("my-own-word" in have, "and keeps their own")
+    t.ok(first not in have, f"and a word they took out, {first!r}, stays out")
+    t.ok("new words for engineering" in done.stdout, "and the update says which subject")
+
+    # A folder an older release wrote has no record of the words it was
+    # given, so a new word can't be told from one they took out.
+    _edit_json(root / ".os" / "shipped.json", lambda d: d.pop("words", None))
+    newer = _publish(t, "2026-03-01.1", lambda out: _edit_json(
+        out / ".os" / "words.json", lambda w: w["domains"]["engineering"]["keywords"].append("wasm")),
+        base=published)
+    t.box.run("update", "--from", str(newer))
+    have = json.loads(words.read_text())["domains"]["engineering"]["keywords"]
+    t.ok("wasm" not in have and first not in have,
+         "with no record of what the last release had, nothing is added")
+
+
+@test
 def test_a_history_that_lost_its_last_save_is_never_deleted(t: Case) -> None:
     """A crash while saving can leave the file naming the last save empty. A
     checkpoint read that as "nothing saved yet", deleted the whole history and
@@ -7763,6 +8349,99 @@ def test_the_hooks_still_run_when_os_has_lost_its_run_permission(t: Case) -> Non
 
 
 @test
+def test_a_command_that_rewrites_a_record_asks_first(t: Case) -> None:
+    """The record guard only watched Write, so `sed -i`, `perl -pi` or a single
+    `>` onto a README could take its ## Decisions and ## Log with no question,
+    in a mode that runs commands without asking. Now a command that rewrites a
+    file with dated lines there asks first, the same way. One that only reads
+    it, adds to the end, or is ./os's own never asks: a guard that asks too
+    often is worse than none."""
+    root = t.box.root
+    t.box.run("new", "work", "Garden Plan")
+    t.box.run("decide", "garden-plan", "Raised beds, not ground planting — rules out digging the lawn")
+    readme = root / "Work" / "Garden Plan" / "README.md"
+    readme.write_text(readme.read_text().rstrip() + "\n- 2026-09-28 — measured the plot\n")
+    record = readme.read_text()
+    (root / "Notes" / "plain.md").write_text("# Plain\n\nNo dated lines in here.\n")
+    kept, bare = t.box.tmp / "kept.md", t.box.tmp / "bare.md"
+    kept.write_text(record + "- 2026-10-01 — bought the soil\n")
+    bare.write_text("# Garden Plan\n")
+    hook = root / ".claude" / "hooks" / "keep-the-record.sh"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+
+    def guard(command: str) -> str:
+        call = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(root)}
+        proc = subprocess.run(["bash", str(hook)], input=json.dumps(call), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=env, timeout=30)
+        t.eq(proc.returncode, 0, f"the guard never fails `{command}`")
+        return proc.stdout.strip()
+
+    item = "'Work/Garden Plan/README.md'"
+    for command in (f"sed -i '' 's/beds/boxes/' {item}",
+                    f"sed -i.bak -e 's/beds/boxes/' {item}",
+                    "sed -I '' 's/beds/boxes/' Work/*/README.md",
+                    f"perl -pi -e 's/beds/boxes/' {item}",
+                    f"echo '# Garden Plan' > {item}",
+                    f"truncate -s 0 {item}",
+                    f"printf x | tee {item}",
+                    f"cp '{bare}' {item}",
+                    f"sed 's/beds/boxes/' {item} > '{t.box.tmp}/new.md' && mv '{t.box.tmp}/new.md' {item}",
+                    "cd 'Work/Garden Plan' && sed -i '' '$d' README.md"):
+        said = guard(command)
+        t.ok(said != "", f"`{command}` asks first")
+        out = json.loads(said)["hookSpecificOutput"]
+        t.eq(out["permissionDecision"], "ask", "which asks the person rather than blocking")
+        reason = out["permissionDecisionReason"]
+        t.ok("Garden Plan" in reason and "1 decision and 1 log line" in reason,
+             f"naming the item and what is in it: {reason}")
+
+    for command in (f"grep -n beds {item}", f"cat {item}", f"sed -n '1,5p' {item}", f"grep -c '>' {item}",
+                    f"perl -ne 'print if /beds/' {item}",
+                    f"sed 's/beds/boxes/' {item} > '{t.box.tmp}/copy.md'",
+                    f"echo '- 2026-10-01 — bought the soil' >> {item}",
+                    f"printf x | tee -a {item}",
+                    f"cp '{kept}' {item}",
+                    "./os decide garden-plan 'Water at dawn' > /dev/null 2>&1",
+                    "sed -i '' 's/No/Not any/' Notes/plain.md",
+                    "echo hi > Notes/brand-new.md",
+                    f"cat <<'EOF' >> {item}\n- 2026-10-02 — sed -i '' 1d {item}\nEOF"):
+        t.eq(guard(command), "", f"`{command}` goes through without asking")
+    t.eq(readme.read_text(), record, "and nothing here ran a command, only asked about one")
+
+    settings = json.loads((root / ".claude" / "settings.json").read_text())
+    matchers = [g.get("matcher") for g in settings["hooks"].get("PreToolUse", [])
+                if "keep-the-record.sh" in json.dumps(g)]
+    t.eq(matchers, ["Write|Bash"], "it is run before a Write and a shell command, never an Edit")
+
+
+@test
+def test_learn_keeps_who_proved_right(t: Case) -> None:
+    """Nothing kept which sources proved right in practice, so the next /learn
+    on a subject read the one whose advice had failed them as keenly as the
+    one that had worked. A learned note now has a ## Who to trust that gains a
+    dated line each time advice is tried, and /learn reads it before any source."""
+    root = t.box.root
+    t.box.run("new", "learning", "How dovetails are actually cut")
+    hit = next(p for p in (root / "Notes").glob("*.md") if "dovetails" in p.name)
+    body = hit.read_text(encoding="utf-8")
+    t.ok("## Who to trust" in body, "a learned note comes with a place for who proved right")
+    t.ok(body.index("## Sources") < body.index("## Who to trust"), "after the sources it judges")
+
+    learn = root / ".claude" / "skills" / "learn"
+    if (learn / "SKILL.md").is_file() and not in_their_words(learn / "SKILL.md", t.box):
+        _, skill = engine.parse_frontmatter((learn / "SKILL.md").read_text())
+        said = " ".join(skill.split())
+        t.ok("Read its `## Who to trust` before any source" in said, "/learn reads it before any source")
+        t.ok("A dated line under that note's `## Who to trust`" in said,
+             "and adds a dated line when advice is tried")
+        cap = int(engine.DEFAULT_THRESHOLDS["skill_body_max_lines"])
+        t.lte(len(skill.split("\n")), cap, "and the skill still fits in its line limit")
+    if (learn / "NOTE.md").is_file() and not in_their_words(learn / "NOTE.md", t.box):
+        t.ok("`## Who to trust` is the exception" in (learn / "NOTE.md").read_text(),
+             "the guide to the note says to leave it while it is empty")
+
+
+@test
 def test_gemini_is_pointed_at_the_same_rules(t: Case) -> None:
     """Gemini CLI reads GEMINI.md and not AGENTS.md, so someone using it got
     none of the rules. A download has one line pointing at AGENTS.md, as
@@ -8649,13 +9328,14 @@ def test_what_they_said_about_themselves_is_in_every_brief(t: Case) -> None:
     t.box.run("new", "note", "About me", "--domain", "personal")
     note = root / "Notes" / "about-me.md"
     t.ok(note.exists(), "`./os new note \"About me\"` makes it where the brief looks")
-    note.write_text(note.read_text().replace(
-        "## What it says\n", "## What it says\n- Call me Sam.\n- Answers under 100 words.\n", 1))
+    # Under the form's prompt, where About me keeps its lines.
+    note.write_text(note.read_text().rstrip("\n")
+                    + "\n\n- Call me Sam.\n- Answers under 100 words.\n")
     brief = t.box.run("brief").stdout
     t.ok("About them (Notes/about-me.md)" in brief, "the brief says where they are")
     t.ok("- Call me Sam." in brief and "- Answers under 100 words." in brief,
          "and what they said, word for word")
-    t.ok("## What it says" not in brief and "<!--" not in brief,
+    t.ok("# About me" not in brief and "<!--" not in brief and "(guessed)" not in brief,
          "without the note's headings or its prompts")
     t.ok("Call me Sam" in t.box.json("brief")["hookSpecificOutput"]["additionalContext"],
          "and the AI is handed them at the start of a session")
@@ -9822,7 +10502,9 @@ def test_update_renews_settings_and_keywords_nobody_changed(t: Case) -> None:
     words = json.loads((root / ".os" / "words.json").read_text())["domains"]
     t.ok("allotment" in words["personal"]["keywords"], "a keyword list nobody changed gets the new words")
     t.eq(words["personal"].get("learned"), ["sourdough"], "and what was learned stays as it was")
-    t.ok("my-own-word" in words["engineering"]["keywords"] and "zig" not in words["engineering"]["keywords"],
+    # It gets the release's new words too: see
+    # test_an_update_adds_new_keywords_to_a_list_they_changed.
+    t.ok("my-own-word" in words["engineering"]["keywords"],
          "a keyword list they changed stays theirs")
 
     _edit_json(settings, lambda conf: conf["hooks"].setdefault("UserPromptSubmit", []).append(

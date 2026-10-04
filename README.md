@@ -35,7 +35,7 @@ it writes, and send it to **zidery333** on Discord.
 
 ## What's proven
 
-The program passes all 305 of its own checks. Type `./os test` to run them yourself.
+The program passes all 321 of its own checks. Type `./os test` to run them yourself.
 They show that `./os` files, finds and undoes things the way it says. They can't
 show that your AI files things well, or that any of this helps you.
 

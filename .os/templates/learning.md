@@ -49,6 +49,12 @@ source:
      timestamp, the date, and the timestamps the method came from. Say which
      ones you rejected and why — that is as useful as the ones you kept. -->
 
+## Who to trust
+<!-- Starts empty: leave the heading and this comment until the first line.
+     Each time a source's advice works or fails when they try it, a dated
+     line: who, what they said, what happened. Never change an old line; a
+     new result is a new line. The next /learn on this reads it first. -->
+
 ## Related
 <!-- Other things here, by name: how-to-bleed-a-radiator, Fix the Boiler.
      What step 1 turned up goes here. -->

@@ -37,13 +37,16 @@ one sentence of what it is and 3–5 tags into its card, like
 
 "Call me Sam", "keep answers short", "I'm vegetarian": a fact about them, or
 about how they want answers, is not a note of its own. It is one line in their
-About me note — `./os open "About me"` says where that is, and
-`./os new note "About me" --domain personal` makes one if there is none. Every
-session starts with its first lines, so what matters most goes near the top.
+About me note. `./os save` puts it there itself when their words start with
+"call me", "from now on", "I prefer" or "keep answers", marks it (said), and
+starts the note if there is none. Anything else about them goes in by hand, as
+one line marked (said): `./os open "About me"` says where the note is, and
+`./os new note "About me" --domain personal` makes one. Every session starts
+with its first lines and its newest.
 
-"From now on…", "I prefer…", "always…" and "stop doing…" are the same thing:
-how they want things done. Each goes straight into About me as one line in their
-words, with no question first. It is not a note, a task or a settings change.
+"Always…" and "stop doing…" are the same thing: how they want things done.
+Each goes straight into About me as one line in their words, with no question
+first. It is not a note, a task or a settings change.
 
 ## Rules
 

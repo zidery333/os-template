@@ -16,7 +16,7 @@ they can check.
 
 Ranked, covers everything including the archive, and forgives plurals and word
 endings, so don't waste turns on those. It never searches for a different word on
-its own: when nothing matches it offers a near word as a command (`./os find bake`).
+its own: when a word matches nothing, it offers a near word as a command (`./os find bake`).
 Run that only if it's plainly what they meant. When it comes back thin, their
 synonyms and a `Grep` across `Notes/` and `Work/` for the distinctive words
 usually find it.

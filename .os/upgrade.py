@@ -23,11 +23,15 @@ Brings the machinery up to date and leaves the person's things alone:
                and the words that tell a note from work in .os/words.json, and
                the line under the folder's name in .os/config.json, when still
                as released
-    merged     .os/config.json and .os/words.json (new settings added, theirs kept)
+    merged     .os/config.json and .os/words.json (new settings added, theirs kept;
+               a subject's keywords they changed get the words new since the
+               release they had, and a word they took out stays out)
                .claude/settings.json they changed (new template hooks, permission
                rules and settings like outputStyle added, a shipped hook as an older
-               release wrote it renewed, theirs kept; one a release gave them that
-               they took out stays out) · .gitignore they changed (new lines added; one still as
+               release wrote it renewed, and so is a group of hooks still exactly
+               as a release wrote it, matcher and all; theirs kept, and a group they
+               changed stays theirs; one a release gave them that they took out
+               stays out) · .gitignore they changed (new lines added; one still as
                released is replaced)
     kept       Work/ Notes/ Archive/ · state, snags, undo history · every skill,
                helper or hook that is theirs · CLAUDE.md and GEMINI.md (only made to
@@ -127,10 +131,17 @@ def keywords_sha(words: list) -> str:
     return hashlib.sha1(json.dumps(words, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def hook_group_sha(group: dict) -> str:
+    """One group of hooks in settings.json, fingerprinted: the same matcher
+    and hooks, whatever order a program wrote their keys in."""
+    return hashlib.sha1(json.dumps(group, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 #: The lists in each subject of words.json that an update replaces whole while
 #: they are still as a release wrote them. Extensions joined when Writing lost
 #: .md and .txt: every note had been filed as writing on its file type alone,
-#: and a folder that updated would have gone on doing it.
+#: and a folder that updated would have gone on doing it. Keywords they changed
+#: get a release's new words too, from the "words" shipped.json records.
 RENEWED_LISTS = ("keywords", "extensions")
 #: The same for each block under "intent", the words that tell a note from
 #: work, recorded in shipped.json as intent_keywords and intent_patterns.
@@ -225,6 +236,16 @@ def record() -> int:
     words = read_shipped(TEMPLATE / ".os" / "words.json")
     added += _record_lists(data, words.get("domains"), RENEWED_LISTS)
     added += _record_lists(data, words.get("intent"), INTENT_LISTS, "intent_")
+    # And every word each subject's keywords have had in any release, so an
+    # update can add a release's new words to a list they changed without
+    # bringing back one they took out.
+    domains = words.get("domains")
+    for name, block in (domains.items() if isinstance(domains, dict) else []):
+        if isinstance(block, dict) and isinstance(block.get("keywords"), list):
+            had = data.setdefault("words", {}).setdefault("keywords", {}).setdefault(name, [])
+            for word in block["keywords"]:
+                if word not in had:
+                    had.append(word)
     # And the line under its name in ./os help, so an update can tell one
     # still as a release wrote it (it gets the new line) from theirs.
     line = read_shipped(TEMPLATE / ".os" / "config.json").get("tagline")
@@ -235,6 +256,16 @@ def record() -> int:
     # And every permission rule ever released, so an update can tell a new
     # one (added) from one they took out (left out).
     data["rules"] = sorted(set(data.get("rules") or []) | set(released_rules(TEMPLATE / SETTINGS)))
+    # And every group of hooks ever released, under its event, so an update
+    # can tell one still as a release wrote it (it gets the new matcher) from
+    # one they changed (it stays theirs).
+    hooks = (read_theirs(TEMPLATE / SETTINGS) or {}).get("hooks")
+    for event, groups in (hooks.items() if isinstance(hooks, dict) else []):
+        known = data.setdefault("hook_groups", {}).setdefault(event, [])
+        for group in groups if isinstance(groups, list) else []:
+            if isinstance(group, dict) and hook_group_sha(group) not in known:
+                known.append(hook_group_sha(group))
+                added += 1
     # And every setting at the top of settings.json ever released, like
     # outputStyle, so one they took out is not put back by the next update.
     data["settings_keys"] = sorted(set(data.get("settings_keys") or [])
@@ -342,10 +373,14 @@ def merge_json(target: Path, source: Path, skip: tuple = ()) -> list[str] | None
     return added
 
 
-def _renew_lists(mine, new, released: dict) -> list[str]:
+def _renew_lists(mine, new, released: dict, had: dict | None = None) -> list[str]:
     """Give each block in `mine` the new version of any list still exactly as
     a release wrote it (`released`: list name → block name → fingerprints).
-    The names of the blocks that changed."""
+    A list they changed keeps every word of theirs and gets only the words no
+    release had given them yet (`had`: list name → block name → every word
+    they were given), so a word they took out stays out. With nothing in
+    `had` for it, as in a folder an older release wrote, a list they
+    changed gets nothing. The names of the blocks that changed."""
     if not isinstance(mine, dict) or not isinstance(new, dict):
         return []
     renewed: list[str] = []
@@ -355,26 +390,37 @@ def _renew_lists(mine, new, released: dict) -> list[str]:
             continue
         for key, known in released.items():
             words, old = block.get(key), have.get(key)
-            if isinstance(words, list) and isinstance(old, list) and words != old \
-                    and keywords_sha(old) in known.get(name, []):
+            if not isinstance(words, list) or not isinstance(old, list) or words == old:
+                continue
+            if keywords_sha(old) in known.get(name, []):
                 have[key] = words
-                if name not in renewed:
-                    renewed.append(name)
+            else:
+                given = (had or {}).get(key)
+                given = given.get(name) if isinstance(given, dict) else None
+                more = [w for w in words if w not in old and w not in given] if isinstance(given, list) else []
+                if not more:
+                    continue
+                have[key] = old + more
+            if name not in renewed:
+                renewed.append(name)
     return renewed
 
 
 def renew_keywords(target: Path, source: Path, known: dict,
                    extensions: dict | None = None,
-                   intent: dict | None = None) -> list[str]:
+                   intent: dict | None = None, had: dict | None = None) -> list[str]:
     """A subject whose keywords are still a list the template released gets
-    the new list, and the same for its extensions. One they changed stays
-    theirs; `learned` is never touched. The intent lists, what tells a note
-    from work, are renewed the same way when `intent` gives their released
-    fingerprints ({"keywords": ..., "patterns": ...}); a block renewed there
-    is named as "intent:<name>"."""
+    the new list, and the same for its extensions. Keywords they changed
+    keep their words and get the ones new since their release, when `had`
+    (the "words" in their own shipped.json) says which those are; extensions
+    they changed stay theirs. `learned` is never touched. The intent lists,
+    what tells a note from work, are renewed whole the same way when
+    `intent` gives their released fingerprints ({"keywords": ...,
+    "patterns": ...}); a block renewed there is named as "intent:<name>"."""
     theirs, ours = read_theirs(target), read_theirs(source)
     renewed = _renew_lists((theirs or {}).get("domains"), (ours or {}).get("domains"),
-                           {"keywords": known, "extensions": extensions or {}})
+                           {"keywords": known, "extensions": extensions or {}},
+                           {"keywords": (had if isinstance(had, dict) else {}).get("keywords")})
     renewed += [f"intent:{name}" for name in _renew_lists(
         (theirs or {}).get("intent"), (ours or {}).get("intent"), intent or {})]
     if renewed:
@@ -414,17 +460,38 @@ def released_rules(settings: Path) -> list:
 
 
 def merge_settings(target: Path, source: Path, given: dict | None = None,
-                   rules_given: set | None = None, keys_given: set | None = None) -> list[str] | None:
+                   rules_given: set | None = None, keys_given: set | None = None,
+                   released_groups: dict | None = None) -> list[str] | None:
     """Template hooks added where missing; every hook of theirs kept. A hook
     this folder was given before and no longer has was taken out on purpose,
     and stays out, and so does a setting (`keys_given`: every one released
-    to it). None, and nothing written, when theirs can't be read."""
+    to it). A group of hooks still exactly as a release wrote it
+    (`released_groups`: event → fingerprints) takes the new one. None, and
+    nothing written, when theirs can't be read."""
     ours = json.loads(source.read_text())
     theirs = read_theirs(target)
     if theirs is None or not isinstance(theirs.get("hooks", {}), dict):
         return None
     added: list[str] = []
     hooks = theirs.setdefault("hooks", {})
+
+    def runs(group: dict) -> list:
+        return sorted(hook_script(str(h.get("command", ""))) for h in group.get("hooks") or []
+                      if isinstance(h, dict))
+    # A group still exactly as some release wrote it takes the new group that
+    # runs the same scripts, matcher and all. Once settings.json was changed
+    # at all, a shipped group kept its old matcher for good. One they
+    # changed, and one of their own, match no release and are left alone.
+    for event, groups in hooks.items():
+        for n, grp in enumerate(groups if isinstance(groups, list) else []):
+            if not isinstance(grp, dict) \
+                    or hook_group_sha(grp) not in (released_groups or {}).get(event, []):
+                continue
+            new = next((g for g in (ours.get("hooks") or {}).get(event) or []
+                        if isinstance(g, dict) and runs(g) == runs(grp)), None)
+            if new is not None and new != grp:
+                groups[n] = dict(new)
+                added += [f"the new way of running {script}" for script in runs(grp)]
     # A shipped hook still as an older release wrote it, plain and unquoted,
     # takes the new one: kept, it failed in any folder with a space in its path.
     newer = {hook_script(str(h.get("command", ""))): h for g in (ours.get("hooks") or {}).values()
@@ -819,9 +886,13 @@ def main(argv: list[str]) -> int:
         if added is None:
             unreadable(".os/words.json")
         else:
+            # The words this folder was given come from its own record only:
+            # the template's has this release's words in it too, so none
+            # would ever look new.
             renewed = renew_keywords(words, TEMPLATE / ".os" / "words.json", shipped_hashes(root, "keywords"),
                                      shipped_hashes(root, "extensions"),
-                                     {key: shipped_hashes(root, f"intent_{key}") for key in INTENT_LISTS})
+                                     {key: shipped_hashes(root, f"intent_{key}") for key in INTENT_LISTS},
+                                     before.get("words"))
             subjects = [name for name in renewed if not name.startswith("intent:")]
             say("  merged    .os/words.json — your words kept" + (f", added {', '.join(added[:6])}" if added else "")
                 + (f"; new words for {', '.join(subjects)}" if subjects else "")
@@ -842,7 +913,8 @@ def main(argv: list[str]) -> int:
             say(f"  kept      {SETTINGS} (yours; the template's has nothing new)")
         else:
             added = merge_settings(dst, src, given, set(before.get("rules") or []),
-                                   set(before.get("settings_keys") or []))
+                                   set(before.get("settings_keys") or []),
+                                   shipped_hashes(root, "hook_groups"))
             if added is None:
                 unreadable(SETTINGS)
             else:
