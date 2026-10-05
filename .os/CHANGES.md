@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-05.5
+
+- `./os check` no longer calls a link broken when it's only an example
+  shown in `backticks`, like `[name](name/brief.md)`. Real broken links
+  next to one are still found.
+
 ## 2026-10-05.4
 
 - The download page says addons hold skills and helpers. It said skills

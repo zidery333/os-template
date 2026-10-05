@@ -5163,9 +5163,10 @@ class Doctor:
         for it in items:
             if not it.spine or not it.spine.exists() or it.spine.suffix.lower() not in TEXT_SUFFIXES:
                 continue
-            # a link shown inside a code fence is an example, not a link
+            # a link shown inside a code fence or `backticks` is an example, not a link
             text = re.sub(r"^ {0,3}(```|~~~).*?^ {0,3}\1", "", read_text(it.spine, 80_000),
                           flags=re.S | re.M)
+            text = MD_CODE_SPAN.sub(" ", text)
             # Read the way rename reads them (link_file): `<a note.md>`, one
             # with a title after it and one with %27 in it are links too.
             for m in MD_LINK.finditer(text):
@@ -9281,6 +9282,8 @@ MD_LINK = re.compile(r"""(!?\[[^\]\n]*\]\()(<[^>\n]*>|[^)\s<][^)\n]*?)((?:\s+(?:
 MD_REF = re.compile(r"^( {0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)", re.M)
 #: A fence around code. A link shown inside one is an example, not a link.
 MD_FENCE = re.compile(r"^ {0,3}(```|~~~)", re.M)
+# `code` or ``code with a ` in it``: the same number of backticks each side
+MD_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)")
 #: Notes bigger than this are not read for links: nobody hand-writes links
 #: into a 2 MB file, and reading thousands of them would make every sort slow.
 RELINK_CAP = 2_000_000

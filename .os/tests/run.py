@@ -2618,6 +2618,26 @@ def test_a_link_is_read_however_markdown_lets_it_be_written(t: Case) -> None:
 
 
 @test
+def test_a_link_shown_in_backticks_is_an_example_not_a_link(t: Case) -> None:
+    """A page that showed how to write a line, `- [name](name/brief.md)`,
+    was called broken by ./os check, because only a link in a ``` block was
+    taken for an example, not one in single backticks."""
+    notes = t.box.root / "Notes"
+    (notes / "How to list.md").write_text(
+        "# How to list\n\nOne line each: `- [name](name/brief.md) — one sentence`.\n"
+        "Or with two: ``[a `b`](also/gone.md)``.\n", encoding="utf-8")
+    (notes / "Real links.md").write_text(
+        "# Real links\n\nSee `this` and [that](really-gone.md), then `more`.\n", encoding="utf-8")
+    t.box.run("index")
+    said = [i["message"] for i in t.box.json("check", expect=None)["issues"]
+            if i["code"] == "broken-link"]
+    t.ok(not any(m.endswith(("name/brief.md", "also/gone.md")) for m in said),
+         f"an example in backticks isn't a link\n{said}")
+    t.ok(any(m.endswith(": really-gone.md") for m in said),
+         f"and a real one between two of them still is\n{said}")
+
+
+@test
 def test_find_reads_the_middle_of_a_long_note_and_puts_one_word_right(t: Case) -> None:
     """Search read the start and the end of a long page, and not the middle,
     so a word in the middle of a book-length note was never found. And a
