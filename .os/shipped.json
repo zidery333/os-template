@@ -241,7 +241,7 @@
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-04.1",
+  "release": "2026-10-05.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

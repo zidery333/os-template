@@ -3,6 +3,13 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-05.1
+
+- The download page is rewritten: what it does, the four helpers, the
+  skills, and steps for Windows and Linux, not only a Mac.
+  Windows runs it through WSL, a small copy of Linux inside Windows. Only
+  the Mac has been tried so far. Nothing in your own folder changes.
+
 ## 2026-10-04.1
 
 - `./os close <name> done` or `./os close <name> dropped` says how

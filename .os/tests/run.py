@@ -9023,8 +9023,23 @@ def test_the_release_builds_a_blank_folder(t: Case) -> None:
          "it says what to type when ./os won't run, and next time")
     # mv into a ~/os that's already there puts the download inside it, and
     # the next step finds no ./os. Said after the mv, the warning came too late.
-    warn, move = readme.find("Already have a `~/os`?"), readme.find("mv ~/Downloads/os-template-os ~/os")
+    warn, move = readme.find("Already have a `~/os`?"), readme.find("mv os-template-os ~/os")
     t.ok(0 <= warn < move, "the README warns about an existing ~/os before the mv, not after")
+    # Mac only, it left out anyone on Windows. Windows goes through WSL: ./os
+    # and the hooks are bash, and Windows itself has no python3.
+    t.ok("wsl --install" in readme and "Ctrl+Alt+T" in readme,
+         "the README has steps for Windows and Linux, not only a Mac")
+    t.ok("~/Downloads" not in readme, "and fetches the ZIP itself, since WSL can't see Windows' Downloads")
+    # The helpers are listed by hand in the README, so one added or taken out
+    # of SHIPPED_AGENTS would leave the download page wrong.
+    for name in upgrade.SHIPPED_AGENTS:
+        t.ok(f"**{name.capitalize()}**" in readme, f"the README shows the {name} helper")
+    count = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
+             "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen"]
+    n = len(upgrade.SHIPPED_AGENTS)
+    t.ok(n < len(count) and f"## {count[n]} helpers" in readme, "and says how many there are")
+    n = len(upgrade.SHIPPED_SKILLS)
+    t.ok(n < len(count) and f"## {count[n]} skills" in readme, "and how many skills")
     t.ok("can run it too" not in readme and "nobody has tried them yet" in readme,
          "and doesn't claim Codex or Gemini CLI were tried")
 
