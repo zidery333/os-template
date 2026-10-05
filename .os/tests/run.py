@@ -10826,7 +10826,12 @@ def test_update_knows_every_file_a_skill_ships_with(t: Case) -> None:
         out / ".claude" / "skills" / name / "checklist.md").write_text("- look at held work\n- and old notes\n"))
     done = t.box.run("update", "--from", str(published))
     t.ok("and old notes" in extra.read_text(), f"a file nobody touched takes the new version\n{done.stdout}")
-    t.ok("same name" not in done.stdout, "and isn't called theirs")
+    # Only the lines about this file: the change note is in the output too,
+    # and an ordinary one may say "same name".
+    about = [line for line in done.stdout.splitlines() if "checklist.md" in line]
+    t.ok(not any("same name" in line for line in about), f"and isn't called theirs\n{done.stdout}")
+    t.ok(not list((root / ".os" / "upgrades").glob(f"*/.claude/skills/{name}/checklist.md")),
+         "and the new one isn't set aside beside it")
 
 
 @test

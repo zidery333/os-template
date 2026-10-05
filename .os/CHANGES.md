@@ -3,6 +3,13 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-05.4
+
+- The download page says addons hold skills and helpers. It said skills
+  and notes, which was wrong.
+- Nothing else you'd notice: one of the template's own checks was fixed so
+  it no longer trips over ordinary words in a change note.
+
 ## 2026-10-05.3
 
 - Addons: extra skills for one kind of work, kept apart from the template

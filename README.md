@@ -88,7 +88,7 @@ Say something like this, and Claude does it the same careful way every time.
 
 ## Addons
 
-Extra skills and notes for one kind of work. Zenith comes with none. Add only
+Extra skills and helpers for one kind of work. Zenith comes with none. Add only
 the ones you want, and `./os update` keeps them up to date.
 
 | | Addon | What it adds |
