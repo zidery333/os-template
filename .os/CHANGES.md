@@ -3,6 +3,18 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-05.3
+
+- Addons: extra skills for one kind of work, kept apart from the template
+  so you only get the ones you ask for. `./os addon` lists them, and
+  `./os addon <name>` adds one. It never replaces anything: if you already
+  have a skill called that, it stops and changes nothing.
+- `./os update` keeps the addons you added up to date, the same careful way
+  as everything else. A file you changed is kept, and the new one is put
+  beside it for you to merge.
+- `./os undo` takes an addon out again straight after you add it.
+- The download page lists every addon, with what each one adds.
+
 ## 2026-10-05.2
 
 - The download page says what `CLAUDE.md` and `GEMINI.md` are for: one

@@ -7568,8 +7568,8 @@ HELP = """
     ./os sort                      file anything you dropped in by hand
     ./os check                     is anything broken?   --fix repairs it
     ./os tidy                      what's gone stale, doubled up or unfiled
-    ./os checkpoint                a save point, so hand edits can go back
-    ./os backup · ./os update      a zip of it all · the newest version
+    ./os backup · ./os checkpoint  a zip of it all · a save point for hand edits
+    ./os update · ./os addon       the newest version · extra skills to add
     ./os edit · ./os rename        open it in your editor · give it a new name
     ./os claim · ./os release      tell other chats you're on it · let go again
     ./os demo · ./os name "<you>"  a two-minute tour · your name on this folder
@@ -11101,6 +11101,8 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
     preview = _flag(argv, "--dry-run", "-n")
     anyway = _flag(argv, "--anyway")
     source = _opt(argv, "--from")
+    # A folder of addons by name, used instead of GitHub for the addons.
+    addons_from = _opt(argv, "--addons-from")
     check = _flag(argv, "--check")
     # `./os update ~/Downloads/os-template` means that copy. Dropped, it went to
     # GitHub instead: a 404 before the first release, another version after.
@@ -11162,6 +11164,7 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
         newer = bool(have and got and _release_key(got) > _release_key(have))
         if not fresh and not newer:
             Out.ok("this folder already has the newest version")
+            _then_addons(os_, preview, addons_from)
             Out.raw()
             return 0
         if have and got and _release_key(got) < _release_key(have) and not anyway:
@@ -11184,9 +11187,386 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
             Out.bad("the update stopped partway — ./os update again finishes it. "
                     "What it replaced is in .os/backups/before-upgrade-*")
             return proc.returncode
+    _then_addons(os_, preview, addons_from)
     if not preview:
         Out.note("./os undo can't reverse an update — the backup above can")
         Out.raw()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# addons — extra skills and helpers for one kind of work, added by name
+# ---------------------------------------------------------------------------
+
+#: Each addon is its own branch of the template on GitHub, `addon-<name>`, so
+#: the normal download carries none and nobody gets one they didn't ask for.
+#: At the top of the branch, addon.json says what it is and lists every file
+#: it puts in a folder, by where the file goes.
+ADDON_REPO = "zidery333/os-template"
+ADDON_ZIP = "https://github.com/" + ADDON_REPO + "/archive/refs/heads/addon-{name}.zip"
+ADDON_INFO = "https://raw.githubusercontent.com/" + ADDON_REPO + "/addon-{name}/addon.json"
+#: Every branch whose name starts `addon-`, in one small request.
+ADDON_BRANCHES = "https://api.github.com/repos/" + ADDON_REPO + "/git/matching-refs/heads/addon-"
+#: What this folder has added, in .os/: each addon's files as they were put
+#: in, so an update can tell one nobody touched (replaced) from one they
+#: changed (kept, and the new one set aside to merge).
+ADDONS_FILE = "addons.json"
+ADDON_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+#: The only places an addon may put things: a skill's own folder, or a
+#: helper. Never the program, never their work.
+ADDON_SKILL = re.compile(r"\.claude/skills/([a-z0-9][a-z0-9-]*)/[^/]+(?:/[^/]+)*")
+ADDON_HELPER = re.compile(r"\.claude/agents/[a-z0-9][a-z0-9-]*\.md")
+
+
+def _addon_place(rel: str) -> str:
+    """Where a file of an addon lands, as one thing: a skill's folder, or a
+    helper's file. "" for anywhere an addon may not put things."""
+    if ".." in rel.split("/") or "\\" in rel:
+        return ""
+    hit = ADDON_SKILL.fullmatch(rel)
+    if hit:
+        return f".claude/skills/{hit.group(1)}"
+    return rel if ADDON_HELPER.fullmatch(rel) else ""
+
+
+def _download(url: str, dest: Path, seconds: int = 60) -> int:
+    """Fetch `url` into `dest`. 0 when it came; GitHub's answer when it said
+    no, like 404 for nothing there; -1 when it couldn't be reached at all."""
+    curl = shutil.which("curl")
+    if curl:
+        try:
+            got = subprocess.run([curl, "-sSL", "--max-time", str(seconds), "-o", str(dest),
+                                  "-w", "%{http_code}", url],
+                                 capture_output=True, text=True, timeout=seconds + 10)
+            code = int((got.stdout or "").strip()[-3:] or 0)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            code = 0
+        if code == 200:
+            return 0
+        if code >= 400:
+            dest.unlink(missing_ok=True)
+            return code
+    # No curl, or it couldn't get through: Python's own. On some Macs it
+    # lacks the certificates, which is why curl goes first.
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=seconds) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+        return 0
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:
+        return -1
+
+
+def _fetch_json(url: str, dest: Path) -> object:
+    """What a small JSON file on GitHub says. None when it can't be had."""
+    if _download(url, dest, 10):
+        return None
+    try:
+        return json.loads(dest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _addon_fetch(name: str, into: Path, source: str) -> tuple:
+    """One addon, unpacked: (the folder holding its addon.json, or None, and
+    what went wrong). `source` is a folder of addons by name, used instead of
+    GitHub."""
+    if source:
+        folder = Path(source).expanduser() / name
+        if (folder / "addon.json").is_file():
+            return folder, ""
+        return None, f"there's no addon called {name} in {source}"
+    archive = into / f"addon-{name}.zip"
+    code = _download(ADDON_ZIP.format(name=name), archive)
+    if code == 404:
+        return None, f"there's no addon called {name}"
+    if code:
+        return None, "couldn't reach GitHub — check the internet connection and try again"
+    unpacked = into / f"addon-{name}"
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(unpacked)
+    except (zipfile.BadZipFile, OSError) as exc:
+        return None, f"the download wasn't a readable ZIP ({exc})"
+    tops = [p for p in (unpacked, *unpacked.iterdir()) if p.is_dir() and (p / "addon.json").is_file()]
+    if not tops:
+        return None, f"the {name} download has no addon.json"
+    return tops[0], ""
+
+
+def _addon_info(folder: Path, root: Path) -> tuple:
+    """An addon's addon.json, checked against what an addon may do: (what
+    it says, what's wrong with it). A skill or helper the template ships is
+    never an addon's to replace, and nor is a name Claude Code uses itself."""
+    try:
+        info = json.loads((folder / "addon.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, "its addon.json won't read"
+    files = info.get("files") if isinstance(info, dict) else None
+    if not isinstance(files, list) or not files or not all(isinstance(f, str) for f in files):
+        return {}, "its addon.json lists no files"
+    shipped = {_addon_place(rel) or rel for rel in (_shipped(root).get("files") or {})}
+    for rel in files:
+        place = _addon_place(rel)
+        if not place:
+            return {}, f"it would put {rel} somewhere an addon can't"
+        if place in shipped:
+            return {}, f"it would replace {place}, which comes with this folder"
+        if place.startswith(".claude/skills/") and Path(place).name in RESERVED_COMMANDS:
+            return {}, f"its skill would hide Claude Code's own /{Path(place).name}"
+        if not (folder / rel).is_file():
+            return {}, f"{rel} is missing from it"
+    return info, ""
+
+
+def _addons(root: Path) -> dict:
+    """The addons this folder has, from .os/addons.json: each one's files as
+    they were put in. Only those with a file still here: an addon whose files
+    are all gone was taken out, by ./os undo or by hand."""
+    try:
+        data = json.loads((root / MARKER / ADDONS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {name: a for name, a in (data.items() if isinstance(data, dict) else [])
+            if isinstance(a, dict) and isinstance(a.get("files"), dict)
+            and any((root / rel).is_file() for rel in a["files"])}
+
+
+def _then_addons(os_: Zenith, preview: bool, source: str) -> None:
+    """After an update, every addon this folder has, brought up to date by
+    the program that is here now: the new one."""
+    if not _addons(os_.root):
+        return
+    sys.stdout.flush()
+    subprocess.run([str(os_.root / "os"), "addon", "--update",
+                    *(["--dry-run"] if preview else []), *(["--from", source] if source else [])],
+                   cwd=str(os_.root))
+
+
+def cmd_addon(os_: Zenith, argv: list[str]) -> int:
+    """List the addons there are, or add one by name. `./os update` keeps the
+    ones added up to date, through `./os addon --update`."""
+    source = _opt(argv, "--from")
+    preview = _flag(argv, "--dry-run", "-n")
+    if _flag(argv, "--update"):
+        return _addons_update(os_, source, preview)
+    names = _theirs(argv)
+    if not names:
+        return _addons_list(os_, source)
+    if len(names) > 1:
+        die(f"one at a time:   ./os addon {names[0].lower()}")
+    name = names[0].strip().lower()
+    if not ADDON_NAME.fullmatch(name):
+        die(f"there's no addon called {names[0]} — ./os addon lists them")
+    have = _addons(os_.root)
+    if name in have:
+        Out.title("addon")
+        Out.ok(f"{have[name].get('name') or name} is already added")
+        Out.note("./os update brings its newest version")
+        Out.raw()
+        return 0
+    with tempfile.TemporaryDirectory(prefix="zenith-addon-") as tmp:
+        folder, problem = _addon_fetch(name, Path(tmp), source)
+        if folder is None:
+            die(problem + (" — ./os addon lists them" if problem.startswith("there's no addon") else ""))
+        info, problem = _addon_info(folder, os_.root)
+        if problem:
+            die(f"the {name} addon can't be added: {problem}. Nothing here changed")
+        files = info["files"]
+        # Never over anything of theirs: a skill or helper by the same name
+        # stops it, with nothing changed.
+        owned = {rel: other for other, a in have.items() for rel in a["files"]}
+        clash = []
+        for rel in files:
+            dst = os_.root / rel
+            if rel in owned:
+                clash.append(f"{rel}, part of the {owned[rel]} addon")
+            elif (dst.exists() or dst.is_symlink()) and _sha1(dst) != _sha1(folder / rel):
+                clash.append(rel)
+        if clash:
+            die("you already have something by the same name, so nothing was added:\n"
+                + "".join(f"       {c}\n" for c in clash)
+                + "     Rename yours, then add it again.")
+        title = one_line(str(info.get("name") or name))
+        places = sorted({_addon_place(rel) for rel in files})
+        if preview:
+            Out.title("addon", "a preview — nothing will change")
+            Out.ok(f"would add {title}: " + ", ".join(places))
+            Out.raw()
+            return 0
+        with Lock(os_, "addon"):
+            for rel in files:
+                dst = os_.root / rel
+                os_.make_dir(dst.parent)
+                there = dst.exists()
+                shutil.copy2(folder / rel, dst)
+                if not there:
+                    os_.created(dst)
+            # The record goes back with ./os undo too, or a skill of their
+            # own by the same name, made later, would read as this addon.
+            listed = os_.dot / ADDONS_FILE
+            was = listed.read_bytes() if listed.is_file() else None
+            try:
+                record = json.loads(was or b"{}")
+            except ValueError:
+                record = {}
+            record = {**(record if isinstance(record, dict) else {}), **have,
+                      name: {"name": title, "release": str(info.get("release") or ""),
+                             "files": {rel: _sha1(os_.root / rel) for rel in files}}}
+            write_text(listed, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+            if was is None:
+                os_.created(listed)
+            else:
+                os_.edited(listed, was)
+            os_.commit(f"added the {name} addon")
+            Indexer(os_).build()
+    Out.title("addon added")
+    icon = one_line(str(info.get("icon") or "")).strip()
+    about = one_line(str(info.get("about") or "")).strip()
+    Out.ok(f"{icon + '  ' if icon else ''}{title}" + (f" — {about}" if about else ""))
+    Out.note("in " + ", ".join(places) + "   ·   a chat started from now on can use it")
+    Out.note("./os update keeps it up to date   ·   wrong?  ./os undo")
+    Out.raw()
+    return 0
+
+
+def _addons_list(os_: Zenith, source: str) -> int:
+    """Every addon there is: what each one adds, and how to add it."""
+    found: list = []
+    if source:
+        base = Path(source).expanduser()
+        if not base.is_dir():
+            die(f"there's no folder at {source}")
+        for folder in sorted(p for p in base.iterdir() if (p / "addon.json").is_file()):
+            try:
+                info = json.loads((folder / "addon.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                info = {}
+            found.append((folder.name, info if isinstance(info, dict) else {}))
+    else:
+        with tempfile.TemporaryDirectory(prefix="zenith-addon-") as tmp:
+            refs = _fetch_json(ADDON_BRANCHES, Path(tmp) / "refs.json")
+            if not isinstance(refs, list):
+                die("couldn't get the list of addons from GitHub — check the internet "
+                    "connection, or try again in a while")
+            for ref in refs:
+                name = str(ref.get("ref") or "").rpartition("/addon-")[2] if isinstance(ref, dict) else ""
+                if ADDON_NAME.fullmatch(name):
+                    info = _fetch_json(ADDON_INFO.format(name=name), Path(tmp) / f"{name}.json")
+                    found.append((name, info if isinstance(info, dict) else {}))
+    have = _addons(os_.root)
+    Out.title("addons", "extra skills for one kind of work, added by name")
+    if not found:
+        Out.note("there are no addons yet")
+        Out.raw()
+        return 0
+    for name, info in found:
+        icon = one_line(str(info.get("icon") or "")).strip() or "·"
+        title = one_line(str(info.get("name") or name))
+        about = one_line(str(info.get("about") or "")).strip()
+        Out.raw(f"  {icon}  " + paint(title, S.B) + (paint("   added", S.MUTE) if name in have else ""))
+        if about:
+            Out.raw("      " + paint(about, S.INK))
+        if name not in have:
+            Out.raw("      " + paint(f"./os addon {name}", S.GOLD))
+    Out.raw()
+    Out.note("./os update keeps the ones you add up to date")
+    Out.raw()
+    return 0
+
+
+def _addons_update(os_: Zenith, source: str, preview: bool) -> int:
+    """Bring every addon this folder has up to its newest version. A file of
+    an addon nobody touched is replaced; one they changed is kept, and the
+    new one set aside in .os/upgrades/ to merge; one they deleted stays
+    deleted. Everything replaced is copied to .os/backups/ first."""
+    have = _addons(os_.root)
+    if not have:
+        return 0
+    stamp = _dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    backup = os_.dot / "backups" / f"before-addons-{stamp}"
+    aside = os_.dot / "upgrades" / stamp
+    record = dict(have)
+    touched = False
+
+    def put(src: Path, dst: Path) -> None:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    with tempfile.TemporaryDirectory(prefix="zenith-addon-") as tmp, Lock(os_, "addon"):
+        for name, had in sorted(have.items()):
+            title = str(had.get("name") or name)
+            folder, problem = _addon_fetch(name, Path(tmp), source)
+            info: dict = {}
+            if folder is not None:
+                info, problem = _addon_info(folder, os_.root)
+            if problem:
+                Out.raw(f"  ▲ the {title} addon: {problem}; yours is kept as it is")
+                continue
+            old = had["files"]
+            offered = had.get("offered") if isinstance(had.get("offered"), dict) else {}
+            files, waiting, done, said = {}, {}, {"new": 0, "replaced": 0, "taken out": 0}, []
+            for rel in info["files"]:
+                src, dst = folder / rel, os_.root / rel
+                now = _sha1(src)
+                if dst.is_file():
+                    mine = _sha1(dst)
+                    if mine == now:
+                        files[rel] = now
+                    elif old.get(rel) == mine:
+                        if not preview:
+                            put(dst, backup / rel)
+                            put(src, dst)
+                        files[rel], done["replaced"] = now, done["replaced"] + 1
+                    else:
+                        # Changed by them, or theirs from before: kept, and
+                        # the new one put beside it once, not every update.
+                        if rel in old:
+                            files[rel] = old[rel]
+                        waiting[rel] = now
+                        if offered.get(rel) != now:
+                            if not preview:
+                                put(src, aside / rel)
+                            said.append(f"  {'would keep' if preview else 'kept     '} {rel} — "
+                                        + ("you edited it" if rel in old else "yours has the same name")
+                                        + ("" if preview else f"; the new one is in {os_.rel(aside / rel)}"))
+                elif rel in old:
+                    files[rel] = old[rel]
+                    said.append(f"  {'would leave out' if preview else 'left out '} {rel} — "
+                                "you deleted it, so it stays deleted")
+                else:
+                    if not preview:
+                        put(src, dst)
+                    files[rel], done["new"] = now, done["new"] + 1
+            # A file the addon no longer has goes, unless they changed it.
+            for rel, was in old.items():
+                dst = os_.root / rel
+                if rel in files or not dst.is_file() or _sha1(dst) != was:
+                    continue
+                if not preview:
+                    put(dst, backup / rel)
+                    dst.unlink()
+                    try:
+                        dst.parent.rmdir()          # only if nothing is left in it
+                    except OSError:
+                        pass
+                done["taken out"] += 1
+            record[name] = {"name": one_line(str(info.get("name") or title)),
+                            "release": str(info.get("release") or had.get("release") or ""),
+                            "files": files, **({"offered": waiting} if waiting else {})}
+            counts = [f"{n} {what}" for what, n in done.items() if n]
+            touched = touched or bool(counts)
+            Out.raw(f"  {'would update' if preview else 'updated  '} the {title} addon — {', '.join(counts)}"
+                    if counts else f"  ✓ the {title} addon is up to date")
+            for line in said:
+                Out.raw(line)
+        if not preview:
+            write_text(os_.dot / ADDONS_FILE, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+            if touched:
+                Indexer(os_).build()
     return 0
 
 
@@ -11537,14 +11917,29 @@ DETAIL = {
                "from GitHub. Your work and notes are never touched. A skill or helper "
                "you changed yourself is kept — the new one is put beside it in "
                ".os/upgrades/ for you or your AI to merge — and one you deleted stays "
-               "deleted. Settings you changed keep your changes, with any new ones added.",
+               "deleted. Settings you changed keep your changes, with any new ones added. "
+               "Every addon you added is brought up to date too, the same way.",
                ["os update", "os update --dry-run", "os update --check",
                 "os update --from ~/Downloads/os.zip"],
                "Everything it replaces is copied into .os/backups/ first. If this "
                "folder's own program was changed and never published, it stops and "
                "says so; --anyway goes ahead. --check only says whether a newer "
                "version is out, and says nothing if not. --from uses a fresh download "
-               "you already have, never a folder somebody has used."),
+               "you already have, never a folder somebody has used; --addons-from "
+               "does the same for addons, from a folder holding them by name."),
+    "addon": ("os addon   |   os addon <name>",
+              "Extra skills and helpers for one kind of work, kept apart from the "
+              "template so you only get the ones you ask for. On its own it lists "
+              "every addon there is, with what each one adds. With a name it adds "
+              "that one. ./os update keeps the ones you added up to date.",
+              ["os addon", "os addon tate"],
+              "An addon only ever adds skills and helpers: it never changes your "
+              "work, your notes, or anything the folder came with. If you already "
+              "have a skill or helper by the same name, it stops and changes "
+              "nothing. ./os undo takes an addon out again straight after; later, "
+              "delete its skill's folder in .claude/skills/. A file of it you "
+              "change is yours: an update keeps it and puts the new one beside it "
+              "in .os/upgrades/."),
     "snag": ('os snag "<what got in the way>"   |   os snag --export',
              "Write down something wrong with this folder itself — a command that "
              "did the surprising thing, a rule that made no sense, a step that "
@@ -11741,7 +12136,7 @@ for _alias, _real in (("back", "close"), ("restore", "close"), ("archive", "clos
                       ("release", "claim"), ("retitle", "rename"), ("call", "rename"),
                       ("capture", "save"), ("doctor", "check"), ("review", "tidy"),
                       ("setup", "name"), ("tour", "demo"),
-                      ("decided", "decide")):
+                      ("decided", "decide"), ("addons", "addon")):
     DETAIL.setdefault(_alias, DETAIL[_real])
 
 
@@ -11809,6 +12204,7 @@ COMMANDS = {
     "demo": cmd_demo, "tour": cmd_demo,
     "name": cmd_name, "setup": cmd_setup, "init": cmd_setup,
     "update": cmd_update,
+    "addon": cmd_addon, "addons": cmd_addon,
     # plumbing
     "index": cmd_index, "reindex": cmd_index,
     "last": cmd_last,
@@ -11834,6 +12230,7 @@ NEAR_MISS = {
     "guide": "help", "manual": "help", "link": "check --fix", "repair": "check --fix",
     "vocab": "words", "vocabulary": "words", "keywords": "words", "taxonomy": "words",
     "upgrade": "update", "latest": "update", "refresh": "update",
+    "plugin": "addon", "plugins": "addon", "extension": "addon", "extensions": "addon",
     # git's word and the thing it keeps: `./os commit` and `./os history` were
     # answered "./os help lists everything", and the list didn't have it.
     "commit": "checkpoint", "history": "checkpoint", "versions": "checkpoint",
@@ -11881,7 +12278,8 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_status": {"--json"},
     "cmd_test": None,      # forwards everything to the suite
     "cmd_undo": {"--anyway", "--other-chat"},
-    "cmd_update": {"--anyway", "--check", "--dry-run", "--from", "-n"},
+    "cmd_update": {"--addons-from", "--anyway", "--check", "--dry-run", "--from", "-n"},
+    "cmd_addon": {"--dry-run", "--from", "--update", "-n"},
     "cmd_words": {"--json", "--new"},
     "cmd_snag": {"--clear", "--export", "--json"},
 }

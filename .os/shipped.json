@@ -120,7 +120,8 @@
       "ae0d5e3192accff7d7634b02ba5d11a9243ae57b",
       "6fe46721e318717b775481de9f383fc554754d43",
       "8f5181c79ccb7c78873357687d495598f7fec33b",
-      "c9fe50a4823f8be584622eca89e72f51f9ff02ca"
+      "c9fe50a4823f8be584622eca89e72f51f9ff02ca",
+      "b8ced0088a60cfed62b610c80f834fbdcd8a9d8b"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
@@ -144,7 +145,8 @@
       "ff08376da471c70558f7e71ce060e8c7084c0ca3",
       "514e772c224b7f29c7e5f5d77403734a45c4d772",
       "09b9159a16bd356f45231852db64058b697527ba",
-      "cf5464dc83f299c25f525638bdefa15d480a1930"
+      "cf5464dc83f299c25f525638bdefa15d480a1930",
+      "977285085b030e8fa19b7b501656528fc6bc7384"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
@@ -241,7 +243,7 @@
     "allow:Bash(./os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-05.2",
+  "release": "2026-10-05.3",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

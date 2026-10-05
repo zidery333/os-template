@@ -66,7 +66,7 @@ when they say it is genuinely over.
 
 ## The commands
 ```
-./os                     where things stand
+./os                     where things stand · ./os help <command>  detail on any of these
 ./os save "<text>"       write something down — it gets filed immediately
 ./os save <path>         pull a file in from anywhere
 ./os new work "..."      start something they're pushing on
@@ -82,14 +82,13 @@ when they say it is genuinely over.
 ./os decide <name> "<text>"  write a settled thing into its ## Decisions
 ./os claim <name>        tell the other chats you're on it · ./os release <name>  let go again
 ./os rename <name> "..."  call it something else, everywhere at once
-./os sort                file anything they dropped in by hand
-./os undo                reverse the last thing ./os did
+./os sort                file anything dropped in by hand · ./os undo  reverse the last thing ./os did
 ./os checkpoint "..."    keep everything as it is now, so hand edits can be taken back
 ./os learn --list <url>  what a channel has · ./os learn <id> its actual words
 ./os words               the words it files by · ./os words <domain> "<word>" adds one
 ./os snag "<text>"       something wrong with THIS folder, not their work
 ./os check --fix         repair anything broken · ./os update  get the newest version
-./os help <command>      detail on any of them
+./os addon               extra skills for one kind of work · ./os addon <name> adds one
 ```
 
 **One thing, one name.** `./os save` already creates work when the words read
@@ -129,6 +128,7 @@ they want to be good at is `./os learn` for the sources, `./os new learning "...
 the note it becomes, then `./os words` to teach the folder its vocabulary. Anything else:
 `./os save` and let the filing decide. Each skill is `.claude/skills/<name>/SKILL.md`, listed
 in `.claude/CATALOG.md`, and any AI can use one: when a request fits it, read it and follow it.
+`./os addon` lists ready-made ones someone already wrote; adding one downloads it, so ask first.
 
 Before answering a how-to, `./os find "<subject>"` — a subject they have learned
 beats your general knowledge, because it is what *they* chose to trust.

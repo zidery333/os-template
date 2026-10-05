@@ -10479,6 +10479,134 @@ def _release_of(root: Path) -> str:
     return json.loads((root / ".os" / "shipped.json").read_text()).get("release", "")
 
 
+def _addon(where: Path, name: str, files: dict, **info) -> Path:
+    """An addon as its branch holds it, in a folder of addons by name:
+    `files` maps where each file goes to what it says."""
+    out = where / name
+    for rel, text in files.items():
+        (out / rel).parent.mkdir(parents=True, exist_ok=True)
+        (out / rel).write_text(text, encoding="utf-8")
+    (out / "addon.json").write_text(json.dumps(
+        {"name": name.title(), "icon": "🧪", "about": f"Things for {name}.", "files": list(files), **info}))
+    return where
+
+
+@test
+def test_an_addon_is_added_by_name_and_undo_takes_it_out(t: Case) -> None:
+    """`./os addon` lists what there is, `./os addon <name>` adds one, and
+    `./os undo` takes it out again, its record too."""
+    root = t.box.root
+    shelf = _addon(t.box.tmp / "addons", "pottery", {
+        ".claude/skills/glazes/SKILL.md": "---\nname: glazes\ndescription: Mix a glaze.\n---\n# Glazes\n",
+        ".claude/skills/glazes/RECIPES.md": "Celadon: 2 parts…\n",
+        ".claude/agents/kiln-watcher.md": "---\nname: kiln-watcher\ndescription: Watch a firing.\n---\n"})
+    listed = t.box.run("addon", "--from", str(shelf)).stdout
+    t.ok("Pottery" in listed and "Things for pottery." in listed and "./os addon pottery" in listed,
+         f"the list says what each one adds and how to add it\n{listed}")
+
+    added = t.box.run("addon", "pottery", "--from", str(shelf)).stdout
+    t.ok("Pottery" in added, f"it says what was added\n{added}")
+    for rel in (".claude/skills/glazes/SKILL.md", ".claude/skills/glazes/RECIPES.md",
+                ".claude/agents/kiln-watcher.md"):
+        t.eq((root / rel).read_text(), (shelf / "pottery" / rel).read_text(), f"{rel} arrives as it was")
+    t.ok("/glazes" in (root / ".claude" / "CATALOG.md").read_text(), "the skill is in the catalog")
+    t.ok("pottery" in json.loads((root / ".os" / "addons.json").read_text()), "and it is recorded")
+    t.ok("added" in t.box.run("addon", "--from", str(shelf)).stdout, "the list marks it added")
+    t.ok("already added" in t.box.run("addon", "pottery", "--from", str(shelf)).stdout,
+         "adding it again says it's there")
+
+    t.box.run("undo")
+    t.ok(not (root / ".claude" / "skills" / "glazes").exists(), "undo takes the skill out, folder and all")
+    t.ok(not (root / ".claude" / "agents" / "kiln-watcher.md").exists(), "and the helper")
+    t.ok(not (root / ".os" / "addons.json").exists(), "and its record, so it isn't counted as added")
+    t.box.run("index")
+    t.ok("/glazes" not in (root / ".claude" / "CATALOG.md").read_text(), "and the catalog forgets it")
+
+    proc = t.box.run("addon", "nothing-here", "--from", str(shelf), expect=1)
+    t.ok("no addon called nothing-here" in proc.stderr, f"an unknown one says so\n{proc.stderr}")
+
+
+@test
+def test_an_addon_never_replaces_anything(t: Case) -> None:
+    """An addon only adds skills and helpers. One that would land on a skill
+    of theirs, on one the folder came with, on Claude Code's own commands or
+    anywhere outside .claude/skills and .claude/agents stops with nothing
+    changed."""
+    root = t.box.root
+    shelf = t.box.tmp / "addons"
+    mine = root / ".claude" / "skills" / "glazes" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("my own glazes\n")
+    _addon(shelf, "pottery", {".claude/skills/glazes/SKILL.md": "theirs\n"})
+    proc = t.box.run("addon", "pottery", "--from", str(shelf), expect=1)
+    t.ok("same name" in proc.stderr and ".claude/skills/glazes/SKILL.md" in proc.stderr,
+         f"a skill of theirs by the same name stops it, and is named\n{proc.stderr}")
+    t.eq(mine.read_text(), "my own glazes\n", "theirs is untouched")
+    t.ok(not (root / ".os" / "addons.json").exists(), "nothing is recorded")
+
+    for name, rel in (("sneaky", ".claude/skills/find/SKILL.md"),
+                      ("work", "Work/Plan/README.md"),
+                      ("hooks", ".claude/hooks/settle.sh"),
+                      ("escape", ".claude/skills/x/../../hooks/settle.sh"),
+                      ("shadow", ".claude/skills/review/SKILL.md")):
+        _addon(shelf, name, {rel: "x\n"})
+        before = (root / rel).read_bytes() if (root / rel).is_file() else None
+        proc = t.box.run("addon", name, "--from", str(shelf), expect=1)
+        t.ok("can't be added" in proc.stderr, f"an addon writing {rel} is refused\n{proc.stderr}")
+        t.eq((root / rel).read_bytes() if (root / rel).is_file() else None, before, f"{rel} is as it was")
+
+
+@test
+def test_an_update_brings_each_addon_up_to_date(t: Case) -> None:
+    """`./os update` updates the addons too. A file nobody touched is
+    replaced, one they changed is kept with the new one set aside once, one
+    they deleted stays deleted, and a file the addon dropped goes."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    v1 = _addon(t.box.tmp / "v1", "pottery", {
+        ".claude/skills/glazes/SKILL.md": "---\nname: glazes\ndescription: Mix a glaze.\n---\nv1\n",
+        ".claude/skills/glazes/RECIPES.md": "v1 recipes\n",
+        ".claude/skills/glazes/KILNS.md": "v1 kilns\n",
+        ".claude/skills/glazes/OLD.md": "v1 old\n"})
+    t.box.run("addon", "pottery", "--from", str(v1))
+    glazes = root / ".claude" / "skills" / "glazes"
+    (glazes / "SKILL.md").write_text((glazes / "SKILL.md").read_text() + "my note\n")
+    (glazes / "KILNS.md").unlink()
+    v2 = _addon(t.box.tmp / "v2", "pottery", {
+        ".claude/skills/glazes/SKILL.md": "---\nname: glazes\ndescription: Mix a glaze.\n---\nv2\n",
+        ".claude/skills/glazes/RECIPES.md": "v2 recipes\n",
+        ".claude/skills/glazes/KILNS.md": "v2 kilns\n",
+        ".claude/skills/glazes/FIRING.md": "v2 firing\n"}, release="2026-02-01.1")
+
+    preview = t.box.run("update", "--from", str(published), "--addons-from", str(v2), "--dry-run").stdout
+    t.ok("would update the Pottery addon" in preview, f"a preview says what would change\n{preview}")
+    t.eq((glazes / "RECIPES.md").read_text(), "v1 recipes\n", "and changes nothing")
+
+    done = t.box.run("update", "--from", str(published), "--addons-from", str(v2)).stdout
+    t.ok("updated   the Pottery addon" in done, f"the update says the addon was updated\n{done}")
+    t.eq((glazes / "RECIPES.md").read_text(), "v2 recipes\n", "a file nobody touched is replaced")
+    t.eq((glazes / "FIRING.md").read_text(), "v2 firing\n", "a new file arrives")
+    t.ok((glazes / "SKILL.md").read_text().endswith("my note\n"), "the one they changed is kept")
+    aside = list((root / ".os" / "upgrades").rglob("SKILL.md"))
+    t.eq(len(aside), 1, "and the new one set aside")
+    t.ok("v2" in aside[0].read_text(), "holding the new version")
+    t.ok(not (glazes / "KILNS.md").exists(), "one they deleted stays deleted")
+    t.ok(not (glazes / "OLD.md").exists(), "a file the addon dropped goes")
+    t.ok(list((root / ".os" / "backups").glob("before-addons-*/.claude/skills/glazes/RECIPES.md")),
+         "what it replaced is backed up first")
+    t.eq(json.loads((root / ".os" / "addons.json").read_text())["pottery"]["release"], "2026-02-01.1",
+         "the record says the new version")
+
+    again = t.box.run("addon", "--update", "--from", str(v2)).stdout
+    t.ok("up to date" in again, f"run again, there's nothing new\n{again}")
+    t.eq(len(list((root / ".os" / "upgrades").rglob("SKILL.md"))), 1, "and nothing is set aside twice")
+
+    gone = t.box.run("addon", "--update", "--from", str(t.box.tmp / "nowhere")).stdout
+    t.ok("yours is kept as it is" in gone, f"an addon that can't be had is left as it is\n{gone}")
+    t.ok((glazes / "SKILL.md").is_file(), "and nothing of it is touched")
+
+
 @test
 def test_update_renews_settings_and_keywords_nobody_changed(t: Case) -> None:
     """A settings file or a subject's keywords nobody changed take the new

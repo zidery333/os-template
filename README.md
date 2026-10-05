@@ -86,6 +86,31 @@ Say something like this, and Claude does it the same careful way every time.
 | "Done for today" | Writes down what happened and saves a checkpoint |
 | "What can you do?" | The full menu |
 
+## Addons
+
+Extra skills and notes for one kind of work. Zenith comes with none. Add only
+the ones you want, and `./os update` keeps them up to date.
+
+| | Addon | What it adds |
+| :---: | --- | --- |
+| ✍️ | **Tate** | Writes emails, tweets, captions and DMs in Andrew Tate's voice, measured from hundreds of his real emails. |
+
+Once Zenith is installed (see Install below), go into your folder and type
+this to see every addon:
+
+```bash
+./os addon
+```
+
+To add one, put its name after it:
+
+```bash
+./os addon tate
+```
+
+An addon never changes your own work. If it has a skill with the same name as
+one you already have, it stops and tells you instead of replacing yours.
+
 ## What you need
 
 - A Mac, a Linux computer, or a Windows PC (through WSL, see below).
@@ -218,7 +243,7 @@ to **zidery333** on Discord.
 
 ## What's been tested
 
-The program passes all 321 of its own checks. Type `./os test` to run them yourself.
+The program passes all 324 of its own checks. Type `./os test` to run them yourself.
 They show that `./os` files, finds and undoes things the way it says. They
 can't show that your AI files things well, or that any of this helps you.
 
