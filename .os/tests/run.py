@@ -9040,6 +9040,10 @@ def test_the_release_builds_a_blank_folder(t: Case) -> None:
     t.ok(n < len(count) and f"## {count[n]} helpers" in readme, "and says how many there are")
     n = len(upgrade.SHIPPED_SKILLS)
     t.ok(n < len(count) and f"## {count[n]} skills" in readme, "and how many skills")
+    # A page that says "built for Claude Code" beside a GEMINI.md read as a
+    # leftover. It says what the one-line files are for.
+    t.ok((out / "GEMINI.md").is_file() and "`GEMINI.md`" in readme,
+         "and says why GEMINI.md is there")
     t.ok("can run it too" not in readme and "nobody has tried them yet" in readme,
          "and doesn't claim Codex or Gemini CLI were tried")
 

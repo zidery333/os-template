@@ -206,6 +206,10 @@ Zenith is built for Claude Code. Other AIs that can run commands on your
 computer, like Codex or Gemini CLI, should work too, but nobody has tried them
 yet. A chat-only app like ChatGPT can't.
 
+The rules every AI follows are in `AGENTS.md`. `CLAUDE.md` and `GEMINI.md` are
+one line each, pointing Claude Code and Gemini CLI at it. Codex reads
+`AGENTS.md` by itself.
+
 ## Something not working?
 
 Type `./os snag "what broke"` to write it down. To send them in, type

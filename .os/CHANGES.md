@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-05.2
+
+- The download page says what `CLAUDE.md` and `GEMINI.md` are for: one
+  line each, pointing Claude Code and Gemini CLI at the same rules in
+  `AGENTS.md`. Nothing in your own folder changes.
+
 ## 2026-10-05.1
 
 - The download page is rewritten: what it does, the four helpers, the
