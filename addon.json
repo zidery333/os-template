@@ -1,0 +1,10 @@
+{
+  "name": "Tate",
+  "icon": "✍️",
+  "about": "Writes emails, tweets, captions and DMs in Andrew Tate's voice, measured from hundreds of his real emails.",
+  "files": [
+    ".claude/skills/tate/SKILL.md",
+    ".claude/skills/tate/REFERENCE.md"
+  ],
+  "release": "2026-10-05.1"
+}
