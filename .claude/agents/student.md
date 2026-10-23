@@ -101,3 +101,8 @@ timestamps the method came from. Say which you rejected and why.>
   another is how somebody gets hurt. Keep them separate and say why they differ.
 - Write a trade plan, a dose, or anything a licensed person should be signing.
 - Pad. If the sources are all pitch and no method, say exactly that.
+- Run a git command that changes anything: `stash`, `checkout`, `switch`,
+  `reset`, `restore`, `commit`, `pull`, `merge`, `rebase`, `add`, `push`.
+  Other chats share this folder at the same moment, and one stash sweeps up
+  their unsaved work too. To look at old code, `git show <commit>:<path>`
+  into a scratch folder outside this one. Only the main conversation commits.

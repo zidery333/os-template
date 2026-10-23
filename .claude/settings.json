@@ -4,7 +4,9 @@
   "autoMemoryEnabled": false,
   "permissions": {
     "allow": [
-      "Bash(./os:*)"
+      "Bash(./os:*)",
+      "Bash(bash os:*)",
+      "Bash(bash ./os:*)"
     ],
     "deny": [
       "Read(/.os/backups/**)"

@@ -3,6 +3,41 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-22.1
+
+- `./os sort` no longer moves or renames anything already filed. It only
+  files what you dropped in by hand. Paths your other files point at stay
+  right.
+- `./os save` and `./os new` put things straight into their final folder,
+  under their final name, so the path you're told first stays true.
+- A crowded folder is split only when you ask: `./os sort --regroup` shows
+  what would move and which files name those paths, and `--yes` does it.
+  It fixes those paths in your pages and skills, and lists any code or
+  settings that still name an old one. Odd words like "https" or "help"
+  never name a folder.
+- `./os save` leans to note. Reference tables, research, transcripts and
+  long text land in Notes, not Work. Say which with `--note` or `--work`.
+- Something about work you already have goes inside it, with a line in
+  its Log. `--into <name>` picks the work, `--new` keeps it apart.
+- "About me: …" starts the About me note if there isn't one yet.
+- Names never get `!` or other marks a terminal trips on, and a saved
+  folder gets a proper Title Case name. `./os check` points out old names
+  with those marks, and gives the rename to type.
+- `./os undo` after a save puts things back exactly as they were. Nothing
+  is left behind in a hidden folder, and `./os` stops counting old
+  leftovers as unfiled. `./os check --fix` clears them.
+- `./os update --done` clears the files an update left for you to merge,
+  once you've merged them.
+- Commands that only look, like `./os tidy --json`, no longer change any
+  file, so a catch-up leaves nothing to save.
+- `./os find --notes` searches Notes only, for helpers kept out of Work.
+- `./os close <name> --part <folder>` puts one folder inside a piece of
+  work away, and `./os undo` brings it back.
+- Scheduled runs can call `bash os` without a permission prompt, and the
+  rules say to call `./os` on its own, never after `cd`.
+- Helpers never run git commands that change anything, so several working
+  at once can't sweep up each other's work.
+
 ## 2026-10-05.5
 
 - `./os check` no longer calls a link broken when it's only an example

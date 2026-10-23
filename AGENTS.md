@@ -8,11 +8,13 @@ folder guarantees and needs; how you get there is your call.
 
 ## First, always
 
-Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one plain
-sentence about where things stand. Then run `./os update --check` and pass on, once, any line it
-prints. **If the folders are empty, this person has never used it**: don't explain the system or
-list commands. Say hello, say in a line or two that whatever they tell you gets written down and
-filed, and ask what's on their mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
+Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one plain sentence
+about where things stand. Then run `./os update --check` and pass on, once, any line it prints. Call it
+exactly as `./os …` from the top of this folder, on its own, never after `cd` or `&&`, so it runs without
+asking. With nobody there to say yes, the note handed over at the start and `INDEX.md` are enough. **If
+the folders are empty, this person has never used it**: don't explain the system or list commands. Say
+hello, say in a line or two that whatever they tell you gets written down and filed, and ask what's on
+their mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
 
 ## Talk like a person
 
@@ -57,43 +59,41 @@ know least. Ask what it needs from them **now**:
 | `pushing` | there is a next action | `./os push <name>` |
 | `holding` | there is a standard, and no next action | `./os hold <name>` |
 
-The same item moves between the two, repeatedly — work that ships becomes work that is
-maintained — and that is one word in the header, not a move on disk. **It is the flip you will
-reach for most.** When something goes quiet, the usual truth is not that it is dead but that it
-stopped having a next action: hold it, don't close it. Held work is never counted as on the go
-and never nagged for going quiet, so it stops generating false guilt. Only offer `./os close`
-when they say it is genuinely over.
+The same item moves between the two, repeatedly — work that ships becomes work that is maintained — and
+that is one word in the header, not a move on disk. **It is the flip you will reach for most.** When
+something goes quiet, the usual truth is not that it is dead but that it stopped having a next action:
+hold it, don't close it. Held work is never counted as on the go and never nagged for going quiet, so it
+stops generating false guilt. Only offer `./os close` when they say it is genuinely over.
 
 ## The commands
 ```
 ./os                     where things stand · ./os help <command>  detail on any of these
-./os save "<text>"       write something down — it gets filed immediately
+./os save "<text>"       write something down — filed at once; guessed wrong? undo, then --note or --work
 ./os save <path>         pull a file in from anywhere
 ./os new work "..."      start something they're pushing on
 ./os new ongoing "..."   start something they'll just keep up
 ./os new learning "..."  a note about how something is done, in that shape
 ./os hold <name>         no next action — just keep it level
 ./os push <name>         back on the go — a note pushed becomes work
-./os find <words>        search everything — forgives plurals, offers near words
+./os find <words>        search everything — forgives plurals, offers near words · --notes keeps out of Work/
 ./os show <name>         one item: state, next action, decisions, recent log
 ./os last                what happened the last time anyone worked here
 ./os open <name>         where something lives on disk · ./os edit <name>  to change it
-./os close <name>        no longer live — into Archive/
+./os close <name>        no longer live — into Archive/ · --part <folder> puts one folder in it away
 ./os decide <name> "<text>"  write a settled thing into its ## Decisions
 ./os claim <name>        tell the other chats you're on it · ./os release <name>  let go again
 ./os rename <name> "..."  call it something else, everywhere at once
-./os sort                file anything dropped in by hand · ./os undo  reverse the last thing ./os did
+./os sort                file anything dropped in by hand (--regroup splits a crowded folder) · ./os undo  reverse the last thing ./os did
 ./os checkpoint "..."    keep everything as it is now, so hand edits can be taken back
 ./os learn --list <url>  what a channel has · ./os learn <id> its actual words
 ./os words               the words it files by · ./os words <domain> "<word>" adds one
 ./os snag "<text>"       something wrong with THIS folder, not their work
-./os check --fix         repair anything broken · ./os update  get the newest version
+./os check --fix         repair anything broken · ./os update  get the newest version (--done once merged)
 ./os addon               extra skills for one kind of work · ./os addon <name> adds one
 ```
 
-**One thing, one name.** `./os save` already creates work when the words read
-like work — never follow it with `./os new work` for the same thing. `./os new`
-refuses a near-duplicate too; read what it found.
+**One thing, one name.** `./os save` already creates work when the words read like work — never follow it
+with `./os new work` for the same thing. `./os new` refuses a near-duplicate too; read what it found.
 
 ## Rules that matter
 
@@ -113,11 +113,10 @@ The rest of this file is for your judgement. These five protect their data, and 
    `## Open questions`, its answer into `## Decisions`. Never rewrite history.
 5. **Cite the name and the path** when you use something from here.
 
-Inside an item's own folder, organise however you like: the rules are about the
-top-level folders, and `Work/Some Project/` is yours to shape. Two conventions
-hold everywhere: folders are Title Case With Spaces, and no folder exists before
-something goes in it — no empty `notes/` or `assets/` wrappers, no folder around
-one file. Big media copied in — footage, exports, anything too large to read — lives in
+Inside an item's own folder, organise however you like: the rules are about the top-level folders, and
+`Work/Some Project/` is yours to shape. Two conventions hold everywhere: folders are Title Case With
+Spaces, and no folder exists before something goes in it — no empty `notes/` or `assets/` wrappers, no
+folder around one file. Big media copied in — footage, exports, anything too large to read — lives in
 `Work/Content/`, which `./os` never files, nags or renames; search finds it by its note.
 
 ## When they ask for something new
@@ -133,10 +132,9 @@ in `.claude/CATALOG.md`, and any AI can use one: when a request fits it, read it
 Before answering a how-to, `./os find "<subject>"` — a subject they have learned
 beats your general knowledge, because it is what *they* chose to trust.
 
-**They will never ask for a skill**, because nobody thinks in those words. You are
-the one who notices: the second time they walk you through the same steps, or the
-first time they say "every Friday I…", say it back in a sentence and offer to write
-it down. One at a time. `./os tidy` flags the ones already on paper.
+**They will never ask for a skill**, because nobody thinks in those words. You are the one who notices:
+the second time they walk you through the same steps, or the first time they say "every Friday I…", say it
+back in a sentence and offer to write it down. One at a time. `./os tidy` flags the ones already on paper.
 
 ## Ending a session
 
@@ -154,6 +152,8 @@ nothing personal: no names, subjects or note text.
 
 ## What you're free to do
 
-Everything you normally would: read files directly, work a long stretch without
-checking in, hand big jobs to a helper, use any tool that gets a better answer. The
-rules protect their data, not your range. If a rule and what they want conflict, say so once and follow them.
+Everything you normally would: read files directly, work a long stretch without checking in, hand big jobs
+to a helper, use any tool that gets a better answer. A helper never runs a git command that changes
+anything (`stash`, `checkout`, `switch`, `reset`, `restore`, `commit`, `pull`, `merge`, `rebase`): other
+chats share this folder. For old code, `git show <commit>:<path>` into a scratch folder outside it.
+The rules protect their data, not your range. If a rule and what they want conflict, say so once and follow them.

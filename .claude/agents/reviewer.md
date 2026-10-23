@@ -28,6 +28,11 @@ being right and specific is.
 
 - Change anything. You read and report. No edits, and no git command that
   writes. Point at the line and say what it should do instead.
+- Run a git command that changes anything: `stash`, `checkout`, `switch`,
+  `reset`, `restore`, `commit`, `pull`, `merge`, `rebase`, `add`, `push`.
+  Other chats share this folder at the same moment, and one stash sweeps up
+  their unsaved work too. To look at old code, `git show <commit>:<path>`
+  into a scratch folder outside this one. Only the main conversation commits.
 - Pad with praise. If something is genuinely good and load-bearing, one clause, so
   they don't "fix" it.
 - List more than five problems. If there are more, the top five are what matter,

@@ -5,23 +5,27 @@
       "063d3bd54f1b5dcd3dd2a4882d759c45a0f26144",
       "121487c6d60f5c36c5bf9b716743b54a135e84d2",
       "785b33a1acb6042e571d20bfef79d701757fb4d9",
-      "4468c6fd487460e7dd02ff8330dda984fc550059"
+      "4468c6fd487460e7dd02ff8330dda984fc550059",
+      "5d6ee350bc75c0918bc198d189de249eb9f1fca6"
     ],
     ".claude/agents/researcher.md": [
       "38f6ddcce47c1850039d6d339b33cf580358313a",
       "3badb40d03b33527d7024586e3d72d1facaa7bd0",
-      "aa303f16191ad00561676f4bd2a9a2881552aed6"
+      "aa303f16191ad00561676f4bd2a9a2881552aed6",
+      "134a3134e590c0d19e0f29eff9e9f235cd6b5b3d"
     ],
     ".claude/agents/reviewer.md": [
       "85c25f7e6c33e624c5819aa88aa312561809e92a",
       "f13ca30600636e8c6f81bd47b7efb0adb4fc8530",
       "f9d81dc1b30485526c61e167c9b158a420d11228",
-      "3e3b781179dd9b4e6f1392e936a91cfa4d919a25"
+      "3e3b781179dd9b4e6f1392e936a91cfa4d919a25",
+      "7ee619201441059db146722dadd02d1de556c60a"
     ],
     ".claude/agents/student.md": [
       "427c4e5c4f75470237e976cc810d53c3c6584915",
       "4eb6f30fe09332a0297623362901ae02c66f02a8",
-      "6b8c2a07d19d4de607be5e3fbfea6b681ab2c00f"
+      "6b8c2a07d19d4de607be5e3fbfea6b681ab2c00f",
+      "011080297572b66eb661029fe814c3397c2c3bcd"
     ],
     ".claude/hooks/mark-dirty.sh": [
       "827447642c152214315f2bd307aba995e22984d2"
@@ -121,7 +125,8 @@
       "6fe46721e318717b775481de9f383fc554754d43",
       "8f5181c79ccb7c78873357687d495598f7fec33b",
       "c9fe50a4823f8be584622eca89e72f51f9ff02ca",
-      "b8ced0088a60cfed62b610c80f834fbdcd8a9d8b"
+      "b8ced0088a60cfed62b610c80f834fbdcd8a9d8b",
+      "33e76abb9a8f419320a8a20f1c94617944bc0a48"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
@@ -147,7 +152,8 @@
       "09b9159a16bd356f45231852db64058b697527ba",
       "cf5464dc83f299c25f525638bdefa15d480a1930",
       "977285085b030e8fa19b7b501656528fc6bc7384",
-      "cc9184436fb789fd84d80dce8fc0adeacb68b45f"
+      "cc9184436fb789fd84d80dce8fc0adeacb68b45f",
+      "9c7bac7e56e7374658e96cf7443b2ef022b2be23"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
@@ -158,12 +164,14 @@
       "019cc47636454d0117d43d3800524d707ec790aa",
       "2f3057e0ad322a5699c44c611b12f8ca4ee9ac95",
       "bf37f3650e115e8553f2db9bc8433bc042809f40",
-      "87b5caf4067546842404ccaa925098e72a6ff723"
+      "87b5caf4067546842404ccaa925098e72a6ff723",
+      "7b71fc6bd3e4a8431b2b44ba33615e81bed6b4fe"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
       "48ef7c6634aaae040d1a31968e3e5db58fab14c6",
-      "d46fe385abc12e6970368116f0ee02a4e341b392"
+      "d46fe385abc12e6970368116f0ee02a4e341b392",
+      "4a8904daea864eba82dbdb4680c0774de295901e"
     ],
     ".gitignore": [
       "110cb56982daa3818afbb83c42b9ac5d6a966009",
@@ -242,9 +250,11 @@
   },
   "rules": [
     "allow:Bash(./os:*)",
+    "allow:Bash(bash ./os:*)",
+    "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-05.5",
+  "release": "2026-10-22.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

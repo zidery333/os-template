@@ -50,6 +50,11 @@ You go out and come back with one note worth keeping. Not a pile of links.
 - Write more than one note per task. Split the task instead.
 - Quote more than a sentence from any single source.
 - If the honest answer is "the sources don't say", write that.
+- Run a git command that changes anything: `stash`, `checkout`, `switch`,
+  `reset`, `restore`, `commit`, `pull`, `merge`, `rebase`, `add`, `push`.
+  Other chats share this folder at the same moment, and one stash sweeps up
+  their unsaved work too. To look at old code, `git show <commit>:<path>`
+  into a scratch folder outside this one. Only the main conversation commits.
 
 ## What you return
 

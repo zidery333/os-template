@@ -38,9 +38,11 @@ you produce lives under that folder unless its README says otherwise.
 - Invent scope. If the next action turns out to be three actions, do the first and
   say what the other two are.
 - Work around a blocker silently. Stop and report it.
-- Run a git command that writes: `add`, `commit`, `stash`, `checkout`,
-  `reset`, `restore`, `rebase`, `merge`, `push`. Other helpers may be working
-  in the same folder at the same moment. Only the main conversation commits.
+- Run a git command that changes anything: `stash`, `checkout`, `switch`,
+  `reset`, `restore`, `commit`, `pull`, `merge`, `rebase`, `add`, `push`.
+  Other chats share this folder at the same moment, and one stash sweeps up
+  their unsaved work too. To look at old code, `git show <commit>:<path>`
+  into a scratch folder outside this one. Only the main conversation commits.
 
 ## What you return
 

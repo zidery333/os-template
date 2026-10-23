@@ -1029,7 +1029,8 @@ def main(argv: list[str]) -> int:
     if news:
         say()
     if (kept or typo) and not dry:
-        say("  merge:  ask your AI to fold each set-aside file into yours, or diff them by hand")
+        say("  merge:  ask your AI to fold each set-aside file into yours, or diff them by hand;")
+        say("          once that's done,  ./os update --done  clears them away")
     say("  next:  cd " + str(root) + "   ·   ./os check   ·   ./os")
     say("         happy with it? delete " + str(backup.relative_to(root)) if not dry else
         "         run it without --dry-run to do it")

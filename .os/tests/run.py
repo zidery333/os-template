@@ -100,6 +100,10 @@ class Sandbox:
     SKIP = {"Work", "Notes", "Archive",
             "backups", "cache", "transcripts", "__pycache__",
             "registry.json", "state.json", "INDEX.md", ".git", ".lock"}
+    #: What a computer leaves in a folder by itself. A Mac's `.DS_Store` in
+    #: the folder under test came along into the copy, and two checks that
+    #: look for stray files found it and failed, about nothing they tested.
+    JUNK = {".DS_Store", ".localized", "Icon\r", "Thumbs.db", "desktop.ini"}
 
     def __init__(self, name: str = "zenith-test"):
         self.tmp = Path(tempfile.mkdtemp(prefix=name + "-"))
@@ -110,7 +114,8 @@ class Sandbox:
         def ignore(directory, names):
             drop = set()
             for n in names:
-                if n in self.SKIP or n.endswith(".zip") or n.endswith(".tmp~"):
+                if n in self.SKIP or n in self.JUNK or n.startswith("._") \
+                        or n.endswith(".zip") or n.endswith(".tmp~"):
                     drop.add(n)
                 # What an update set aside for them to merge is theirs, and a
                 # test counting what waits to be merged found it.
@@ -510,6 +515,35 @@ def test_settings_and_hooks_are_wired(t: Case) -> None:
 
 
 @test
+def test_a_run_with_nobody_there_is_never_asked_to_approve_os(t: Case) -> None:
+    """A scheduled run stalled 38 minutes on a prompt to allow ./os, with
+    nobody there to say yes, and another froze at 00:13: the settings allow
+    `./os …`, and it was called some other way. The plain other ways to call
+    the same program are allowed too, AGENTS.md says to call it as `./os …`
+    on its own, and that with nobody there the start note and INDEX.md do."""
+    settings = t.box.root / ".claude" / "settings.json"
+    if not in_their_words(settings, t.box):
+        allowed = json.loads(settings.read_text())["permissions"]["allow"]
+        for rule in ("Bash(./os:*)", "Bash(bash os:*)", "Bash(bash ./os:*)"):
+            t.ok(rule in allowed, f"the settings allow {rule}")
+    agents = t.box.root / "AGENTS.md"
+    if not in_their_words(agents, t.box):
+        rules = " ".join(agents.read_text().split())
+        t.ok("from the top of this folder, on its own, never after `cd` or `&&`" in rules,
+             "AGENTS.md says to call ./os on its own, from the top")
+        t.ok("the note handed over at the start and `INDEX.md` are enough" in rules,
+             "and what to start from when nobody is there to say yes")
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(t.box.root), NO_COLOR="1")
+    t.box.run("new", "work", "Night worker")
+    told = json.loads(subprocess.run(
+        ["bash", str(t.box.root / ".claude" / "hooks" / "session-start.sh")], input="{}",
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+        timeout=60).stdout)["hookSpecificOutput"]["additionalContext"]
+    t.ok("Night worker" in told and "INDEX.md" in told,
+         f"the start note says what is on the go, and where the full list is\n{told}")
+
+
+@test
 def test_replies_are_checked_for_plain_words(t: Case) -> None:
     """The plain-words style and the check after each reply came with the old
     layout and never shipped with this one: the build took `outputStyle` out
@@ -839,29 +873,116 @@ def test_nothing_written_down_goes_unnoticed(t: Case) -> None:
 
 
 @test
-def test_words_taken_back_are_not_nagged_about(t: Case) -> None:
-    """Undoing a save is a choice, not a failure to file.
+def test_undoing_a_save_puts_the_folder_back_as_it_was(t: Case) -> None:
+    """Undoing `./os save <file>` moved the file into .os/cache/incoming
+    instead of taking it away, so what the owner wanted gone stayed on disk,
+    and every sort after spoke of it (report, 2026-10-22). Now undo puts the
+    folder back as it was before the save: a copy or a note the save made is
+    removed, and a file it moved in goes back where it came from."""
+    root = t.box.root
+    stage = root / ".os" / "cache" / engine.STAGING
 
-    The words go back to where `./os save` first wrote them, and sort leaves
-    them there on purpose. But `./os` said "1 thing you saved never got filed"
-    on every run after, and `./os sort` refused them and exited 1, so the only
-    way to make it stop was to save them again: the opposite of what was asked."""
-    t.box.run("save", "Ring the plumber about the boiler before the winter")
+    def staged() -> list:
+        return sorted(p.name for p in stage.iterdir()) if stage.exists() else []
+
+    def mine() -> dict:
+        return {k: v for k, v in t.box.tree().items() if k.split(os.sep)[0] in ("Work", "Notes")}
+
+    # words typed: the note it made goes
+    before = mine()
+    t.box.run("save", "The boiler is a Worcester Greenstar, serviced every March")
+    t.ok(mine() != before, "the save filed a note")
     t.box.run("undo")
-    stage = t.box.root / ".os" / "cache" / engine.STAGING
-    staged = [p for p in stage.iterdir() if "plumber" in p.read_text(encoding="utf-8")]
-    t.eq(len(staged), 1, "the words are kept where save first wrote them")
+    t.eq(mine(), before, "undoing it takes the note away again")
+    t.eq(staged(), [], "and puts nothing in .os/cache/incoming")
 
-    seen = t.box.run("status")
-    t.ok("never got filed" not in seen.stdout, "the first screen does not nag about them")
+    # a file from elsewhere: it was copied in, so the copy goes and the original stays
+    outside = t.box.tmp / "elsewhere"
+    outside.mkdir()
+    recipe = outside / "lemon-cake.md"
+    recipe.write_text("# Lemon cake\n\nThree lemons, two eggs, flour and sugar.\n")
+    t.box.run("save", str(recipe))
+    t.ok(any("lemon" in k for k in mine()), "the copy was filed")
+    t.box.run("undo")
+    t.eq(mine(), before, "undoing it takes the copy away")
+    t.eq(staged(), [], "and leaves nothing in .os/cache/incoming")
+    t.ok(recipe.read_text().startswith("# Lemon cake"), "the original is where it always was")
+
+    # a folder from elsewhere, the same
+    trip = outside / "Lisbon Trip"
+    trip.mkdir()
+    (trip / "flights.md").write_text("# Flights\n\nTAP, 9 May, 07:40.\n")
+    t.box.run("save", str(trip))
+    t.box.run("undo")
+    t.eq(mine(), before, "a saved folder's copy goes too")
+    t.eq(staged(), [], "with nothing left behind")
+    t.ok((trip / "flights.md").exists(), "and the folder it came from is untouched")
+
+    # written in after the save: undo asks first, then keeps that copy aside
+    t.box.run("save", "The fence paint is Cuprinol Silver Copse")
+    note = next(p for p in (root / "Notes").rglob("*.md") if "Cuprinol" in p.read_text())
+    note.write_text(note.read_text() + "\nTwo tins did the whole fence.\n")
+    t.ok("written in" in t.box.run("undo", expect=1).stdout, "undo stops to say it was written in")
+    said = t.box.run("undo", "--anyway").stdout
+    t.ok(not note.exists() and staged() == [], "told to go ahead, the note goes, not into incoming")
+    kept = [p for p in (root / ".os" / "cache" / "undo-kept").rglob("*.md")
+            if "Two tins" in p.read_text()]
+    t.ok(kept and "undo-kept" in said, f"and the words written since are kept aside, as it says\n{said}")
+
+    # a file at the top of the folder was moved in, so it goes back there
+    top = root / "quote.md"
+    top.write_text("# Roofer's quote\n\nNew flashing round the chimney, 640 pounds.\n")
+    t.box.run("save", str(top))
+    t.ok(not top.exists(), "the save moved it in")
+    t.box.run("undo")
+    t.ok(top.exists() and "640 pounds" in top.read_text(), "undo puts it back where it came from")
+    t.eq(mine(), before, "with no copy left anywhere")
+
+    # ...and if that spot is taken by then, it stops and changes nothing
+    t.box.run("save", str(top))
+    filed = mine()
+    top.write_text("# A different quote\n\nSomeone else's.\n")
+    stopped = t.box.run("undo", expect=1)
+    t.ok("quote.md" in stopped.stdout and "nothing has changed" in stopped.stdout,
+         f"it says the spot is taken, and that nothing changed\n{stopped.stdout}")
+    t.eq(mine(), filed, "the saved file stays filed")
+    t.ok("Someone else's" in top.read_text(), "and what is there now is left alone")
+    top.unlink()
+    t.box.run("undo")
+    t.ok("640 pounds" in top.read_text(), "with the spot free, undo puts it back")
+
+
+@test
+def test_a_file_put_in_by_hand_is_filed_whatever_was_undone_before(t: Case) -> None:
+    """After undoing a save, the owner copied the file into Notes by hand,
+    and sort spoke only of the copy an older undo had kept: the note they put
+    there looked unfiled (report, 2026-10-22). What sits in Notes or Work is
+    filed, whatever happened to a file of that name before."""
+    root = t.box.root
+    outside = t.box.tmp / "elsewhere"
+    outside.mkdir()
+    recipe = outside / "lemon-cake.md"
+    recipe.write_text("# Lemon cake\n\nThree lemons, two eggs, flour and sugar.\n")
+    t.box.run("save", str(recipe))
+    t.box.run("undo")
+    # and one an older undo kept, under the same name
+    _kept_by_an_older_undo(t.box, "lemon-cake.md", "# Lemon cake\n\nThe old one.\n")
+
+    shutil.copy(recipe, root / "Notes" / "lemon-cake.md")
     proc = t.box.run("sort")
-    t.ok(staged[0].exists(), "sort leaves them where they are")
-    t.ok("./os save" in proc.stdout, "and says how to file them after all")
-    t.eq(t.box.run("sort", "--json").returncode, 0, "which is not a failure, as JSON either")
+    t.eq(t.box.inbox_count(), 0, "the file put in by hand is filed")
+    found = t.box.locate("Three lemons")
+    t.ok(found is not None and t.box.bucket_of(found) == "Notes", f"it is in Notes ({found})")
+    t.ok("incoming" not in proc.stdout and "took it back" not in proc.stdout,
+         f"and sort says nothing about what was undone before\n{proc.stdout}")
 
-    health = t.box.json("check", expect=None)
-    t.eq([i["level"] for i in health["issues"] if i["code"] == "taken-back-capture"],
-         ["hint"], "check still lists them, as something to know rather than fix")
+    work = outside / "plan.md"
+    work.write_text("# Build the shed\n\nBy May. Next: buy the wood.\n\n- [ ] buy wood\n")
+    t.box.run("save", str(work))
+    t.box.run("undo")
+    shutil.copy(work, root / "Work" / "plan.md")
+    t.box.run("sort")
+    t.eq(t.box.inbox_count(), 0, "a file put into Work by hand after an undo is filed too")
 
 
 @test
@@ -1130,7 +1251,10 @@ def test_sorts_one_hundred_and_thirty_items(t: Case) -> None:
     # no data loss
     t.gte(len(list((t.box.root).rglob("*.md"))), 130, "no markdown was lost")
 
-    # categories appeared
+    # Sort groups nothing on its own; categories appear when asked for.
+    t.eq([i["path"] for i in filed if i["trail"]], [], "sort put nothing into a group by itself")
+    t.box.run("sort", "--regroup", "--yes")
+    filed = [i for i in t.box.items() if i["bucket"] != engine.TOOLKIT]
     categorised = [i for i in filed if i["trail"]]
     t.gte(len(categorised), 60, "most items ended up inside a category")
 
@@ -1229,6 +1353,7 @@ def test_categories_appear_and_collapse(t: Case) -> None:
         (t.box.root / "Notes" / f"note-{i}.md").write_text(
             f"# Postgres index note {i}\n\nReference cheat sheet on database schema and indexes.\n")
     t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     flat = [i for i in t.box.items() if i["bucket"] == "Notes"]
     t.ok(all(not i["trail"] for i in flat), "6 items stay flat — no premature folders")
 
@@ -1239,7 +1364,10 @@ def test_categories_appear_and_collapse(t: Case) -> None:
     t.box.run("sort")
     library = [i for i in t.box.items() if i["bucket"] == "Notes"]
     t.gte(len(library), 13, "the library is now crowded")
-    t.ok(any(i["trail"] for i in library), "categories appeared once it was crowded")
+    t.ok(not any(i["trail"] for i in library), "sort alone groups nothing, however crowded")
+    t.box.run("sort", "--regroup", "--yes")
+    library = [i for i in t.box.items() if i["bucket"] == "Notes"]
+    t.ok(any(i["trail"] for i in library), "categories appeared once a regroup was asked for")
 
     # take almost everything away again
     keep = 3
@@ -1250,7 +1378,7 @@ def test_categories_appear_and_collapse(t: Case) -> None:
             target = t.box.root / item["path"]
             if target.exists():
                 shutil.rmtree(target) if target.is_dir() else target.unlink()
-    t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     library = [i for i in t.box.items() if i["bucket"] == "Notes"]
     t.ok(all(not i["trail"] for i in library),
          "categories collapsed back once they were no longer needed")
@@ -1418,6 +1546,77 @@ def test_close_says_whether_it_was_done_or_dropped(t: Case) -> None:
     t.ok("done" in helped and "dropped" in helped, f"./os help close says how\n{helped}")
 
 
+@test
+def test_one_folder_inside_a_thing_can_be_put_away(t: Case) -> None:
+    """close put away only whole things, so a folder of raw working files
+    inside a live piece of work was moved by hand with git mv, and ./os undo
+    couldn't take it back. `./os close <name> --part <folder>` puts that one
+    folder in Archive/, under the thing's name, writes where in its ## Log,
+    and leaves the thing live. Undo and ./os back --part bring it back."""
+    root, day, year = t.box.root, engine.today(), engine.today()[:4]
+    t.box.run("new", "work", "NQ bot")
+    work = root / "Work" / "NQ Bot"
+    (work / "raw" / "day 1").mkdir(parents=True)
+    (work / "raw" / "day 1" / "fills.csv").write_text("time,price\n", encoding="utf-8")
+    (work / "research" / "sources").mkdir(parents=True)
+    (work / "research" / "sources" / "paper.md").write_text("A paper.\n", encoding="utf-8")
+    (work / "research" / "sources-list.md").write_text("Where to look.\n", encoding="utf-8")
+    t.box.run("index")
+    before, folders = t.box.tree(), t.box.dirs()
+    page = (work / "README.md").read_text()
+
+    said = t.box.run("close", "nq-bot", "--part", "raw").stdout
+    shelf = root / "Archive" / year / "Work" / "NQ Bot"
+    t.ok((shelf / "raw" / "day 1" / "fills.csv").is_file() and not (work / "raw").exists(),
+         f"the folder went to Archive/, under the thing's name\n{said}")
+    t.ok(f"Archive/{year}/Work/NQ Bot/raw" in said, f"and close says where\n{said}")
+    t.eq((work / "README.md").read_text().split("## Log", 1)[1].strip().split("\n")[-1],
+         f"- {day} · Put away raw: it is in Archive/{year}/Work/NQ Bot/raw",
+         "its ## Log says what went, and where")
+    item = next(i for i in t.box.items() if i["title"] == "NQ bot" and i["bucket"] == "Work")
+    t.eq(item["status"], "pushing", "and the thing itself is still live")
+    t.ok("Work/NQ Bot" in t.box.run("show", "nq-bot").stdout, "./os show still finds the live one")
+
+    t.box.run("undo")
+    t.eq(t.box.tree(), before, "undo puts the folder back, and the Log as it was")
+    t.eq(t.box.dirs(), folders, "and leaves no folder behind in Archive/")
+    t.eq((work / "README.md").read_text(), page, "the page says what it said")
+
+    t.box.run("close", "nq-bot", "--part", "raw/day 1")
+    t.ok((shelf / "raw" / "day 1" / "fills.csv").is_file() and (work / "raw").is_dir(),
+         "a folder further in keeps its path under the thing's name")
+    t.box.run("back", "nq-bot", expect=1)
+    t.ok(not (root / "Work" / "NQ Bot-2").exists(),
+         "./os back with no --part doesn't bring the part out as a second NQ Bot")
+    t.box.run("back", "nq-bot", "--part", "raw/day 1")
+    t.ok((work / "raw" / "day 1" / "fills.csv").is_file() and not shelf.exists(),
+         "./os back --part brings it back, and nothing is left standing in Archive/")
+    t.ok("Brought raw/day 1 back" in (work / "README.md").read_text(), "and says so in its Log")
+
+    t.box.run("close", "nq-bot", "--part", "raw")
+    t.box.run("close", "nq-bot", "done")
+    t.ok((shelf / "README.md").is_file() and (shelf / "raw" / "day 1" / "fills.csv").is_file()
+         and not (shelf.parent / "NQ Bot-2").exists(),
+         "put away whole later the same year, it lands under its own name with its part inside")
+    t.box.run("undo")
+    t.ok((work / "README.md").is_file() and (shelf / "raw").is_dir() and not (work / "raw").exists(),
+         "and undo of that puts the part back where it was put away")
+    t.box.run("undo")
+
+    now, dirs_now = t.box.tree(), t.box.dirs()
+    for part in ("README.md", "research/sources", "research", ".", "..", "../../Notes",
+                 str(root / "Notes"), "nothing-here"):
+        t.box.run("close", "nq-bot", "--part", part, expect=1)
+    t.box.run("new", "note", "Loose note")
+    t.box.run("close", "loose-note", "--part", "x", expect=1)
+    t.box.run("undo")
+    t.eq(t.box.tree(), now, "its main page, a sources folder, one holding one, and anything "
+                            "outside the thing are each refused, and nothing changed")
+    t.eq(t.box.dirs(), dirs_now, "not even a folder")
+    helped = t.box.run("help", "close").stdout
+    t.ok("--part" in helped, f"./os help close says how\n{helped}")
+
+
 def _a_group(trail: list) -> str:
     """The mark ./os writes in a group it made, as an earlier release wrote it."""
     return json.dumps({"name": trail[-1], "trail": trail, "auto": True,
@@ -1484,6 +1683,7 @@ def test_sort_never_makes_a_group_of_one(t: Case) -> None:
         "# Pizza dough\n\nA recipe. Ingredients: flour, water, salt, yeast. Method: knead, "
         "rest, bake in the oven.\n")
     t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     t.ok(any(i["trail"] for i in t.box.items() if i["bucket"] == "Notes"), "Notes is grouped by now")
     t.ok((notes / "pizza-dough.md").is_file() and not (notes / "General").exists(),
          f"the one note alone in its subject stays loose in Notes\n"
@@ -1499,6 +1699,73 @@ def test_sort_never_makes_a_group_of_one(t: Case) -> None:
     before = t.box.tree()
     t.box.run("sort")
     t.eq(t.box.tree(), before, "a General an earlier release made stays as it is, with its one note")
+
+
+def _filed_note(title: str, domain: str, tags: list, words: str) -> str:
+    """A note as ./os files it, header and all."""
+    return (f"---\ntitle: {title}\ntype: note\nstatus: —\ndomain: {domain}\n"
+            f"tags: [{', '.join(tags)}]\ncreated: 2026-09-01\nupdated: 2026-09-01\n---\n\n"
+            f"# {title}\n\n{words}\n")
+
+
+@test
+def test_sort_leaves_a_filed_note_alone_however_many_pile_up(t: Case) -> None:
+    """Sort grouped notes already filed into new folders named Help, Https
+    and Nq, and moved notes that a skill and other pages named by path; two
+    sessions running (reported three times, 2026-10). Sort only files what
+    was dropped in by hand now. However many filed notes pile up, it moves,
+    groups and renames none of them; ./os tidy says a folder is crowded,
+    with the command, and ./os itself doesn't nag about it."""
+    root, notes = t.box.root, t.box.root / "Notes"
+    for n in range(20):
+        (notes / f"payout-help-{n}.md").write_text(_filed_note(
+            f"Payout help {n}", "finance", ["help", "https", "nq", "payout"],
+            f"How payout {n} works: https://example.com/help?nq={n}"), encoding="utf-8")
+    skill = root / ".claude" / "skills" / "payouts" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: payouts\ndescription: Check a payout\n---\n\n"
+                     "Read Notes/payout-help-3.md first.\n", encoding="utf-8")
+    before = t.box.tree()
+    for _ in range(2):          # the session end, two sessions running
+        said = t.box.run("sort").stdout
+        t.eq(t.box.tree(), before, f"sort moved, renamed and rewrote nothing\n{said}")
+    t.eq([p.name for p in notes.iterdir() if p.is_dir()], [], "and made no group")
+    t.box.run("save", "Payout help: the payout lands on the 28th, see https://example.com/help")
+    saved = root / t.box.carrying("lands on the 28th")["path"]
+    t.eq(saved.parent, notes, "a note saved now lands beside the rest")
+    t.box.run("sort")
+    t.ok(saved.is_file(), "and the next sort leaves it there")
+
+    tidy = t.box.run("tidy").stdout
+    t.ok("CROWDED" in tidy and "./os sort --regroup" in tidy,
+         f"tidy says Notes is crowded, with the command\n{tidy}")
+    t.ok("--regroup" not in t.box.run().stdout, "./os itself doesn't nag about it")
+
+
+@test
+def test_junk_words_never_name_a_group(t: Case) -> None:
+    """Pieces of a web address, words that fit anything, numbers and words of
+    two letters or fewer never name a group; without a good name the group
+    isn't made (reported 2026-10: Notes/Finance/Help, Https and Nq)."""
+    for junk in ("https", "Http", "www", "com", "Help", "Notes", "misc", "General", "new",
+                 "the", "Nq", "2026", "10am", "q3"):
+        t.ok(engine.junk_group_name(junk), f"{junk!r} never names a group")
+    for good in ("Payroll", "Garden", "Tomatoes", "AI & Agents", "home-office"):
+        t.ok(not engine.junk_group_name(good), f"{good!r} can name one")
+
+    notes = t.box.root / "Notes"
+    for n in range(16):
+        tags = ["help", "https", "nq", "2026"] + (["payroll"] if n % 2 else ["www"])
+        (notes / f"budget-{n}.md").write_text(_filed_note(
+            f"Budget {n}", "finance", tags, f"Money in and out, month {n}."), encoding="utf-8")
+    plan = t.box.run("sort", "--regroup").stdout
+    t.ok("Help" not in plan and "Https" not in plan and "/Nq/" not in plan,
+         f"the plan names no group after a junk word\n{plan}")
+    t.box.run("sort", "--regroup", "--yes")
+    finance = notes / "Finance"
+    t.eq(sorted(p.name for p in finance.iterdir() if p.is_dir()), ["Payroll"],
+         "the one good word names the only group inside Finance")
+    t.eq(len(list(finance.glob("budget-*.md"))), 8, "and the rest stay in Finance itself")
 
 
 @test
@@ -1921,7 +2188,10 @@ def test_decide_writes_one_line_into_the_thing_it_is_about(t: Case) -> None:
               "- Budget is 20k\n\nOther notes: Sam is away in June, and the plumber wants cash.")
     t.box.run("save", pasted)
     t.ok("plumber wants cash" not in kitchen.read_text(), "a pasted page doesn't go into ## Decisions")
-    t.ok(t.box.carrying("plumber wants cash"), "it is saved like anything else")
+    # It names Kitchen renovation in its first lines, so it is a page of its
+    # own inside that work, with a line in its ## Log (snag, 2026-09-29).
+    t.ok(any("plumber wants cash" in p.read_text() for p in kitchen.parent.glob("*.md")
+             if p.name != "README.md"), "it is saved like anything else, inside the work it names")
 
 
 @test
@@ -2053,61 +2323,76 @@ def test_a_claim_made_in_claude_code_is_that_chat_s(t: Case) -> None:
                 os.environ[var] = value
 
 
+def _kept_by_an_older_undo(box: "Sandbox", name: str, words: str) -> Path:
+    """A file an older ./os undo put back in .os/cache/incoming, and wrote
+    down as taken back on purpose, the way a folder used before 2026-10-22
+    can still have some."""
+    stage = box.root / ".os" / "cache" / engine.STAGING
+    stage.mkdir(parents=True, exist_ok=True)
+    path = stage / name
+    path.write_text(words, encoding="utf-8")
+    state = json.loads((box.root / ".os" / "state.json").read_text())
+    state["taken_back"] = (state.get("taken_back") or []) + [path.relative_to(box.root).as_posix()]
+    (box.root / ".os" / "state.json").write_text(json.dumps(state, indent=2))
+    return path
+
+
 @test
-def test_words_taken_back_are_said_once_and_go_only_when_asked(t: Case) -> None:
-    """Words taken back with ./os undo: said once, then quiet, gone on request.
-
-    They are kept on purpose, so undo never loses words. But ./os check listed
-    every one on every run after, and ./os sort said a line for each, for good.
-    On 2026-10-04 the owner had five, wanted them gone, and had to find the
-    hidden folder and delete them by hand."""
-    stage = t.box.root / ".os" / "cache" / engine.STAGING
-
-    def kept(words: str) -> Path:
-        return next(p for p in stage.iterdir() if words in p.read_text(encoding="utf-8"))
-
-    t.box.run("save", "Ring the plumber about the boiler before the winter")
-    t.box.run("undo")
-    plumber = kept("plumber")
-    rel = plumber.relative_to(t.box.root).as_posix()
-
-    first = t.box.run("check")
-    t.ok(rel in first.stdout, "the first check after an undo says where the words are kept")
-    t.ok("./os sort --forget" in first.stdout, "and how to throw them away")
-    t.ok(rel not in t.box.run("check").stdout, "after that, check is quiet about them")
-    t.ok(plumber.name not in t.box.run("sort").stdout, "and so is sort")
-    t.eq([i["level"] for i in t.box.json("check", expect=None)["issues"]
-          if i["code"] == "taken-back-capture"], ["hint"],
-         "asked for everything as JSON, check still lists them")
-
-    # the next undo is said once too, by whichever of the two runs first
-    t.box.run("save", "Order more seed for the bird table")
-    t.box.run("undo")
-    seed = kept("bird table")
-    told = t.box.run("sort")
-    t.ok(seed.name in told.stdout and "./os sort --forget" in told.stdout,
-         "sort says it when sort runs first")
-    t.ok(seed.name not in t.box.run("check").stdout, "and check doesn't say it again")
-
-    # words from a run that died were never taken back, and are not theirs to lose here
-    orphan = stage / "20200101-000000-ring-the-accountant.md"
+def test_what_an_older_undo_kept_is_named_by_check_and_cleared_by_fix(t: Case) -> None:
+    """An older ./os undo put saved words back in .os/cache/incoming, on
+    purpose. `./os` then said "5 things you saved never got filed" for five
+    the owner had taken back, which read as work waiting when nothing was,
+    and sort spoke of each on every run (reports, 2026-10-22). Now `./os` and
+    sort say nothing of them; ./os check names each, in one finding, and
+    ./os check --fix throws them away, saying which. Words a save left there
+    without an undo are still a save that never finished, and are filed."""
+    root = t.box.root
+    plumber = _kept_by_an_older_undo(
+        t.box, "20261001-090000-ring-the-plumber.md",
+        "---\nsaved: 2026-10-01T09:00:00\n---\n\nRing the plumber about the boiler\n")
+    seed = _kept_by_an_older_undo(
+        t.box, "20261002-090000-order-seed.md",
+        "---\nsaved: 2026-10-02T09:00:00\n---\n\nOrder more seed for the bird table\n")
+    orphan = root / ".os" / "cache" / engine.STAGING / "20200101-000000-ring-the-accountant.md"
     orphan.write_text("---\nsaved: 2020-01-01T00:00:00\n---\n\n"
                       "ring the accountant about the VAT thing\n", encoding="utf-8")
 
-    asked = t.box.run("sort", "--forget", expect=1)
-    t.ok(plumber.exists() and seed.exists(), "asked once, nothing is thrown away")
-    t.ok("plumber" in asked.stdout and "bird table" in asked.stdout,
-         "it says exactly what would be lost")
-    t.ok("accountant" not in asked.stdout, "and only what was taken back")
-    t.ok("./os sort --forget --anyway" in asked.stdout, "and what to type to go ahead")
+    seen = t.box.run().stdout
+    t.ok("1 thing you saved never got filed" in seen,
+         f"./os counts only the save that never finished, not what was taken back\n{seen}")
+    proc = t.box.run("sort")
+    t.ok(plumber.name not in proc.stdout and seed.name not in proc.stdout
+         and "took it back" not in proc.stdout, f"sort says nothing of them\n{proc.stdout}")
+    t.ok(plumber.exists() and seed.exists(), "and leaves them where they are")
+    t.ok(not orphan.exists() and t.box.locate("ring the accountant") is not None,
+         "the save that never finished is filed, as before")
+    t.ok("never got filed" not in t.box.run().stdout, "after which ./os has nothing to say")
 
-    t.box.run("sort", "--forget", "--anyway")
-    t.ok(not plumber.exists() and not seed.exists(), "told to go ahead, they are gone")
-    t.ok(orphan.exists(), "and words never taken back are left where they are")
+    found = [i for i in t.box.json("check", expect=None)["issues"]
+             if i["code"] == "taken-back-capture"]
+    t.eq(len(found), 1, "check says them in one finding")
+    t.ok(plumber.name in found[0]["message"] and seed.name in found[0]["message"],
+         f"naming each file: {found[0]['message']}")
+    t.eq(found[0]["level"], "hint", "as something to know, not something broken")
+    said = t.box.run("check").stdout
+    t.ok("./os check --fix" in said and plumber.name in said, f"with the command to clear them\n{said}")
+
+    asked = t.box.run("sort", "--forget", expect=1)
+    t.ok(plumber.exists() and "plumber" in asked.stdout,
+         "the older way to clear them, sort --forget, still asks first")
+    fixed = t.box.run("check", "--fix").stdout
+    t.ok(not plumber.exists() and not seed.exists(), "check --fix throws them away")
+    t.ok(plumber.relative_to(root).as_posix() in fixed and seed.relative_to(root).as_posix() in fixed,
+         f"and says exactly which it removed\n{fixed}")
     t.eq([i for i in t.box.json("check", expect=None)["issues"]
-          if i["code"] == "taken-back-capture"], [], "check has nothing left to list")
-    t.ok("nothing" in t.box.run("sort", "--forget").stdout,
-         "with none left, asking again says so")
+          if i["code"] == "taken-back-capture"], [], "check has nothing left to name")
+    t.eq(json.loads((root / ".os" / "state.json").read_text()).get("taken_back"), [],
+         "and nothing is remembered as taken back")
+
+    # A file left there by a save that never finished is never check --fix's to remove.
+    orphan.write_text("---\nsaved: 2020-01-01T00:00:00\n---\n\nring the bank\n", encoding="utf-8")
+    t.box.run("check", "--fix", expect=None)
+    t.ok(orphan.exists(), "words never taken back are left where they are")
 
 
 @test
@@ -2416,6 +2701,7 @@ def test_a_new_subject_gets_a_folder_name_that_is_safe(t: Case) -> None:
         (t.box.root / "Notes" / f"wine {n}.md").write_text(
             f"A good wine, number {n}: red, from the cellar.\n", encoding="utf-8")
     t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     t.ok(not (t.box.tmp / "outside").exists() and not (t.box.root / "outside").exists(),
          "nothing is moved out of Notes, or out of this folder")
     grouped = sorted(p.name for p in (t.box.root / "Notes" / "Outside").rglob("wine*.md"))
@@ -2573,6 +2859,42 @@ def test_find_reads_the_notes_inside_a_piece_of_work(t: Case) -> None:
 
 
 @test
+def test_find_notes_never_shows_a_word_from_work(t: Case) -> None:
+    """A helper told to keep out of Work couldn't use ./os find: what it
+    printed had lines from Work in it, so it skipped the search it was asked
+    to do. `./os find --notes` looks only in Notes and what was put away from
+    Notes, and says nothing from Work, live or put away."""
+    root = t.box.root
+    t.box.run("new", "work", "Night trades")
+    (root / "Work" / "Night Trades" / "plan.md").write_text(
+        "Quokka secret: the Work plan for the quokka entry.\n", encoding="utf-8")
+    t.box.run("new", "work", "Old trades")
+    (root / "Work" / "Old Trades" / "notes.md").write_text("Quokka in old work.\n", encoding="utf-8")
+    t.box.run("close", "old-trades")
+    for title, words in (("Quokka facts", "Quokkas live on Rottnest."),
+                         ("Quokka trip", "The quokka trip was wet.")):
+        (root / "Notes" / (engine.slugify(title).lower() + ".md")).write_text(
+            f"---\ntitle: {title}\ntype: note\ndomain: personal\ntags: []\ncreated: 2026-09-01\n"
+            f"updated: 2026-09-01\n---\n\n# {title}\n\n{words}\n", encoding="utf-8")
+    t.box.run("close", "quokka-trip")
+    t.box.run("index")
+    every = {h["path"].split("/")[0] + ("/" + h["path"].split("/")[2] if h["path"].startswith("Archive/") else "")
+             for h in t.box.json("find", "quokka")}
+    t.ok({"Work", "Notes", "Archive/Work", "Archive/Notes"} <= every,
+         f"without it, find reaches Work, Notes and both kinds put away ({every})")
+    hits = t.box.json("find", "--notes", "quokka")
+    t.eq(sorted(h["title"] for h in hits), ["Quokka facts", "Quokka trip"],
+         "with --notes, only the notes, put away or not")
+    said = t.box.run("find", "quokka", "--notes").stdout
+    t.ok("Work" not in said and "secret" not in said and "old work" not in said,
+         f"and nothing from Work is printed\n{said}")
+    t.ok("Rottnest" in said, f"the notes' own words still show\n{said}")
+    near = t.box.run("find", "--notes", "secrut", expect=1).stdout
+    t.ok("secret" not in near, f"a near word is never offered out of Work either\n{near}")
+    t.ok("--notes" in t.box.run("help", "find").stdout, "./os help find says how")
+
+
+@test
 def test_a_link_is_read_however_markdown_lets_it_be_written(t: Case) -> None:
     """A link can be written `Mum%27s%20soup.md`, `<Mum's soup.md>`, or with
     a title after it. ./os check turned only %20 back into a space, so the
@@ -2604,8 +2926,9 @@ def test_a_link_is_read_however_markdown_lets_it_be_written(t: Case) -> None:
     for target in _links(text):
         t.ok(_lands(bread, target).exists(), f"{target} still reaches something\n{text}")
     t.ok("[fish](fish-supper.md)" in text, f"a link written the way a web page writes one follows\n{text}")
-    t.ok("[the shed](<../Work/Mum's Shed/README.md>)" in text, "one in <…> stays in <…>")
-    t.ok('(../Work/Mum%27s%20Shed/README.md "the shed")' in text,
+    # A folder's name never has a ' in it (see SHELL_MARKS): Mum's Shed is Mums Shed.
+    t.ok("[the shed](<../Work/Mums Shed/README.md>)" in text, "one in <…> stays in <…>")
+    t.ok('(../Work/Mums%20Shed/README.md "the shed")' in text,
          "one written encoded stays encoded, and keeps its title")
     t.eq(broken(), [], "and check finds nothing the renames broke")
     (notes / "Old links.md").write_text("# Old links\n\n[a](<Gone note.md>)\n", encoding="utf-8")
@@ -2694,11 +3017,10 @@ def test_the_examples_are_from_home_everywhere(t: Case) -> None:
     t.ok(not any("any AI" in line for line in demo), "and doesn't say any AI will do")
 
     b = "\\"
-    outside = t.box.tmp / "pond.rtf"
-    outside.write_text(b.join(["{", "rtf1", "ansi", "ansicpg1252{", "fonttbl", "f0 Helvetica;}\n",
-                               "f0 Plants for the pond.}"]), encoding="ascii")
-    t.box.run("save", str(outside))
-    t.box.run("undo")
+    # A TextEdit note an older ./os undo kept in .os/cache/incoming.
+    _kept_by_an_older_undo(t.box, "pond.rtf", b.join(
+        ["{", "rtf1", "ansi", "ansicpg1252{", "fonttbl", "f0 Helvetica;}\n",
+         "f0 Plants for the pond.}"]))
     said = [i["message"] for i in t.box.json("check", expect=None)["issues"]
             if i["code"] == "taken-back-capture"]
     t.ok(said and "Plants for the pond" in said[0] and "rtf1" not in said[0],
@@ -3092,10 +3414,15 @@ def test_undo_of_a_sort_does_not_duplicate(t: Case) -> None:
 
     t.box.run("sort")
     t.eq(t.box.inbox_count(), 0, "the sort filed them")
+    # Sort no longer groups them in the same run; a regroup asked for
+    # straight after moves them a second time, and undoing both still
+    # leaves one copy of each.
+    t.box.run("sort", "--regroup", "--yes")
     t.ok(any(p.is_dir() and (p / ".category").exists()
              for p in (t.box.root / "Notes").iterdir()),
          "and enough of them to force a category folder, which moves them twice")
 
+    t.box.run("undo")
     t.box.run("undo")
     t.eq(t.box.inbox_count(), 16, "all sixteen are unfiled again")
     survivors = sorted(p.name for p in (t.box.root / "Notes").rglob("*")
@@ -3750,6 +4077,43 @@ def test_tidy_reports_decay(t: Case) -> None:
 
 
 @test
+def test_a_command_that_only_looks_changes_nothing_git_keeps(t: Case) -> None:
+    """`./os tidy --json`, which the catch-up skill reads, wrote the day into
+    .os/config.json, so a catch-up that only looked left a change behind in
+    git (report, 2026-10-22). Nothing that only reports may write a file git
+    keeps. A cache under .os/cache/, which git leaves out, is fine."""
+    if engine.History.no_git():
+        return          # the check is about git; a computer without it isn't broken
+    root = t.box.root
+    t.box.run("new", "work", "Paint the shed", "--domain", "home")
+    t.box.run("save", "The shed paint is the green one from the corner shop")
+    (root / "Notes" / "dropped.md").write_text("# Dropped in\n\nNot filed yet.\n")
+    # Words taken back with an old ./os undo, and one it remembers that is gone.
+    stage = root / ".os" / "cache" / "incoming"
+    stage.mkdir(parents=True, exist_ok=True)
+    (stage / "20260901-120000-old-thought.md").write_text("---\nsaved: x\n---\n\nold thought\n")
+    state = json.loads((root / ".os" / "state.json").read_text())
+    state["taken_back"] = [".os/cache/incoming/20260901-120000-old-thought.md",
+                           ".os/cache/incoming/20260101-000000-long-gone.md"]
+    (root / ".os" / "state.json").write_text(json.dumps(state, indent=2))
+    _cloned(root)
+    # The list ./os keeps for itself, gone, as in a fresh copy: git leaves it out.
+    (root / ".os" / "registry.json").unlink()
+    t.eq(_git_in(root, "status", "--porcelain").stdout, "", "the copy starts with nothing changed")
+    for args in ([], ["--json"], ["status"], ["tidy", "--json"], ["review", "--json"],
+                 ["check"], ["check", "--json"], ["doctor"], ["show", "paint-the-shed"],
+                 ["show", "paint-the-shed", "--json"], ["find", "shed"], ["find", "shed", "--json"],
+                 ["last"], ["last", "--json"], ["sort", "--dry-run"], ["sort", "--json", "--dry-run"],
+                 ["brief"], ["help"], ["open", "paint-the-shed"], ["words"]):
+        t.box.run(*args, expect=None)
+        t.eq(_git_in(root, "status", "--porcelain").stdout, "",
+             f"`./os {' '.join(args)}` changed nothing git keeps")
+    t.box.run("tidy")
+    t.ok(json.loads((root / ".os" / "config.json").read_text()).get("review", {}).get("last_run"),
+         "plain ./os tidy, the real weekly pass, still writes down that it ran")
+
+
+@test
 def test_tidy_asks_about_held_work_nobody_has_touched_in_half_a_year(t: Case) -> None:
     """Something held is never nagged, and so it never came back up at all,
     even a year on (stranger test, 2026-09-30). The weekly pass asks once:
@@ -3941,6 +4305,25 @@ def test_a_shortcut_is_never_walked_through(t: Case) -> None:
     report = t.box.json("check")
     dupes = [i for i in report["issues"] if i["code"] == "duplicate-content"]
     t.eq(dupes, [], "a shortcut is not reported as a duplicate of what it points at")
+
+
+@test
+def test_a_saved_folder_of_notes_is_named_like_a_folder(t: Case) -> None:
+    """`./os save <a folder of notes>` called it `trading-notes`, a name
+    spelled like a file, and it took ./os rename to make it Trading Notes
+    (snag, 2026-09-29). Every folder is Title Case With Spaces."""
+    notes = t.box.tmp / "trading-notes"
+    notes.mkdir()
+    (notes / "risk.md").write_text("# Risk\n\nNever more than 1% a trade.\n")
+    (notes / "journal.md").write_text("# Journal\n\nMonday: two trades, one stop.\n")
+    got = t.box.json("save", str(notes))
+    t.eq(got["kind"], "note", "a folder of notes is a note")
+    t.eq(got["saved"], "Notes/Trading Notes", "named in Title Case With Spaces")
+    t.ok((t.box.root / "Notes" / "Trading Notes" / "risk.md").is_file(), "with its notes in it")
+    t.box.run("sort")
+    t.ok((t.box.root / "Notes" / "Trading Notes").is_dir(), "and sort leaves the name alone")
+    t.box.run("undo")
+    t.ok(not (t.box.root / "Notes" / "Trading Notes").exists(), "undo takes it back")
 
 
 @test
@@ -4143,6 +4526,40 @@ def test_call_me_sam_is_a_line_in_about_me_not_work(t: Case) -> None:
         t.box.run("save", words)
         t.ok(words not in note.read_text(), f"anything else is filed as before: {words}")
     t.gte(len(work()), 1, "as work, when it reads as work")
+
+
+@test
+def test_about_me_said_outright_starts_the_about_me_note(t: Case) -> None:
+    """`./os save "About me: ..."` with no About me yet made a loose note
+    named after the line (snag, 2026-09-29). It is a line in About me, which
+    is started the way `./os new note "About me" --domain personal` starts
+    it, and one ./os undo takes back the line and the note both."""
+    root = t.box.root
+    note = root / "Notes" / "about-me.md"
+    said = t.box.run("save", "About me: I trade NQ futures from London, mornings only").stdout
+    t.ok(note.is_file(), f"with no About me yet, the save starts one\n{said}")
+    text = note.read_text()
+    t.ok("- I trade NQ futures from London, mornings only. (said)" in text,
+         f"the line is in it, without 'About me:' in front\n{text}")
+    t.eq(sorted(p.name for p in (root / "Notes").rglob("*.md")), ["about-me.md"],
+         "and no loose note is made for it")
+    t.eq(sorted(p.name for p in (root / "Work").iterdir()), [], "nor any work")
+    t.ok("Notes/about-me.md" in said, "the save says where it went")
+    t.box.run("undo")
+    t.ok(not note.exists(), "undo takes back the note it started")
+
+    t.box.run("new", "note", "About me", "--domain", "personal")
+    made = note.read_text()
+    t.box.run("undo")
+    t.box.run("save", "About me - I prefer short answers")
+    meta = engine.parse_frontmatter(note.read_text())[0]
+    t.eq((meta.get("type"), meta.get("domain"), meta.get("title")),
+         tuple(engine.parse_frontmatter(made)[0].get(k) for k in ("type", "domain", "title")),
+         "it is the same note ./os new note \"About me\" --domain personal makes")
+    t.ok(engine.parse_frontmatter(made)[1].split("\n## ")[1:2] ==
+         engine.parse_frontmatter(note.read_text())[1].split("\n## ")[1:2],
+         "in the same form")
+    t.ok("- I prefer short answers. (said)" in note.read_text(), "with the line in it")
 
 
 @test
@@ -4556,6 +4973,78 @@ def test_saved_work_that_names_work_is_its_next_step(t: Case) -> None:
     t.box.run("undo")
     t.ok("plumber" not in (t.box.root / "Work" / "Kitchen Renovation" / "README.md").read_text(),
          "undo takes the line back out")
+
+
+@test
+def test_a_page_about_work_you_have_goes_inside_it(t: Case) -> None:
+    """`./os save` made a note about the setups for 'Build a Trading Bot for
+    NQ1!' a brand-new piece of work beside it, and it had to be taken back
+    and written inside the work by hand (snag, 2026-09-29). Something whose
+    title or first lines name a piece of work, marks and capitals aside, goes
+    inside it as a file of its own, with a dated line in its ## Log. --into
+    picks the work outright, --new keeps it apart, and ./os undo takes any of
+    them back. A few words in common are not its name."""
+    root = t.box.root
+    t.box.run("new", "work", "Build a Trading Bot for NQ1!")
+    work = next(p for p in (root / "Work").iterdir() if p.name.startswith("Build a Trading"))
+    readme = work / "README.md"
+    before = readme.read_text()
+
+    def listed() -> list:
+        return sorted(p.name for p in (root / "Work").iterdir())
+
+    away = t.box.tmp / "Desktop"
+    away.mkdir()
+    setups = away / "nq-setups.md"
+    setups.write_text("# NQ bot - my own setups\n\n"
+                      "The setups I trade by hand, for build a trading bot for NQ1.\n\n"
+                      "## Opening drive\nWait for the first 5-minute bar to close above the "
+                      "overnight high, then buy the first pullback.\n\n"
+                      "## Fade the open\nIf the gap is over 80 points, fade it back to "
+                      "the prior close.\n")
+    got = t.box.json("save", str(setups))
+    t.eq(got.get("into"), work.name, f"it goes into the work its first lines name: {got}")
+    inside = root / got["saved"]
+    t.eq(inside.parent, work, "as a file inside that work's folder")
+    t.ok("Fade the open" in inside.read_text(), "with every word of it")
+    t.eq(listed(), [work.name], "and no new work is made")
+    log = readme.read_text().split("## Log", 1)[1]
+    t.ok(f"- {engine.today()}" in log and inside.name in log,
+         f"a dated line in its ## Log points at it\n{log}")
+    t.box.run("undo")
+    t.ok(not inside.exists(), "undo takes the file back out")
+    t.eq(readme.read_text(), before, "and the Log line")
+
+    pasted = ("Build a Trading Bot for NQ1 - broker notes\n"
+              "Rithmic gives the cleanest fills, Tradovate the easiest API.\n"
+              "Both charge per side.")
+    said = t.box.run("save", pasted).stdout
+    t.ok(work.name in said and f"{work.name}/" in said, f"the reply says where it went\n{said}")
+    t.ok("--new" in said, "and how to keep it apart instead")
+    t.eq(listed(), [work.name], "words pasted about it go in too")
+    t.box.run("undo")
+
+    # The title the snag had, which never names the work: --into puts it there.
+    own = away / "the-owners-setups.md"
+    own.write_text("# NQ bot - the owner's own setups\n\nOpening drive, fade the open, "
+                   "and the 2pm reversal.\n")
+    got = t.box.json("save", "--into", "build-a-trading-bot-for-nq1", str(own))
+    t.eq(got.get("into"), work.name, "--into picks the work outright")
+    t.ok((root / got["saved"]).parent == work, "and it's inside it")
+    t.box.run("undo")
+    t.ok(not (root / got["saved"]).exists(), "undo takes that back")
+
+    apart = t.box.json("save", "--new", str(setups))
+    t.ok(apart["saved"].startswith("Notes/"), f"--new keeps it a thing of its own: {apart}")
+    t.ok(inside.name not in readme.read_text(), "and nothing is written in the work")
+    t.box.run("undo")
+
+    loose = away / "bot-ideas.md"
+    loose.write_text("# Trading bot ideas for crypto\n\nA bot for NQ is one thing; one for "
+                     "Bitcoin trades all weekend.\n")
+    t.ok(t.box.json("save", str(loose))["saved"].startswith("Notes/"),
+         "a few words in common are not its name")
+    t.box.run("save", "--into", "nothing-called-this", "a line", expect=1)
 
 
 @test
@@ -5574,14 +6063,49 @@ def test_a_folder_they_made_keeps_its_name_and_every_note_in_it_is_found(t: Case
     item = next(i for i in t.box.items() if i["path"] == "Notes/handing-it-over")
     t.eq(item["title"], "Handing it over", "and keeps its title")
 
-    # Made by ./os new, a folder still follows its title when that changes.
+    # Made by ./os new, a folder keeps its name when its title is changed by
+    # hand: sort never renames what is filed, as a path to it may be written
+    # down somewhere (reported, 2026-10). ./os rename changes both.
     t.box.run("new", "work", "Fix the shed door")
     readme = root / "Work" / "Fix the Shed Door" / "README.md"
     readme.write_text(readme.read_text().replace("title: Fix the shed door",
                                                  "title: Mend the shed door"))
     t.box.run("sort")
+    t.ok(readme.is_file() and not (root / "Work" / "Mend the Shed Door").exists(),
+         "a folder ./os made keeps its name when its title changes")
+    t.box.run("rename", "Fix the Shed Door", "Mend the shed door")
     t.ok((root / "Work" / "Mend the Shed Door" / "README.md").is_file(),
-         "a folder ./os made is renamed when its title changes")
+         "and ./os rename gives it the new one")
+
+
+@test
+def test_a_folder_made_for_one_note_is_known_by_the_note(t: Case) -> None:
+    """A note written by hand into a new Notes/Trading/ folder was taken in
+    by sort under the folder's name, so ./os find listed `Trading`, not what
+    the note calls itself (reported, 2026-10). Such a folder stays where it
+    is, its note is not rewritten, and it goes by the note's own title: the
+    one in its header, else its first heading, else its file name."""
+    notes = t.box.root / "Notes"
+    cases = {
+        "Trading": ("rules.md", "# Powell 10am rules\n\nBuy at ten when the chair speaks.\n",
+                    "Powell 10am rules", "chair"),
+        "Boat": ("engine.md", "---\ntitle: Outboard engine service\ndomain: home\n---\n\n"
+                 "Change the impeller every spring.\n", "Outboard engine service", "impeller"),
+        "Bees": ("swarm-season.txt", "Watch for queen cells in May.\n", "Swarm Season", "queen"),
+    }
+    kept = {}
+    for folder, (name, words, _title, _word) in cases.items():
+        (notes / folder).mkdir()
+        (notes / folder / name).write_text(words, encoding="utf-8")
+        kept[notes / folder / name] = words
+    t.box.run("sort")
+    t.eq({p: p.read_text() for p in kept}, kept, "each folder stays where it is, its note untouched")
+    for folder, (_name, _words, title, word) in cases.items():
+        item = next(i for i in t.box.items() if i["path"] == f"Notes/{folder}")
+        t.eq(item["title"], title, f"Notes/{folder} goes by its note's own title")
+        found = t.box.run("find", word).stdout
+        t.ok(title in found, f"./os find {word} lists {title!r}\n{found}")
+    t.ok("nothing waiting" in t.box.run("sort").stdout, "and the next sort has nothing to do")
 
 
 HOME_FACTS = (
@@ -5640,7 +6164,7 @@ def test_a_folder_they_made_is_never_moved_into_a_group(t: Case) -> None:
     for n in range(13):
         t.box.run("new", "work", f"Fix the {['shed', 'gate', 'fence', 'roof', 'tap'][n % 5]} "
                                  f"number {n + 1}")
-    moved = t.box.run("sort").stdout
+    moved = t.box.run("sort").stdout + t.box.run("sort", "--regroup", "--yes").stdout
     t.eq({p: p.read_bytes() for p in theirs if p.is_file()}, theirs,
          f"Recipes, Kitchen and the Allotment stay exactly where they were\n{moved}")
     t.ok("Recipes" not in moved and "Kitchen" not in moved and "Allotment" not in moved,
@@ -5900,6 +6424,8 @@ def test_a_folder_named_like_a_group_is_never_made_one(t: Case) -> None:
         t.box.run("save", words)
     got = t.box.run("sort", expect=None)
     t.eq(got.returncode, 0, f"sort finishes\n{got.stdout}{got.stderr}")
+    got = t.box.run("sort", "--regroup", "--yes", expect=None)
+    t.eq(got.returncode, 0, f"a regroup finishes\n{got.stdout}{got.stderr}")
     t.ok(any((p / ".category").is_file() for p in notes.iterdir()), "Notes is grouped by subject")
     t.ok(not (money / ".category").exists(), "their folder is never marked as a group of sort's")
     t.eq(sorted(p.name for p in money.iterdir()), theirs, "and nothing of sort's goes in it")
@@ -5988,14 +6514,18 @@ def test_sort_says_where_things_land_and_a_preview_counts_the_same(t: Case) -> N
         t.box.run("save", words)
     (notes / "Shopping List.txt").write_text("eggs\nmilk\nsourdough starter\nflour for bread\n")
     t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     first = next((p for p in notes.rglob("Shopping List.txt")), None)
     t.ok(first is not None and first.parent != notes, f"it went into a group ({first})")
+    # A second one dropped in by hand stays where it was dropped, under a
+    # name nothing else in Notes has, and sort says where it really went.
     (notes / "Shopping List.txt").write_text("eggs\nmilk\nsourdough starter\nflour for bread\nbutter\n")
     moves = t.box.json("sort")["moves"]
     now = next(p for p in notes.rglob("Shopping*.txt") if "butter" in p.read_text())
-    t.ok(now.parent == first.parent and now != first, f"the second went beside it ({now})")
-    landed = [dst for what, src, dst in moves if what == "sort" and src == "Notes/Shopping List.txt"]
+    t.ok(now.parent == notes and now.name != first.name, f"the second stays where it was put ({now})")
+    landed = [dst for what, src, dst in moves if src == "Notes/Shopping List.txt"]
     t.eq(landed, [str(now.relative_to(root))], "and sort says where it really went")
+    t.eq(t.box.name_clashes(), [], "and no two things in Notes answer to one name")
     t.box.run("sort")
     t.ok(now.is_file(), "the next sort keeps the name it was given there, not a lower-case one "
                         f"({sorted(p.name for p in now.parent.iterdir())})")
@@ -6821,14 +7351,15 @@ def test_a_group_inside_a_group_never_takes_its_name(t: Case) -> None:
     for job in jobs:
         t.box.run("save", f"Garden note: {job}. The garden looks good.")
     t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     garden = root / "Notes" / "Garden"
     t.ok(garden.is_dir(), "the garden notes have a group of their own")
     inside = sorted(p.name for p in garden.iterdir() if p.is_dir())
     t.eq(inside, [], f"and no group inside it, let alone one called Garden: {inside}")
     t.eq(len(list(garden.glob("*.md"))), len(jobs), "every note sits in Notes/Garden")
-    t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     t.eq(sorted(p.name for p in garden.iterdir() if p.is_dir()), [],
-         "and a second sort leaves them there")
+         "and a second regroup leaves them there")
 
     # Made by an earlier release: it stays exactly where it is, with what is
     # in it. What a released engine filed is never moved (decided 2026-09-30).
@@ -6852,9 +7383,11 @@ def test_a_group_inside_a_group_never_takes_its_name(t: Case) -> None:
     for n, job in enumerate(("plant out the tomatoes", "pinch out the tomatoes",
                              "feed the tomatoes", "pick the tomatoes")):
         t.box.run("save", f"Garden tomatoes {n}: {job}, the tomatoes are doing well.")
-    t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     t.eq(sorted(p.name for p in garden.iterdir() if p.is_dir()), ["Garden", "Tomatoes"],
          "a tag only some of them have still groups those ones")
+    t.ok(all((nested / note.name).is_file() for note in old),
+         "and the Garden inside Garden keeps every note in it")
 
 
 @test
@@ -8313,6 +8846,28 @@ def test_agents_md_says_to_keep_a_checkpoint(t: Case) -> None:
          "a session ends with one, after ./os sort")
     t.ok('\n./os checkpoint "..."' in text, "and it's in the list of commands")
     t.ok("checkpoint" in engine.COMMANDS, "which is a real command")
+
+
+@test
+def test_helpers_never_run_git_that_changes_anything(t: Case) -> None:
+    """Three helpers each ran git stash and stash pop at once to try old
+    code, and each swept the others' unsaved work into one stash. Nothing was
+    lost, but getting it back took a script. Every helper that ships, and
+    AGENTS.md, now says which git commands are out, and how to see old code."""
+    import upgrade
+    banned = ("stash", "checkout", "switch", "reset", "restore", "commit", "pull", "merge", "rebase")
+    docs = [t.box.root / ".claude" / "agents" / f"{name}.md" for name in upgrade.SHIPPED_AGENTS]
+    for doc in docs + [t.box.root / "AGENTS.md"]:
+        if in_their_words(doc, t.box):
+            continue
+        words = " ".join(doc.read_text(encoding="utf-8").split())
+        rule = re.search(r"git command that changes anything[^.]*\.", words)
+        t.ok(rule is not None, f"{doc.name} says helpers never run a git command that changes anything")
+        t.eq([w for w in banned if f"`{w}`" not in rule.group(0)], [],
+             f"{doc.name} names each one")
+        t.ok("other chats share this folder" in words.lower(), f"{doc.name} says why")
+        t.ok("`git show <commit>:<path>` into a scratch folder outside" in words,
+             f"{doc.name} says how to see old code instead")
 
 
 @test
@@ -9848,6 +10403,51 @@ def test_rename_moves_the_name_and_the_title_together(t: Case) -> None:
 
 
 @test
+def test_no_name_it_makes_trips_up_a_terminal(t: Case) -> None:
+    """`Build a Trading Bot for NQ1!` was a folder no command could name: the
+    shell read the ! as "the last command", even in quotes, and the folder
+    had to be reached as Work/Build* (snag, 2026-09-29). No name ./os makes
+    has a mark like that in it; the title in the header keeps their words.
+    One made by hand is named by ./os check, with the rename to type."""
+    import shlex
+    root = t.box.root
+    t.box.run("new", "work", "Build a Trading Bot for NQ1!")
+    folder = root / "Work" / "Build a Trading Bot for NQ1"
+    t.ok(folder.is_dir(), f"the ! is left off the folder: {sorted(p.name for p in (root / 'Work').iterdir())}")
+    t.ok("title: Build a Trading Bot for NQ1!" in (folder / "README.md").read_text(),
+         "and kept in its title")
+    t.box.run("rename", "build-a-trading-bot-for-nq1", "Q&A: what's next? [$5 {draft}] `x`")
+    names = [p.name for p in (root / "Work").iterdir()]
+    t.eq(len(names), 1, "renamed, it is still one thing")
+    t.ok(not engine.SHELL_MARKS.search(names[0]), f"and a rename makes no such name: {names[0]}")
+    saved = t.box.json("save", "Plan the surprise party for Mum's 60th!!")
+    t.ok(not engine.SHELL_MARKS.search(saved["saved"]), f"nor does a save: {saved['saved']}")
+    t.box.run("undo")
+    t.box.run("undo")
+    t.box.run("undo")
+
+    # One made by hand: check names it, and gives the exact rename.
+    hand = root / "Work" / "Fix the Shed!"
+    hand.mkdir()
+    (hand / "README.md").write_text(
+        "---\ntitle: Fix the Shed!\ntype: work\nstatus: pushing\ndomain: personal\n"
+        f"tags: []\ncreated: {engine.today()}\nupdated: {engine.today()}\n---\n\n"
+        "# Fix the Shed!\n\n## Next action\n- [ ] Buy felt\n")
+    t.box.run("index")
+    found = [i for i in t.box.json("check", expect=None)["issues"]
+             if i["code"] == "name-trips-terminal"]
+    t.eq(len(found), 1, "check names the one name with a ! in it")
+    t.ok("Fix the Shed!" in found[0]["message"], f"by its name: {found[0]['message']}")
+    t.eq(found[0]["fix"], './os rename fix-the-shed "Fix the Shed"', "with the rename to type")
+    plain = t.box.run("check", expect=None).stdout
+    t.ok("--fix" not in plain, f"and no --fix, which couldn't fix it\n{plain}")
+    t.box.run(*shlex.split(found[0]["fix"])[1:])
+    t.ok((root / "Work" / "Fix the Shed").is_dir(), "the rename it gives works")
+    t.ok(not any(i["code"] == "name-trips-terminal"
+                 for i in t.box.json("check", expect=None)["issues"]), "and check is happy")
+
+
+@test
 def test_a_rename_takes_the_links_to_it_along(t: Case) -> None:
     """`./os rename` says "everywhere at once", yet links to the old name were
     left pointing at nothing, and `./os check` then reported the broken link
@@ -9917,7 +10517,8 @@ def test_sort_keeps_links_between_notes_working(t: Case) -> None:
             f"seedlings, water the greenhouse and lawn. Bed {n}.\n")
     t.box.run("index")
     before = t.box.tree()
-    said = t.box.run("sort").stdout
+    t.box.run("sort")
+    said = t.box.run("sort", "--regroup", "--yes").stdout
     pizza = next(notes.rglob("pizza-dough.md"))
     tomato = next(notes.rglob("tomato care.md"))
     t.ok(pizza.parent != tomato.parent,
@@ -9938,12 +10539,83 @@ def test_sort_keeps_links_between_notes_working(t: Case) -> None:
     ref = re.search(r"^\[dough\]: (\S+)$", t_text, re.M)
     t.ok(ref and _lands(tomato, ref.group(1)) == pizza,
          f"a `[name]: where` line follows too\n{t_text}")
-    t.ok("links kept working in 2 notes" in said, f"sort says it fixed them\n{said[-600:]}")
+    t.ok("kept right in 2 files" in said, f"the regroup says it fixed them\n{said[-600:]}")
     broken = [i for i in t.box.json("check", expect=None)["issues"]
               if i["code"] == "broken-link" and "long-gone" not in i["message"]]
     t.eq(broken, [], "and check finds no link sort broke")
     t.box.run("undo")
+    t.box.run("undo")
     t.eq(t.box.tree(), before, "undo puts every file back exactly, links included")
+
+
+@test
+def test_a_regroup_shows_its_plan_and_keeps_paths_right(t: Case) -> None:
+    """Sort moved two notes from the top of Notes into Notes/Finance and
+    Notes/Engineering; a bot's code and config named them as Notes/<name>.md
+    and broke without a word (reported, 2026-10). Grouping happens only with
+    ./os sort --regroup. On its own it shows what would move and every file
+    that names a path that would change. With --yes it moves them, updates
+    a path written out in a page, a .txt or a skill, code fences too, lists
+    a .py naming one without touching it, and ./os undo puts it all back."""
+    root, notes = t.box.root, t.box.root / "Notes"
+    for n in range(8):
+        (notes / f"invoice-{n}.md").write_text(_filed_note(
+            f"Invoice {n}", "finance", ["invoice"], f"Invoice number {n}, paid."), encoding="utf-8")
+        (notes / f"deploy-{n}.md").write_text(_filed_note(
+            f"Deploy {n}", "engineering", ["deploy"], f"Deploy step {n}."), encoding="utf-8")
+    bot = root / "Work" / "Bot"
+    bot.mkdir(parents=True)
+    page = bot / "README.md"
+    page.write_text(_filed_note("Bot", "engineering", [], "Reads Notes/invoice-3.md every morning, "
+                                "and [the deploy steps](../../Notes/deploy-1.md).")
+                    .replace("type: note", "type: work").replace("status: —", "status: pushing"),
+                    encoding="utf-8")
+    (bot / "todo.txt").write_text("check Notes/invoice-3.md against the bank\n", encoding="utf-8")
+    code = bot / "config.py"
+    code.write_text('INVOICES = "Notes/invoice-3.md"\nDEPLOY = "Notes/deploy-1.md"\n', encoding="utf-8")
+    skill = root / ".claude" / "skills" / "invoices" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: invoices\ndescription: Check invoices\n---\n\n"
+                     "```\ncat Notes/invoice-3.md\n```\n", encoding="utf-8")
+    t.box.run("sort")
+    before, code_was = t.box.tree(), code.read_bytes()
+
+    plan = t.box.run("sort", "--regroup").stdout
+    t.eq(t.box.tree(), before, f"without --yes nothing moves\n{plan}")
+    t.ok("Notes/invoice-3.md" in plan and "Notes/Finance/invoice-3.md" in plan,
+         f"the plan says what would move where\n{plan}")
+    for named in ("Work/Bot/config.py line 1", "Work/Bot/README.md", "Work/Bot/todo.txt",
+                  ".claude/skills/invoices/SKILL.md"):
+        t.ok(named in plan, f"and names {named}, which says a path that would change\n{plan}")
+    t.ok("./os sort --regroup --yes" in plan, "and says how to go ahead")
+    asked = t.box.json("sort", "--regroup")
+    t.ok({"file": "Work/Bot/config.py", "line": 1} in
+         [{"file": m["file"], "line": m["line"]} for m in asked["mentions"]],
+         f"--json says the same\n{asked['mentions']}")
+
+    done = t.box.run("sort", "--regroup", "--yes").stdout
+    t.ok((notes / "Finance" / "invoice-3.md").is_file()
+         and (notes / "Engineering" / "deploy-1.md").is_file(), f"--yes moves them\n{done}")
+    t.ok("Reads Notes/Finance/invoice-3.md every morning" in page.read_text(),
+         f"a path written out in a page follows the note\n{page.read_text()}")
+    t.ok(_lands(page, _links(page.read_text())[0]) == notes / "Engineering" / "deploy-1.md",
+         "and so does a link")
+    t.eq((bot / "todo.txt").read_text(), "check Notes/Finance/invoice-3.md against the bank\n",
+         "and one in a .txt")
+    t.ok("cat Notes/Finance/invoice-3.md" in skill.read_text(), "and one in a skill, in its code")
+    t.eq(code.read_bytes(), code_was, "the .py is not edited")
+    t.ok("Work/Bot/config.py line 1" in done and "Notes/Finance/invoice-3.md" in done
+         and "Work/Bot/config.py line 2" in done,
+         f"but each line naming an old path is listed, with where it is now\n{done}")
+
+    t.box.run("undo")
+    t.eq(t.box.tree(), before, "./os undo puts every note and every word back")
+
+    # Report 2 again, one note at a time: a rename says so too.
+    said = t.box.run("rename", "invoice-3", "Invoice three").stdout
+    t.ok("Work/Bot/config.py line 1" in said and "Notes/invoice-three.md" in said,
+         f"a rename lists the .py line it didn't change\n{said}")
+    t.ok("Reads Notes/invoice-three.md" in page.read_text(), "and updates the page")
 
 
 @test
@@ -10125,6 +10797,93 @@ def test_an_account_of_finished_work_is_a_note(t: Case) -> None:
     t.box.run("index")
     t.eq(t.box.carrying("Ship the billing rewrite")["kind"], "project",
          "work with a next action is still work")
+
+
+@test
+def test_a_saved_page_to_look_things_up_in_is_a_note(t: Case) -> None:
+    """Snags, 2026-09-29: `./os save <file>` filed a page of simulated pass
+    odds, its first words "Reference numbers", as new work twice, on words
+    like eval, attempt and pass. A comparison table "checked 2026-09-29" went
+    the same way, and so did a long transcript with no header, and long
+    research with "Open:" in it. A file, or more than about 150 words, is a
+    note now unless it has a ## Next action or says type: work, and --note
+    and --work say which outright. One short line that reads as a job is
+    still work."""
+    away = t.box.tmp / "Downloads"
+    away.mkdir()
+    odds = away / "MFFU 50k eval odds by edge.md"
+    odds.write_text(
+        "# MFFU 50k eval odds by edge, reference simulated 2026-09-29\n\n"
+        "Reference numbers. 10,000 simulated attempts per row: the eval is passed when "
+        "the profit target is hit before the trailing drawdown is.\n\n"
+        "| Edge per trade | Pass odds | Attempts to pass | Cost per pass |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 0.00R | 31% | 3.2 | $270 |\n| 0.05R | 44% | 2.3 | $195 |\n"
+        "| 0.10R | 58% | 1.7 | $145 |\n| 0.20R | 79% | 1.3 | $110 |\n\n"
+        "## How each attempt was run\n\n"
+        "Start at 50,000. Pass at +3,000, fail at -2,000. A failed attempt costs "
+        "the reset fee, so the plan is to fix the risk first and then build the "
+        "edge. Next week's eval needs to be passed in fewer attempts.\n\n"
+        "| Risk per trade | Pass odds at 0.10R | Days to pass |\n| --- | --- | --- |\n"
+        "| $100 | 61% | 14 |\n| $200 | 58% | 8 |\n| $400 | 49% | 4 |\n")
+    firms = away / "prop-firms-bots.md"
+    firms.write_text(
+        "# Prop firms that allow trading bots, checked 2026-09-29\n\n"
+        "What each firm's rules page says about bots. Need to look into Apex again.\n\n"
+        "| Firm | Bots allowed | News trading | Notes |\n| --- | --- | --- | --- |\n"
+        "| MFFU | Yes, eval and funded | No | No HFT |\n"
+        "| Topstep | Yes | Restricted | Must be your own bot |\n"
+        "| Apex | Not on funded | Yes | Semi-automated only |\n"
+        "| Tradeify | Yes | Yes | Copy trading allowed |\n\n"
+        "Open: whether Apex counts a trade copier as a bot.\n")
+    said = ("so the first five minutes are noise and you want to wait for the range to "
+            "set before you build anything then we need to fix how the bot handles a "
+            "fast market and I said it has to stand aside when the spread widens").split()
+    call = away / "call with sam.md"
+    call.write_text("\n\n".join(f"{'Sam' if n % 2 else 'Alex'}: "
+                                + " ".join(said[n % 9:n % 9 + 18]) for n in range(24)) + "\n")
+    for path in (odds, firms, call):
+        got = t.box.json("save", str(path))
+        t.eq(got["kind"], "note", f"{path.name} is a note")
+        t.ok(got["saved"].startswith("Notes/"), f"and it's in Notes: {got['saved']}")
+    research = ("Research on the opening range. The opening range on NQ sets in the first "
+                "fifteen minutes, and a break of it carries on about six times in ten when "
+                "volume is above average. We plan to test whether a stop under the range "
+                "low holds up, and need to fix the data for half days first. ") * 4 \
+        + "\nOpen: does it hold on half days?\nPlan: run it again on 2025 data."
+    got = t.box.json("save", research)
+    t.eq(got["kind"], "note", "long research with Open: and a plan in it is a note")
+    t.eq([p.name for p in (t.box.root / "Work").iterdir()], [], "and no work was made")
+
+    plain = t.box.run("save", "Topstep allows bots on funded accounts").stdout
+    t.ok('./os undo, then ./os save --work "Topstep allows bots on funded accounts"' in plain,
+         f"the reply after a save says how to make it work instead\n{plain}")
+
+    # A file says it is work with a ## Next action, or with type: work.
+    plan = away / "van-plan.md"
+    plan.write_text("# Moving the workshop\n\nThe van is booked.\n\n## Next action\n"
+                    "- [ ] Pack the tool wall\n")
+    t.eq(t.box.json("save", str(plan))["kind"], "project", "a ## Next action makes a file work")
+    headed = away / "shed.md"
+    headed.write_text("---\ntitle: Paint the shed\ntype: work\n---\n\nTwo coats, green.\n")
+    t.eq(t.box.json("save", str(headed))["kind"], "project", "and so does type: work")
+    for line in ("fix the boiler", "call the bank Friday"):
+        t.eq(t.box.json("save", line)["kind"], "project", f"'{line}' is still work")
+
+    # Said outright, with --note or --work, and taken back by ./os undo.
+    copy = away / "firms-again.md"
+    copy.write_text(firms.read_text().replace("Need to look", "Still need to look"))
+    work = t.box.json("save", "--work", str(copy))
+    t.eq(work["kind"], "project", "--work makes a file work")
+    t.ok((t.box.root / work["saved"]).is_dir() and work["saved"].startswith("Work/"),
+         f"in Work: {work['saved']}")
+    t.box.run("undo")
+    t.ok(not (t.box.root / work["saved"]).exists(), "undo takes it back")
+    note = t.box.json("save", "--note", "ring the plumber about the leak")
+    t.eq(note["kind"], "note", "--note makes a job a note")
+    t.box.run("undo")
+    t.ok(not (t.box.root / note["saved"]).exists(), "and undo takes that back too")
+    t.box.run("save", "--note", "--work", "fix the gate", expect=2)
 
 
 @test
@@ -10981,6 +11740,63 @@ def test_files_left_to_merge_are_mentioned_until_merged(t: Case) -> None:
 
 
 @test
+def test_update_done_clears_what_was_merged(t: Case) -> None:
+    """Once the files an update set aside were merged, no command cleared
+    .os/upgrades/, so ./os said files were waiting for good, and the AI isn't
+    allowed to delete it by hand (report, 2026-10-22). `./os update --done`
+    clears it, says what it removed, and stops first over one that still
+    looks unmerged. ./os undo brings them back."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+
+    def newer(out: Path) -> None:
+        for name in ("wrapup", "catchup"):
+            skill = out / ".claude" / "skills" / name / "SKILL.md"
+            skill.write_text(skill.read_text() + f"\nA newer {name} step.\n")
+
+    published = _publish(t, "2026-02-01.1", newer)
+    t.box.run("new", "work", "Ship the rewrite")     # past the first visit's brief
+    wrap = root / ".claude" / "skills" / "wrapup" / "SKILL.md"
+    catch = root / ".claude" / "skills" / "catchup" / "SKILL.md"
+    wrap.write_text(wrap.read_text() + "\nThen my own to-do sync.\n")
+    catch.write_text(catch.read_text() + "\nAnd my calendar.\n")
+    t.box.run("update", "--from", str(published))
+    aside = sorted(p.relative_to(root).as_posix()
+                   for p in (root / ".os" / "upgrades").rglob("SKILL.md"))
+    t.eq(len(aside), 2, "the update set two aside to merge")
+
+    t.ok("./os update --done" in t.box.run().stdout, "./os says how to clear them once merged")
+    t.ok(any("./os update --done" in i["fix"] for i in t.box.json("check")["issues"]
+             if i["code"] == "update-to-merge"), "so does ./os check")
+    t.ok("./os update --done" in t.box.run("brief").stdout, "and so does what the AI is told first")
+
+    # one merged, one not yet
+    wrap.write_text(wrap.read_text() + "\nA newer wrapup step.\n")
+    asked = t.box.run("update", "--done", expect=1).stdout
+    t.ok("catchup" in asked and "wrapup" not in asked,
+         f"it names the one that still looks unmerged, and only that one\n{asked}")
+    t.ok("--done --anyway" in asked and "nothing has been removed" in asked,
+         "says nothing was removed, and how to go ahead")
+    t.eq(len(list((root / ".os" / "upgrades").rglob("SKILL.md"))), 2, "and nothing was")
+
+    catch.write_text(catch.read_text() + "\nA newer catchup step.\n")
+    done = t.box.run("update", "--done").stdout
+    t.ok(all(a in done for a in aside), f"once merged, it lists each file it removes\n{done}")
+    t.ok(not (root / ".os" / "upgrades").exists(), "and the folder is gone")
+    t.ok(".os/upgrades/" not in t.box.run().stdout, "so ./os has nothing more to say")
+    t.ok("nothing is waiting" in t.box.run("update", "--done").stdout, "asked again, it says so")
+
+    t.box.run("undo")
+    t.ok(all((root / a).is_file() for a in aside), "./os undo brings them back")
+
+    # told to go ahead, it clears one that still looks unmerged too
+    catch.write_text(catch.read_text().replace("\nA newer catchup step.\n", ""))
+    t.box.run("update", "--done", expect=1)
+    gone = t.box.json("update", "--done", "--anyway")
+    t.eq(sorted(gone["removed"]), aside, "--anyway clears them all, and says which")
+
+
+@test
 def test_update_check_says_when_a_newer_version_is_out(t: Case) -> None:
     """Nothing ever told a folder a newer version was out, so a folder
     downloaded on day one kept day-one bugs until somebody typed ./os update."""
@@ -11329,6 +12145,7 @@ def test_a_group_an_earlier_release_nested_stays_put_after_an_update(t: Case) ->
                 "mulch the beds with bark", "cut the hedge in August", "grow beans up a wigwam"):
         t.box.run("save", f"Garden note: {job}. The garden looks good.")
     t.box.run("sort")
+    t.box.run("sort", "--regroup", "--yes")
     garden = root / "Notes" / "Garden"
     nested = garden / "Garden"                  # as the earlier release left it
     nested.mkdir()
@@ -11578,6 +12395,64 @@ def test_new_file_names_are_cut_where_a_word_ends(t: Case) -> None:
     t.box.run("sort")
     t.ok((t.box.root / "Notes" / "garden-notes-about-the-tomatoes-and-the.md").is_file(),
          "and sort keeps it")
+
+
+@test
+def test_a_new_learning_note_keeps_the_name_it_was_made_with(t: Case) -> None:
+    """Sort renamed a note made minutes before with ./os new learning,
+    ...-as-codeable-rules.md to ...-as-codeable.md, after its path had been
+    given out (reported, 2026-10). What ./os new makes keeps its name."""
+    made = t.box.run("new", "learning", "TJR and the Powell 10am strategy as codeable rules").stdout
+    rel = next(line.strip() for line in made.splitlines() if line.strip().startswith("Notes/"))
+    path = t.box.root / rel
+    t.ok(path.is_file(), f"./os new says where it made it ({rel})")
+    # Filled in by an AI straight after, its title spelled a little
+    # differently, which is what sort renamed it for.
+    path.write_text(path.read_text().replace(
+        "title: TJR and the Powell 10am strategy as codeable rules",
+        "title: TJR and the Powell 10 am strategy as codeable rules"))
+    t.ok("title: TJR and the Powell 10 am" in path.read_text(), "its title was filled in")
+    for words in HOME_FACTS:
+        t.box.run("save", words)
+    t.box.run("sort")
+    t.box.run("sort")
+    t.ok(path.is_file(), f"after two sorts it is still at {rel} "
+         f"({sorted(p.name for p in (t.box.root / 'Notes').rglob('tjr*'))})")
+    t.box.run("show", path.stem)
+
+
+@test
+def test_a_new_note_goes_straight_into_its_final_folder(t: Case) -> None:
+    """A note made with ./os new landed in Notes, and a later sort moved it
+    into a group, so a path to it written in a page in between went stale
+    (reported, 2026-10). Now ./os new and ./os save put it in the group it
+    belongs in when it is made, and sort never moves it after."""
+    notes = t.box.root / "Notes"
+    money = notes / "Money"
+    money.mkdir(parents=True)
+    (money / ".category").write_text(json.dumps(
+        {"name": "Money", "trail": ["Money"], "auto": True}) + "\n")
+    for n in range(8):
+        (money / f"bill-{n}.md").write_text(_filed_note(
+            f"Bill {n}", "money", [], f"Bill {n} is paid."), encoding="utf-8")
+    for n in range(3):
+        (notes / f"recipe-{n}.md").write_text(_filed_note(
+            f"Recipe {n}", "food", [], f"Recipe {n}: flour and water."), encoding="utf-8")
+    made = t.box.run("new", "note", "Council tax bands", "--domain", "money").stdout
+    t.ok("Notes/Money/council-tax-bands.md" in made, f"./os new says the folder it belongs in\n{made}")
+    note = money / "council-tax-bands.md"
+    t.ok(note.is_file(), "and that is where it is")
+    t.box.run("new", "work", "Pay the bills", "--domain", "money")
+    page = t.box.root / "Work" / "Pay the Bills" / "README.md"
+    page.write_text(page.read_text() + "\nThe bands are in Notes/Money/council-tax-bands.md\n",
+                    encoding="utf-8")
+    t.box.run("save", "Council tax direct debit: 152 pounds a month, ISA and pension next")
+    saved = t.box.root / t.box.carrying("152 pounds a month")["path"]
+    t.eq(saved.parent, money, "a note saved now goes into the group as well")
+    before = t.box.tree()
+    t.box.run("sort")
+    t.box.run("sort")
+    t.eq(t.box.tree(), before, "and sort moves neither of them, so the page still names the right path")
 
 
 @test
