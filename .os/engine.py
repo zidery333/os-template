@@ -7381,7 +7381,7 @@ class History:
                     f"git on this computer — {self.get_git()}")
         if began == "template":
             return ("this folder's history came with the download, so your changes "
-                    "won't go in it — to keep your own:  rm -rf .git && ./os checkpoint")
+                    "won't go in it — to keep your own:  ./os setup --unlink")
         if began == "inside":
             return ("this folder sits inside a bigger folder's history, so it keeps none of "
                     "its own — to keep one for this folder alone:  ./os checkpoint --here")
@@ -11086,10 +11086,13 @@ def cmd_checkpoint(os_: Zenith, argv: list[str]) -> int:
     elif result == "template":
         Out.warn("this folder's history came with the download (git clone), so your "
                  "files would go into the template's own — nothing kept")
-        Out.note("to start your own instead:  rm -rf .git && ./os checkpoint")
+        Out.note("to make it yours instead:  ./os setup --unlink")
     elif result == "theirs":
         Out.warn("this folder already has a history that ./os didn't start, so I left "
                  "it alone — save it the way you usually do")
+        if linked_to_template(os_):
+            Out.note("it came from a git clone of the template — to make it yours:  "
+                     "./os setup --unlink")
     elif result == "inside" and got.get("around"):
         # Already keeping these files: --here would hide them from it.
         Out.warn("this folder's files are kept in the history of a bigger folder around "
@@ -11161,8 +11164,10 @@ have no idea what the folder does.
 
 A first visit here (AGENTS.md, "First, always") is a hello, then a line or two saying plainly \
 that whatever they say gets written down and put in the right place for them — they never \
-pick a folder or name a file — then a question about what's on their mind lately, or what \
-they're into. "Nothing yet" is a fine answer.
+pick a folder or name a file — then an offer to set it up together: the setup skill \
+(.claude/skills/setup/SKILL.md) says what the folder is for, checks the computer, and brings \
+in an old folder. If they'd rather not, ask what's on their mind lately, or what they're \
+into. "Nothing yet" is a fine answer.
 
 How they like their answers (short or long, plain or detailed, bad news first or last) is \
 asked once, early on. That and their name go in the About me note \
@@ -12554,8 +12559,497 @@ def _addons_update(os_: Zenith, source: str, preview: bool) -> int:
     return 0
 
 
+#: The skills the old me/ notes/ work/ layout shipped. Any other skill in an
+#: old folder is one they made, and comes in with the rest of their things.
+OLD_LAYOUT_SKILLS = {"archive", "catch-me-up", "learn", "new-project", "new-skill",
+                     "new-subject", "save-to-my-os", "setup", "snag", "tidy-up",
+                     "update-os", "what-do-i-know", "wrapup"}
+#: What an old folder holds that is the template's, not theirs: never brought in.
+NOT_THEIRS = {"README.md", "LICENSE", "AGENTS.md", "GEMINI.md", "INDEX.md", "os",
+              "CHANGES.md", "template-feedback.md"}
+
+
+def linked_to_template(os_: Zenith) -> list:
+    """The names of this folder's links to the template's own GitHub page.
+
+    A `git clone` keeps one, called origin. The Claude app then showed the
+    folder as the template's, whatever it was renamed to, and ./os kept no
+    history of its own in it (a friend's first try, 2026-10-23)."""
+    if History.no_git() or not (os_.root / ".git").exists():
+        return []
+    h = History(os_)
+    found = []
+    for remote in h._git("remote").stdout.split():
+        url = h._git("remote", "get-url", remote).stdout.strip()
+        if re.search(r"[:/]" + re.escape(TEMPLATE_REPO) + r"(?:\.git)?/?$", url):
+            found.append(remote)
+    return found
+
+
+def folder_around(root: Path) -> Path | None:
+    """The nearest folder above this one that is another AI folder, or None.
+
+    Claude Code reads every CLAUDE.md above the folder it opens, so a new
+    folder put inside an old one got the old one's rules as well as its own.
+    That is how it lands when the old folder's AI is asked to fetch the new
+    one (a friend's first try, 2026-10-23)."""
+    home = Path.home().resolve()
+    for up in root.resolve().parents:
+        if up == home or up == up.parent:
+            return None
+        if (up / "CLAUDE.md").is_file() or (up / "AGENTS.md").is_file() \
+                or (up / MARKER / "config.json").is_file():
+            return up
+    return None
+
+
+def tool_version(*cmd: str) -> str:
+    """The first line a program says about its version, or "" if it isn't there."""
+    if shutil.which(cmd[0]) is None:
+        return ""
+    try:
+        said = subprocess.run(list(cmd), capture_output=True, text=True, errors="replace",
+                              timeout=15, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    first = (said.stdout or said.stderr).strip().split("\n")[0]
+    return one_line(first)[:60] or "yes"
+
+
+def setup_report(os_: Zenith) -> dict:
+    """What /setup looks at before it asks anything: the computer, the tools,
+    and anything about where this folder sits that will trip them up later.
+
+    `needs` holds what is wrong, each with the plain fix. Nothing is changed."""
+    if sys.platform == "darwin":
+        system = "Mac"
+    elif "microsoft" in read_text(Path("/proc/version"), 400).lower():
+        system = "Windows (WSL)"
+    elif sys.platform.startswith("linux"):
+        system = "Linux"
+    else:
+        system = sys.platform
+    claude = tool_version("claude", "--version")
+    if not claude and (Path.home() / ".local" / "bin" / "claude").is_file():
+        claude = "installed, but this terminal can't find it yet"
+    git = "" if History.no_git() else tool_version(GIT, "--version")
+    root = os_.root.resolve()
+    linked = linked_to_template(os_)
+    around = folder_around(root)
+    needs = []
+    if not git:
+        needs.append({"code": "no-git", "say": "git isn't installed, so hand edits can't be "
+                      "taken back", "fix": History.get_git()})
+    if not claude:
+        needs.append({"code": "no-claude", "say": "Claude Code isn't installed",
+                      "fix": "curl -fsSL https://claude.ai/install.sh | bash"})
+    elif claude.startswith("installed,"):
+        needs.append({"code": "claude-not-found", "say": claude,
+                      "fix": "close the terminal and open it again"})
+    if linked:
+        needs.append({"code": "linked", "say": "this folder is still linked to the template's "
+                      "GitHub page, so the Claude app shows it as the template's",
+                      "fix": "./os setup --unlink"})
+    if around is not None:
+        needs.append({"code": "inside", "say": f"this folder is inside another one ({around}), "
+                      "so Claude reads that one's rules here too",
+                      "fix": "./os setup --move-to " + shell_word(str(around.parent / root.name))})
+    downloads = Path.home() / "Downloads"
+    if downloads.resolve() in (root, *root.parents):
+        needs.append({"code": "downloads", "say": "this folder is in Downloads, which gets "
+                      "cleared out and asks for permission on a Mac",
+                      "fix": "./os setup --move-to " + shell_word(str(Path.home() / root.name))})
+    return {"system": system, "python": sys.version.split()[0], "git": git, "claude": claude,
+            "folder": str(root), "folder_name": root.name,
+            "name": str(os_.config.get("name") or "Zenith"),
+            "owner": str(os_.config.get("owner") or ""),
+            "linked": bool(linked), "inside": str(around) if around else "", "needs": needs}
+
+
+def unlink_from_template(os_: Zenith) -> dict:
+    """Cut this folder's link to the template's GitHub page, and make its
+    history ours, so checkpoints go in it from now on.
+
+    Only the link goes: every save in the history stays, theirs included. A
+    link to anywhere else is theirs, and left alone."""
+    gone = linked_to_template(os_)
+    if not gone:
+        return {"result": "not linked"}
+    h = History(os_)
+    for remote in gone:
+        h._git("remote", "remove", remote)
+    h._git("config", h.MARK, "true")
+    kept = h.keep("Cut the link to the template's GitHub page")
+    return {"result": "cut", "kept": kept["result"]}
+
+
+def old_folder_kind(src: Path) -> str:
+    """'old layout' (main's me/ notes/ work/), 'os' (an older ./os folder),
+    or 'plain' (any folder of things)."""
+    if (src / "me").is_dir() and ((src / "notes").is_dir() or (src / "work").is_dir()):
+        return "old layout"
+    if (src / MARKER).is_dir() and (src / "os").is_file():
+        return "os"
+    return "plain"
+
+
+def _theirs_in(folder: Path, skip: set = frozenset()) -> list:
+    """What in an old folder is theirs: not hidden, not the computer's own
+    files, and not one of the template's, sorted by name."""
+    try:
+        found = sorted(folder.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+    return [p for p in found if not p.name.startswith(".") and not ignored(p)
+            and p.name not in NOT_THEIRS and p.name not in skip and not p.is_symlink()]
+
+
+def _their_skills(src: Path, template_skills: set) -> list:
+    """Skills in an old folder that they made, not the template."""
+    skills = src / ".claude" / "skills"
+    shipped = set(template_skills)
+    record = src / ".claude" / "shipped.tsv"
+    if record.is_file():
+        for line in read_all(record).splitlines():
+            parts = line.split("\t")[-1].split("/")
+            if len(parts) > 3 and parts[:2] == [".claude", "skills"]:
+                shipped.add(parts[2])
+    return [p for p in _theirs_in(skills) if p.is_dir() and p.name not in shipped
+            and (p / "SKILL.md").is_file()]
+
+
+def bring_plan(os_: Zenith, src: Path) -> dict:
+    """What `./os setup --bring` would bring in from an old folder, and how.
+
+    Each step is (path in the old folder, how). How is "about" (into About
+    me), "work", "note", "closed" (work that was put away), "as is" (to the
+    same place here, from an older ./os folder), "skill", "old" (into Archive,
+    the old layout's own lists), "save" (filed the way ./os save files it), or
+    "left" (stays where it is, with why)."""
+    kind = old_folder_kind(src)
+    steps: list = []
+    left = lambda p, why: steps.append((p, "left", why))
+    if kind == "old layout":
+        for p in _theirs_in(src / "me"):
+            steps.append((p, "about", ""))
+        if (src / "CLAUDE.md").is_file():
+            steps.append((src / "CLAUDE.md", "old", ""))
+        for p in _theirs_in(src / "notes", {"subjects.md"}):
+            steps.append((p, "note", ""))
+        if (src / "notes" / "subjects.md").is_file():
+            steps.append((src / "notes" / "subjects.md", "old", ""))
+        for p in _theirs_in(src / "work", {"archive", "projects.md"}):
+            steps.append((p, "work" if p.is_dir() else "note", ""))
+        for p in _theirs_in(src / "work" / "archive"):
+            steps.append((p, "closed" if p.is_dir() else "old", ""))
+        if (src / "work" / "projects.md").is_file():
+            steps.append((src / "work" / "projects.md", "old", ""))
+        for p in _their_skills(src, OLD_LAYOUT_SKILLS):
+            steps.append((p, "skill", ""))
+        for p in _theirs_in(src, {"me", "notes", "work", "CLAUDE.md"}):
+            steps.append((p, "save", ""))
+    elif kind == "os":
+        buckets = list(os_.buckets())
+        for bucket in buckets:
+            if (src / bucket / MEDIA_FOLDER).is_dir():
+                left(src / bucket / MEDIA_FOLDER, "big files stay where they are")
+            for p in _theirs_in(src / bucket):
+                if bucket == os_.bucket_for_role("archive") and p.is_dir():
+                    for q in (q for b in _theirs_in(p) for q in ([b] if not b.is_dir()
+                              or b.name not in buckets else _theirs_in(b))):
+                        steps.append((q, "as is", ""))
+                else:
+                    steps.append((p, "as is", ""))
+        for p in _their_skills(src, set(upgrade_lists()[0])):
+            steps.append((p, "skill", ""))
+        for p in _theirs_in(src, set(buckets) | {"CLAUDE.md"}):
+            steps.append((p, "save", ""))
+    else:
+        for p in _theirs_in(src, {"CLAUDE.md"}):
+            steps.append((p, "save", ""))
+    for n, (p, how, why) in enumerate(steps):
+        if how in ("save", "note", "work") and big_media(os_, p):
+            steps[n] = (p, "left", "too big to copy: ./os save it to write a note saying where it is")
+    return {"kind": kind, "steps": steps}
+
+
+def upgrade_lists() -> tuple:
+    """The skills this template ships, from .os/upgrade.py, which keeps the one list."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import upgrade  # type: ignore
+        return tuple(upgrade.SHIPPED_SKILLS), tuple(upgrade.SHIPPED_AGENTS)
+    except Exception:
+        return (), ()
+    finally:
+        sys.path.pop(0)
+
+
+def old_brief_as_page(text: str, has_decisions: bool) -> str:
+    """An old layout's brief.md, as this folder's page for a piece of work.
+
+    Every line of theirs stays. The old brief kept its next step and its
+    finish line as bold lines, `**Next:** ...`, and its decisions in a
+    decisions.md beside it. Brought in as it was, ./os found no next action
+    and put an empty page on a card beside it, so each piece of work had two
+    pages, and the empty one was the one it read."""
+    def said(label: str) -> str:
+        found = re.search(r"^\*\*" + label + r":?\*\*:?\s*(.+)$", text, re.M | re.I)
+        value = found.group(1).strip() if found else ""
+        return "" if not value or value.upper().startswith("TO FILL") else value
+    have = lambda heading: re.search(r"^##\s+" + heading + r"\b", text, re.M | re.I)
+    page = text.rstrip() + "\n"
+    if said("Done looks like") and not have("What good looks like"):
+        page += f"\n## What good looks like\n{said('Done looks like')}\n"
+    if not have("Next action"):
+        page += "\n## Next action\n" + (f"- [ ] {said('Next')}\n" if said("Next") else "- [ ] \n")
+    if not have("Decisions"):
+        page += "\n## Decisions\n" + ("- The ones from before are in [decisions.md](decisions.md).\n"
+                                     if has_decisions else "")
+    if not have("Log"):
+        page += f"\n## Log\n- {today()} · Brought in from the old folder.\n"
+    return page
+
+
+def bring_in(os_: Zenith, src: Path) -> dict:
+    """Bring an old folder's things in, each filed where it belongs here.
+
+    Everything is copied: the old folder isn't changed at all, so it is
+    still there to look at if something came out wrong. One ./os undo takes
+    the whole lot back out again."""
+    plan = bring_plan(os_, src)
+    notes = os_.root / os_.bucket_for_role("note")
+    stage = Creator(os_).stage()
+    year = today()[:4]
+    done: list = []
+    about = about_them_note(os_, Scanner(os_).scan())
+    about_dir = None
+    about_files: list = []
+    sorter = Sorter(os_)
+    closing: list = []
+
+    def copy(p: Path) -> Path:
+        landed = unique_path(stage / p.name)
+        if p.is_dir():
+            shutil.copytree(p, landed, symlinks=True)
+        else:
+            shutil.copy2(p, landed)
+        return landed
+
+    def place(landed: Path, dest: Path) -> Path:
+        moved = os_.move(landed, dest)
+        os_.brought_in(landed)
+        return moved
+
+    for p, how, why in plan["steps"]:
+        rel = os.path.relpath(p, src)
+        if how == "left":
+            done.append({"from": rel, "how": how, "why": why})
+            continue
+        try:
+            landed = copy(p)
+        except (OSError, shutil.Error) as exc:
+            done.append({"from": rel, "how": "left", "why": f"couldn't copy it: {exc}"})
+            continue
+        dest = None
+        if how == "about":
+            if about_dir is None:
+                # An About me here already is theirs too: the old files go
+                # beside it, to be merged.
+                about_dir = unique_path(notes / ("About me" if about is None
+                                                 else "About me from the old folder"))
+            dest = place(landed, about_dir / p.name)
+            about_files.append(p.name)
+        elif how == "old":
+            # Kept to look things up in. Not as CLAUDE.md: Claude would take an
+            # old folder's rules as rules for anything it read beside them.
+            name = "CLAUDE (old folder).md" if p.name == "CLAUDE.md" else p.name
+            dest = place(landed, os_.root / os_.bucket_for_role("archive") / year
+                         / "Old Folder" / name)
+        elif how == "skill":
+            target = os_.root / ".claude" / "skills" / p.name
+            if target.exists():
+                done.append({"from": rel, "how": "left", "why": "a skill here has that name"})
+                shutil.rmtree(landed, ignore_errors=True)
+                continue
+            dest = place(landed, target)
+        elif how == "as is":
+            dest = place(landed, os_.root / rel)
+        else:
+            if how in ("work", "closed") and landed.is_dir() \
+                    and not (landed / "README.md").exists() and (landed / "brief.md").is_file():
+                # The old layout's page for a piece of work, under this
+                # folder's name for it, and in its shape.
+                brief = landed / "brief.md"
+                write_text(landed / "README.md", old_brief_as_page(
+                    read_all(brief), (landed / "decisions.md").is_file()))
+                brief.unlink()
+            said = {"work": "work", "closed": "work", "note": "note"}.get(how, "")
+            dest, verdict = sorter.file_one(landed, "path", said)
+            if dest is not None:
+                os_.brought_in(landed)
+                if how == "closed":
+                    closing.append(dest)
+                elif how == "work" and "this one has no end" in read_text(
+                        Scanner(os_).spine_of(dest) or dest, 20_000).lower():
+                    spine = Scanner(os_).spine_of(dest)
+                    if spine is not None:
+                        os_.snapshot(spine)
+                        write_text(spine, set_fields(read_all(spine), {"status": HOLDING}))
+        if dest is None:
+            done.append({"from": rel, "how": "left", "why": "couldn't work out where it goes"})
+            continue
+        done.append({"from": rel, "how": how, "to": os_.rel(dest)})
+    if about_dir is not None and not (about_dir / "README.md").exists():
+        # Their About me's own page, made the way this folder makes one, with
+        # a line for each file it holds: it is what every chat reads first.
+        domain = "personal" if "personal" in (os_.taxonomy.get("domains") or {}) else ""
+        page = Creator(os_).render("note", about_dir.name, "", domain, [], shape=ABOUT_THEM)
+        body = (f"# {about_dir.name}\n\n"
+                + "".join(f"- [{given_name(Path(f).stem)}]({quote(f)})\n" for f in about_files)
+                + "\nBrought in from the old folder. Read them before doing anything for me.\n")
+        write_text(about_dir / "README.md", set_fields(page, {}, body=body))
+        os_.created(about_dir / "README.md")
+    for dest in closing:
+        try:
+            put = Archivist(os_).archive(os_.rel(dest))
+        except SystemExit:
+            continue
+        for entry in done:
+            if entry.get("to") == os_.rel(dest):
+                entry["to"] = os_.rel(put)
+    return {"kind": plan["kind"], "from": str(src), "steps": done}
+
+
+def _say_bring(got: dict, preview: bool) -> None:
+    words = {"about": "About me", "work": "work", "note": "a note", "closed": "put away",
+             "as is": "same place", "skill": "a skill", "old": "kept in Archive",
+             "save": "filed"}
+    Out.title("would bring in" if preview else "brought in", got["kind"])
+    for entry in got["steps"]:
+        if entry["how"] == "left":
+            Out.warn(f"{entry['from']} — left there: {entry['why']}")
+        elif preview:
+            Out.raw(f"    {pad(entry['from'], 44)} {paint(words[entry['how']], S.FAINT)}")
+        else:
+            Out.ok(f"{entry['from']}  →  {entry['to']}")
+    Out.raw()
+    if preview:
+        Out.note("nothing copied yet — to do it:  ./os setup --bring " + shell_word(got["from"]))
+    else:
+        Out.note("everything was copied: the old folder is just as it was")
+        Out.note("anything wrong?  ./os undo  takes the whole lot back out")
+    Out.raw()
+
+
+def setup_move(os_: Zenith, where: str) -> Path:
+    """Move or rename this whole folder, on disk. A plain name puts it beside
+    where it is now; a path puts it there. Nothing inside it changes: it
+    finds itself wherever it is."""
+    root = os_.root.resolve()
+    target = Path(where).expanduser()
+    if len(target.parts) == 1 and where.strip() not in ("", ".", ".."):
+        target = root.parent / where.strip()
+    target = Path(os.path.abspath(target))
+    if target.exists():
+        die(f"there is already something at {target} — pick another name")
+    if target == root or root in target.parents:
+        die("that is inside this folder — pick somewhere outside it")
+    if not target.parent.is_dir():
+        die(f"there is no folder {target.parent} to put it in")
+    try:
+        shutil.move(str(root), str(target))
+    except OSError as exc:
+        die(f"couldn't move it: {exc}")
+    return target
+
+
 def cmd_setup(os_: Zenith, argv: list[str]) -> int:
-    """Make a freshly-copied folder belong to whoever just opened it."""
+    """Make a freshly-copied folder belong to whoever just opened it.
+
+    /setup walks through the rest: --check says what the computer has and
+    what's in the way, --unlink cuts a git clone's link to the template's
+    GitHub page, --bring brings an old folder's things in, and --move-to
+    moves or renames the folder itself, last of all."""
+    as_json = _flag(argv, "--json")
+    if _flag(argv, "--check"):
+        got = setup_report(os_)
+        if as_json:
+            print(json.dumps(got, indent=2))
+            return 0
+        Out.title("setup check")
+        Out.kv("computer", got["system"], 14)
+        Out.kv("python", got["python"], 14)
+        Out.kv("git", got["git"] or "missing", 14)
+        Out.kv("claude code", got["claude"] or "missing", 14)
+        Out.kv("folder", got["folder"], 14)
+        Out.kv("called", got["name"], 14)
+        Out.raw()
+        for need in got["needs"]:
+            Out.warn(f"{need['say']} —  {need['fix']}")
+        if not got["needs"]:
+            Out.ok("nothing in the way")
+        Out.raw()
+        return 0
+    if _flag(argv, "--unlink"):
+        with Lock(os_, "setup"):
+            got = unlink_from_template(os_)
+        if as_json:
+            print(json.dumps(got, indent=2))
+            return 0
+        Out.title("setup")
+        if got["result"] == "cut":
+            Out.ok("cut the link to the template's GitHub page — this folder is yours alone")
+            Out.note("the Claude app shows it under its own name once you open it again")
+        else:
+            Out.ok("this folder isn't linked to the template's GitHub page")
+        Out.raw()
+        return 0
+    bring = _opt(argv, "--bring")
+    if bring:
+        preview = _flag(argv, "--dry-run", "--preview")
+        src = Path(bring).expanduser()
+        if not src.is_dir():
+            die(f"there is no folder at {bring}")
+        src = src.resolve()
+        root = os_.root.resolve()
+        if src == root or root in src.parents:
+            die("that is this folder, or inside it — name the old folder")
+        if src in root.parents:
+            # Their new folder was put inside the old one. Bringing the old one
+            # in would bring this one into itself.
+            die(f"this folder is inside {src}. Move it out first:  ./os setup --move-to "
+                + shell_word(str(src.parent / root.name)) + "\n     then open it there and bring the old one in")
+        if preview:
+            plan = bring_plan(os_, src)
+            got = {"kind": plan["kind"], "from": str(src),
+                   "steps": [{"from": os.path.relpath(p, src), "how": how, "why": why}
+                             for p, how, why in plan["steps"]]}
+        else:
+            with Lock(os_, "setup"):
+                got = bring_in(os_, src)
+                os_.commit(f"bring in {src.name}")
+                Indexer(os_).build()
+        if as_json:
+            print(json.dumps(got, indent=2))
+            return 0
+        _say_bring(got, preview)
+        return 0
+    move_to = _opt(argv, "--move-to")
+    if move_to:
+        with Lock(os_, "setup"):
+            pass        # no other ./os is running in here while it moves
+        target = setup_move(os_, move_to)
+        if as_json:
+            print(json.dumps({"moved": str(target)}, indent=2))
+            return 0
+        Out.title("moved")
+        Out.ok(str(target))
+        Out.note("this chat still looks in the old place — close it, and open the folder there:")
+        Out.note(f"in a terminal:  cd {shell_word(str(target))} && claude")
+        Out.note("in the Claude app: open a new chat, and pick that folder")
+        Out.raw()
+        return 0
     quiet = _flag(argv, "--quiet-welcome")
     label_opt = _opt(argv, "--name")
     owner = _opt(argv, "--owner") or " ".join(_theirs(argv)).strip()
@@ -13112,6 +13606,16 @@ DETAIL = {
                "not really a backup."),
     "name": ('os name "<your name>"', "Put your name on this folder.",
              ['os name "Sam"', 'os name --name "Studio"'], ""),
+    "setup": ("os setup --check | --unlink | --bring <old folder> | --move-to <name>",
+              "The steps /setup walks a new person through. --check says what the "
+              "computer has and what's in the way, each with its fix. --unlink cuts a "
+              "git clone's link to the template's GitHub page. --bring copies an old "
+              "folder's things in, each filed where it belongs here; the old folder "
+              "isn't changed, and --dry-run shows what would come in first. "
+              "--move-to renames the folder, or moves it, on disk.",
+              ["os setup --check", "os setup --bring ~/old-os --dry-run",
+               'os setup --move-to "Home"'],
+              "One ./os undo takes a whole --bring back out."),
     "demo": ("os demo [--keep]", "A two-minute tour on three throwaway items.",
              ["os demo"], "It undoes itself at the end unless you pass --keep."),
     "status": ("os   |   os status", "Where everything stands right now.",
@@ -13144,7 +13648,7 @@ for _alias, _real in (("back", "close"), ("restore", "close"), ("archive", "clos
                       ("pause", "hold"), ("resume", "hold"),
                       ("release", "claim"), ("retitle", "rename"), ("call", "rename"),
                       ("capture", "save"), ("doctor", "check"), ("review", "tidy"),
-                      ("setup", "name"), ("tour", "demo"),
+                      ("tour", "demo"),
                       ("decided", "decide"), ("addons", "addon")):
     DETAIL.setdefault(_alias, DETAIL[_real])
 
@@ -13281,7 +13785,8 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_rename": set(),
     "cmd_review": {"--json"},
     "cmd_save": {"--copy", "--file", "--json", "--note", "--work", "--new", "--into"},
-    "cmd_setup": {"--name", "--owner", "--quiet-welcome"},
+    "cmd_setup": {"--name", "--owner", "--quiet-welcome", "--check", "--unlink", "--bring",
+                  "--move-to", "--dry-run", "--preview", "--json"},
     "cmd_show": set(),
     "cmd_sort": {"--anyway", "--dry-run", "--forget", "--json", "-n", "--regroup", "--yes", "-y"},
     "cmd_status": {"--json"},

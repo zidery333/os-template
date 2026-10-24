@@ -83,7 +83,7 @@ GUARDED = ["AGENTS.md"]
 #: Fingerprinted the same way, but one they changed is merged, not set aside.
 SETTINGS = ".claude/settings.json"
 SHIPPED_SKILLS = ("catchup", "commands", "decide", "find", "handoff", "learn",
-                  "make-skill", "save", "tidy", "wrapup")
+                  "make-skill", "save", "setup", "tidy", "wrapup")
 SHIPPED_AGENTS = ("builder", "researcher", "reviewer", "student")
 SHIPPED_HOOKS = ("keep-the-record.sh", "mark-dirty.sh", "session-start.sh", "settle.sh",
                  # The check after each reply, and the list of words it looks

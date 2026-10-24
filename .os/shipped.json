@@ -126,7 +126,8 @@
       "8f5181c79ccb7c78873357687d495598f7fec33b",
       "c9fe50a4823f8be584622eca89e72f51f9ff02ca",
       "b8ced0088a60cfed62b610c80f834fbdcd8a9d8b",
-      "33e76abb9a8f419320a8a20f1c94617944bc0a48"
+      "33e76abb9a8f419320a8a20f1c94617944bc0a48",
+      "c84a620ad6d086f19b8bbb618912fcecda02ca75"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
@@ -153,7 +154,8 @@
       "cf5464dc83f299c25f525638bdefa15d480a1930",
       "977285085b030e8fa19b7b501656528fc6bc7384",
       "cc9184436fb789fd84d80dce8fc0adeacb68b45f",
-      "9c7bac7e56e7374658e96cf7443b2ef022b2be23"
+      "9c7bac7e56e7374658e96cf7443b2ef022b2be23",
+      "c4c2df37f4a5f556087643739022856a76f987c5"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
@@ -165,7 +167,8 @@
       "2f3057e0ad322a5699c44c611b12f8ca4ee9ac95",
       "bf37f3650e115e8553f2db9bc8433bc042809f40",
       "87b5caf4067546842404ccaa925098e72a6ff723",
-      "7b71fc6bd3e4a8431b2b44ba33615e81bed6b4fe"
+      "7b71fc6bd3e4a8431b2b44ba33615e81bed6b4fe",
+      "cbd4df57089d21dfc8b6320c0020cf23cae0013d"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
@@ -189,6 +192,9 @@
     ],
     ".claude/output-styles/plain-words.md": [
       "b668a836a6b81808f416024b0b3afeece15b50c4"
+    ],
+    ".claude/skills/setup/SKILL.md": [
+      "bd0392f6ec9ee049d267ea76bc6cee808e5c8038"
     ]
   },
   "keywords": {
@@ -254,7 +260,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-22.1",
+  "release": "2026-10-23.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

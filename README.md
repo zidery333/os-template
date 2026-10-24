@@ -10,6 +10,33 @@ it knows where you left off.
 ![Version](https://img.shields.io/github/v/release/zidery333/os-template?label=version&display_name=release&color=2ea44f)
 ![MIT licence](https://img.shields.io/badge/licence-MIT-blue)
 
+## New to this?
+
+Claude is an AI: you type to it in plain words, and it answers. Claude Code is
+the kind of Claude that can also open, write and move files on your computer,
+inside one folder you pick.
+
+Zenith is that folder. It's a place to keep anything you want to remember:
+plans, notes, files, the things you're into. You tell Claude, and it writes it
+down and puts it in the right place. Next week you ask "what did I decide about
+the boiler?" and it finds it. You never learn a filing system. Claude does the
+filing.
+
+You don't need to know how to code. You'll paste a few lines once, to install
+it, and after that you just talk.
+
+## Already have an older folder?
+
+Don't ask the old folder's Claude to fetch this one. It puts the new one inside
+the old one, still linked to this page, and the two get mixed up. Instead:
+
+1. Install Zenith fresh, with the steps under [Install](#install).
+2. In the new folder, type `/setup`. When it asks about an old folder, tell it
+   where yours is.
+
+It copies everything across, filed the new way. Your old folder isn't changed
+at all, and one `./os undo` takes the whole lot back out.
+
 ## What it looks like
 
 ```text
@@ -69,12 +96,13 @@ main chat stays clear. Ask for one by name: "get the researcher on this".
 | 🔍 | **Reviewer** | Checks your work against what it's meant to be, and tells you what's wrong, worst first, with the fix. |
 | 🎓 | **Student** | Studies a skill properly: finds people who do it for a living, reads or watches them in full, and brings back how they do it. |
 
-## Ten skills, built in
+## Eleven skills, built in
 
 Say something like this, and Claude does it the same careful way every time.
 
 | Say | What happens |
 | --- | --- |
+| "Set this up" | The first ten minutes: what it's for, a check of your computer, your old folder brought in |
 | "Catch me up" | What's moving, what's gone quiet, what's waiting |
 | "Save this" | Writes it down and files it |
 | "What did I write about…?" | Finds it and pulls it together |
@@ -178,12 +206,17 @@ Then close the terminal and open it again. Stuck? See
 
 ### 3. Download Zenith
 
-Already have a `~/os`? Then use another name, like `~/os2`, in place of
-`~/os` here and below.
+This puts it in a folder called `os` in your home folder.
+Already have a `~/os`? Then use another name, like `~/os2`, in place of `~/os`
+here and below. You can rename it later: `/setup` asks what to call it.
 
 ```bash
 cd ~ && curl -fsSLO https://github.com/zidery333/os-template/archive/refs/heads/os.zip && unzip -qo os.zip && rm os.zip && mv os-template-os ~/os
 ```
+
+Don't use `git clone` or GitHub Desktop. They keep the folder linked to this
+page, so the Claude app shows it as this page's, whatever you call it. If you
+already did, `/setup` cuts the link.
 
 ### 4. Start it
 
@@ -195,10 +228,22 @@ cd ~/os && ./os
 claude
 ```
 
-Log in, say yes to trusting the folder, and just talk. Want a feel for it
-first? `./os demo` is a two-minute tour.
+Log in and say yes to trusting the folder. Then type this in the chat:
 
-**Next time,** open your terminal and type `cd ~/os && claude`.
+```text
+/setup
+```
+
+It says what everything is for, checks your computer has what it needs, and
+brings in an old folder if you have one. About ten minutes. After that, just
+talk.
+
+**Using the Claude desktop app?** Do steps 1 and 3 in a terminal. Then in the
+app, open the **Code** tab, start a new chat, pick the `os` folder in your home
+folder, and type `/setup`.
+
+**Next time,** open your terminal and type `cd ~/os && claude`. Or, in the
+Claude app, start a new chat in the same folder.
 
 If `./os` ever says permission denied, type `bash os` instead, once. On
 Windows, File Explorer shows your folder under **Linux**, then Ubuntu, home,
@@ -243,7 +288,7 @@ to **zidery333** on Discord.
 
 ## What's been tested
 
-The program passes all 343 of its own checks. Type `./os test` to run them yourself.
+The program passes all 347 of its own checks. Type `./os test` to run them yourself.
 They show that `./os` files, finds and undoes things the way it says. They
 can't show that your AI files things well, or that any of this helps you.
 

@@ -17,6 +17,7 @@ Type these in the chat, or just ask for them in your own words.
 | `/learn` | Learn how good practitioners actually do something, and bring back a note you can work from — from the official source and from… |
 | `/make-skill` | Build a new reusable skill or helper for this folder — interview, write, check, register |
 | `/save` | Write something down into this folder and file it — a thought, a link, a quote, a file, a half-formed idea |
+| `/setup` | Set this folder up for someone opening it for the first time — say what it's for in plain words, check the computer has what it… |
 | `/tidy` | The weekly clean-up pass — stale projects, duplicates, unfiled items, things ready to put away, and anything actually broken |
 | `/wrapup` | Close out a working session — write down what happened, update the projects touched, file anything loose, keep a checkpoint… |
 

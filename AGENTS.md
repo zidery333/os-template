@@ -13,8 +13,8 @@ about where things stand. Then run `./os update --check` and pass on, once, any 
 exactly as `./os …` from the top of this folder, on its own, never after `cd` or `&&`, so it runs without
 asking. With nobody there to say yes, the note handed over at the start and `INDEX.md` are enough. **If
 the folders are empty, this person has never used it**: don't explain the system or list commands. Say
-hello, say in a line or two that whatever they tell you gets written down and filed, and ask what's on
-their mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
+hello and offer to set it up together, with the setup skill. If they'd rather not, ask what's on their
+mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
 
 ## Talk like a person
 

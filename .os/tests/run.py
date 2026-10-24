@@ -395,11 +395,14 @@ def test_shipped_extras_are_valid(t: Case) -> None:
     agents = [i for i in items if i["kind"] == "agent"]
     t.gte(len(skills), 5, "shipped skills")
     t.gte(len(agents), 3, "shipped helpers")
-    # Ten, and one of them is the menu that lists the other nine. Counted from
-    # the list that ships, not the folder: a skill someone made for themselves
-    # is not the template growing.
+    # Ten for every day, and one of them is the menu that lists the other
+    # nine. Setup is the eleventh: it's used once, on the first day, so there
+    # is nothing about it to remember (2026-10-23). Counted from the list that
+    # ships, not the folder: a skill someone made for themselves is not the
+    # template growing.
     import upgrade
-    t.lte(len(upgrade.SHIPPED_SKILLS), 10, "shipped skills stay few enough to remember")
+    t.lte(len([s for s in upgrade.SHIPPED_SKILLS if s != "setup"]), 10,
+          "shipped skills stay few enough to remember")
     if as_downloaded():
         here = {Path(s["path"]).name for s in skills}
         t.eq(sorted(set(upgrade.SHIPPED_SKILLS) - here), [], "every skill that ships is in it")
@@ -8062,7 +8065,7 @@ def test_checkpoint_is_listed_and_the_brief_says_why_there_is_no_history(t: Case
     _as_downloaded(t.box)
     _cloned(root)
     brief = told()
-    t.ok("came with the download" in brief and "rm -rf .git && ./os checkpoint" in brief,
+    t.ok("came with the download" in brief and "./os setup --unlink" in brief,
          f"a git clone: the first brief gives the way to start their own\n{brief}")
     shutil.rmtree(root / ".git")
 
@@ -8220,7 +8223,7 @@ def test_a_git_clone_they_have_saved_in_is_theirs(t: Case) -> None:
     root = t.box.root
     _cloned(root)
     t.box.run()
-    t.ok("rm -rf .git" in t.box.run("brief").stdout, "a clone as downloaded still says it")
+    t.ok("./os setup --unlink" in t.box.run("brief").stdout, "a clone as downloaded still says it")
     t.box.run("save", "Remember to service the boiler in October")
     _git_in(root, "add", "-A")
     _git_in(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
@@ -8230,6 +8233,7 @@ def test_a_git_clone_they_have_saved_in_is_theirs(t: Case) -> None:
     said = t.box.run("checkpoint", expect=1).stdout
     t.ok("didn't start" in said and "rm -rf" not in said,
          f"and a checkpoint leaves it to them, like any history of theirs\n{said}")
+    t.ok("./os setup --unlink" in said, f"with the way to make it its own\n{said}")
     t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "2", "and adds nothing")
 
 
@@ -8439,11 +8443,12 @@ def test_a_history_is_only_started_and_kept_where_it_belongs(t: Case) -> None:
     _git_in(root, "init", "-q")
     theirs = t.box.run("checkpoint", expect=1)
     t.ok("didn't start" in theirs.stdout, f"theirs is left alone\n{theirs.stdout}")
+    t.ok("--unlink" not in theirs.stdout, f"and isn't told to cut a link it hasn't got\n{theirs.stdout}")
     t.ok(_git_in(root, "rev-parse", "HEAD").returncode != 0, "nothing was saved into it")
     shutil.rmtree(root / ".git")
     _cloned(root)
     cloned = t.box.run("checkpoint", expect=1)
-    t.ok("came with the download" in cloned.stdout and "rm -rf .git" in cloned.stdout,
+    t.ok("came with the download" in cloned.stdout and "./os setup --unlink" in cloned.stdout,
          f"the template's own is left alone, with the way to start their own\n{cloned.stdout}")
     t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "1",
          "nothing was saved into that either")
@@ -12553,6 +12558,174 @@ def _run_one(name: str, keep: bool, verbose: bool) -> dict:
         else:
             box.destroy()
     return out
+
+
+def _old_layout(where: Path) -> Path:
+    """An old me/ notes/ work/ folder, the way main's /setup leaves one."""
+    old = where / "old-os"
+    files = {
+        "README.md": "# Your OS\n",
+        "CLAUDE.md": "# How to work with me\n\nKeep it short.\n",
+        "me/README.md": "# me/\n",
+        "me/who-i-am.md": "# Who I am\n\nI teach piano. (said)\n",
+        "me/my-setup.md": "# My setup\n\nA Mac. (said)\n",
+        "notes/README.md": "# notes/\n",
+        "notes/subjects.md": "# Subjects\n\n- sleep\n",
+        "notes/sleep/what-i-think.md": "# Sleep\n\nWake at the same time every day.\n",
+        "notes/sleep/sources/2026-02-04-morning-light.md": "# Morning light\n\nGo outside early.\n",
+        "work/README.md": "# work/\n",
+        "work/projects.md": "# Projects\n\n- novel\n- garden\n",
+        "work/novel/brief.md": "# Novel\n\n**What it is:** A crime novel set in Leeds.\n"
+                               "**Where the work lives:** this folder\n**State:** two chapters\n"
+                               "**Next:** Write chapter three.\n**Done looks like:** A full draft.\n",
+        "work/novel/decisions.md": "# Novel — decisions\n\n- 2026-03-01 · First person.\n",
+        "work/garden/brief.md": "# Garden\n\n**What it is:** The vegetable beds.\n**This one has no end.**\n",
+        "work/archive/bike-shed/brief.md": "# Bike shed\n\n**What it is:** A shed for two bikes.\n**State:** built\n",
+        ".claude/skills/setup/SKILL.md": "---\nname: setup\ndescription: the old one\n---\nx\n",
+        ".claude/skills/weekly-invoice/SKILL.md": "---\nname: weekly-invoice\ndescription: Send the "
+                                                 "weekly invoice.\n---\nSend it on Fridays.\n",
+        "Recipes/lemon-cake.md": "# Lemon cake\n\n200g butter, four eggs.\n",
+    }
+    for rel, text in files.items():
+        (old / rel).parent.mkdir(parents=True, exist_ok=True)
+        (old / rel).write_text(text, encoding="utf-8")
+    return old
+
+
+def _as_it_is(folder: Path) -> dict:
+    return {str(p.relative_to(folder)): p.read_bytes() for p in sorted(folder.rglob("*")) if p.is_file()}
+
+
+@test
+def test_setup_brings_an_old_folder_in_and_leaves_it_as_it_was(t: Case) -> None:
+    """A friend moved an old me/ notes/ work/ folder into a new one by hand,
+    and it took a lot of work (2026-10-23). `./os setup --bring` copies each
+    thing in, filed the way this folder files it, and one undo takes it out."""
+    old = _old_layout(t.box.tmp)
+    before = _as_it_is(old)
+    root = t.box.root
+    preview = t.box.run("setup", "--bring", str(old), "--dry-run").stdout
+    t.ok("old layout" in preview and "work/novel" in preview, f"the preview says what comes in\n{preview}")
+    t.ok(not (root / "Work" / "Novel").exists(), "a preview brings nothing in")
+    t.ok("me/README.md" not in preview and "notes/README.md" not in preview,
+         "the old layout's own pages stay out")
+
+    got = t.box.json("setup", "--bring", str(old))
+    to = {s["from"]: s.get("to", "") for s in got["steps"]}
+    t.eq(to.get("me/who-i-am.md"), "Notes/About me/who-i-am.md", "who-i-am goes into About me")
+    t.ok("Read them before doing anything" in t.box.run("brief").stdout,
+         "and every chat reads About me first")
+    novel = (root / "Work" / "Novel" / "README.md").read_text(encoding="utf-8")
+    t.ok("- [ ] Write chapter three." in novel, f"the old brief's next step is its next action\n{novel}")
+    t.ok("A crime novel set in Leeds." in novel and "type: work" in novel,
+         "every word of theirs stays, under a header")
+    t.ok((root / "Work" / "Novel" / "decisions.md").is_file(), "its decisions come with it")
+    t.ok(not (root / "Work" / "Novel.card.md").exists(), "and it has one page, not two")
+    t.ok("status: holding" in (root / "Work" / "Garden" / "README.md").read_text(encoding="utf-8"),
+         "work with no end is kept level, not on the go")
+    t.ok(to.get("work/archive/bike-shed", "").startswith("Archive/"), "put-away work is put away")
+    t.ok((root / "Notes" / "Sleep" / "sources" / "2026-02-04-morning-light.md").is_file(),
+         "a subject comes whole, its sources too")
+    t.ok((root / ".claude" / "skills" / "weekly-invoice" / "SKILL.md").is_file(), "their own skill comes in")
+    t.ok("the old one" not in (root / ".claude" / "skills" / "setup" / "SKILL.md").read_text(),
+         "the old template's skills don't")
+    t.ok(not any(p.name == "CLAUDE.md" for p in (root / "Archive").rglob("*")),
+         "an old rules file is kept under another name, so Claude doesn't take it as rules")
+    t.ok(to.get("Recipes", "").startswith("Notes/"), "a folder of their own is filed too")
+    t.ok("all good" in t.box.run("check").stdout, "and the folder checks out")
+    t.eq(_as_it_is(old), before, "the old folder is exactly as it was")
+
+    t.box.run("undo")
+    for gone in ("Work/Novel", "Work/Garden", "Notes/About me", "Notes/Sleep",
+                 ".claude/skills/weekly-invoice"):
+        t.ok(not (root / gone).exists(), f"one undo takes {gone} back out")
+    t.eq(_as_it_is(old), before, "and the old folder is still as it was")
+
+
+@test
+def test_setup_brings_in_an_older_os_folder_and_a_plain_one(t: Case) -> None:
+    """An older ./os folder comes in to the same places. Any other folder has
+    each thing in it filed the way ./os save files it."""
+    root = t.box.root
+    older = t.box.tmp / "older"
+    (older / ".os").mkdir(parents=True)
+    (older / "os").write_text("#!/bin/sh\n")
+    (older / "Work" / "Boiler").mkdir(parents=True)
+    (older / "Work" / "Boiler" / "README.md").write_text(
+        "---\ntitle: Boiler\ntype: work\nstatus: pushing\ndomain: home\ntags: []\n"
+        "created: 2026-01-01\nupdated: 2026-01-02\n---\n\n# Boiler\n\n## Next action\n- [ ] Book the engineer\n")
+    (older / "Work" / "Content").mkdir()
+    (older / "Notes").mkdir()
+    (older / "Notes" / "plums.md").write_text("# Plums\n\nPrune in late winter.\n")
+    got = t.box.json("setup", "--bring", str(older))
+    t.eq(got["kind"], "os", "it knows an older ./os folder")
+    t.ok((root / "Work" / "Boiler" / "README.md").is_file(), "work lands in the same place")
+    t.ok((root / "Notes" / "plums.md").is_file(), "and so do notes")
+    t.ok(any(s["how"] == "left" and s["from"] == "Work/Content" for s in got["steps"]),
+         "big files stay where they are")
+    t.ok("Boiler" in t.box.run().stdout, "and what was on the go is on the go here")
+
+    plain = t.box.tmp / "plain"
+    (plain / "Taxes").mkdir(parents=True)
+    (plain / "Taxes" / "2025.md").write_text("# 2025 taxes\n\nSent in March.\n")
+    (plain / ".hidden").write_text("x")
+    got = t.box.json("setup", "--bring", str(plain))
+    t.eq(got["kind"], "plain", "any other folder is a plain one")
+    t.eq([s["from"] for s in got["steps"]], ["Taxes"], "what's hidden stays out")
+    t.ok(got["steps"][0]["to"].startswith("Notes/"), "and the rest is filed")
+
+
+@test
+def test_setup_cuts_a_clones_link_to_the_template(t: Case) -> None:
+    """A git clone stayed linked to the template's GitHub page: the Claude app
+    showed it as the template's whatever it was renamed to, and ./os kept no
+    history in it (2026-10-23)."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root = t.box.root
+    _cloned(root)
+    _git_in(root, "remote", "add", "mine", "https://example.com/me/notes.git")
+    report = t.box.json("setup", "--check")
+    t.ok(report["linked"] and any(n["code"] == "linked" for n in report["needs"]),
+         f"the check sees the link\n{report}")
+    t.ok("./os setup --unlink" in t.box.run("brief").stdout, "the brief names the way out")
+    got = t.box.json("setup", "--unlink")
+    t.eq(got["result"], "cut", "it cuts the link")
+    remotes = _git_in(root, "remote").stdout.split()
+    t.eq(remotes, ["mine"], "only the template's link goes; one of theirs stays")
+    t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "2",
+         "nothing in the history is lost, and it keeps a save of its own now")
+    t.box.run("save", "Remember the boiler service in October")
+    kept = t.box.run("checkpoint", "mine now")
+    t.ok("kept" in kept.stdout, f"checkpoints go in it from now on\n{kept.stdout}")
+    t.eq(t.box.json("setup", "--unlink")["result"], "not linked", "a second time does nothing")
+
+
+@test
+def test_setup_moves_a_folder_out_of_an_old_one(t: Case) -> None:
+    """Asked to fetch the new folder, an old folder's AI put it inside itself,
+    where Claude reads the old folder's rules too (2026-10-23)."""
+    old = _old_layout(t.box.tmp)
+    inside = old / "Zenith"
+    shutil.move(str(t.box.root), str(inside))
+    t.box.root = inside
+    report = t.box.json("setup", "--check")
+    t.eq(Path(report["inside"]).resolve(), old.resolve(), "the check sees the folder around it")
+    t.ok(any(n["code"] == "inside" for n in report["needs"]), "and says it's in the way")
+    refused = t.box.run("setup", "--bring", str(old), expect=1)
+    t.ok("Move it out first" in refused.stderr + refused.stdout,
+         "bringing in the folder it's inside is refused, with the way out")
+    out = t.box.tmp / "Home Folder"
+    t.box.json("setup", "--move-to", str(out))
+    t.ok((out / "os").is_file() and not inside.exists(), "--move-to moves it")
+    t.box.root = out
+    t.eq(t.box.json("setup", "--check")["inside"], "", "and it's in nothing now")
+    t.box.json("setup", "--move-to", "Zenith")
+    t.ok((t.box.tmp / "Zenith" / "os").is_file(), "a plain name renames it where it is")
+    t.box.root = t.box.tmp / "Zenith"
+    t.ok(t.box.run("setup", "--move-to", "Zenith", expect=1).returncode == 1,
+         "and it won't move onto something that's there")
 
 
 def main(argv: list[str]) -> int:

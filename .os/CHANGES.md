@@ -3,6 +3,22 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-23.1
+
+- There's a `/setup` now. Type it in the chat in a new folder. It says in
+  plain words what the folder is for, checks your computer has what it
+  needs, and asks what to call you and the folder.
+- It brings an old folder in, an older one of these or any folder of notes.
+  Everything is copied and filed the new way. The old folder isn't changed,
+  and one `./os undo` takes it all back out.
+- A folder downloaded with `git clone` is no longer stuck linked to the
+  template's GitHub page. `/setup` cuts the link, so the Claude app shows
+  the folder under its own name.
+- `/setup` spots a new folder put inside an old one, and moves it out.
+  It renames the folder on disk too, as its last step.
+- The GitHub page starts with what this is for, for anyone new to AI, and
+  says what to do if you already have an older folder.
+
 ## 2026-10-22.1
 
 - `./os sort` no longer moves or renames anything already filed. It only
