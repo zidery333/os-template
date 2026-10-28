@@ -52,9 +52,18 @@ def install_hint() -> str:
     return f"{Path(sys.executable).name} -m pip install --user yt-dlp"
 
 
+def missing_ytdlp() -> dict:
+    """The one answer to a missing yt-dlp, for here and for `./os learn --json`.
+
+    The two used to say it with different field names (`fix` here, `install`
+    there), so a caller that learned one got nothing from the other."""
+    return {"ok": False, "why": "yt-dlp is not installed", "fix": install_hint(),
+            "note": "everything else in this folder works without it"}
+
+
 # ── urls ─────────────────────────────────────────────────────────────────────
 
-_ID = re.compile(r"(?:v=|/shorts/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})")
+_ID = re.compile(r"(?:v=|/shorts/|/live/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})")
 
 
 def video_id(url: str) -> Optional[str]:
@@ -506,11 +515,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             # failed reported success with a list of failures inside it, and
             # anything checking only the top line believed it.
             results = transcripts(root, rest)
-            return emit({"ok": any(r.get("ok") for r in results), "results": results})
+            return emit({"ok": any(r.get("ok") for r in results), "sources": results})
         if command == "have":
             return emit({"ok": True, "cached": inventory(root)})
         if command == "forget":
-            return emit({"ok": True, "removed": forget(root, rest)})
+            return emit({"ok": True, "forgotten": forget(root, rest)})
         if command == "words":
             if not rest:
                 return emit({"ok": True, "domains": domains(root),
@@ -522,9 +531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return emit(teach(root, rest[0], rest[1:]))
     except RuntimeError as exc:
         if "no-ytdlp" in str(exc):
-            return emit({"ok": False, "why": "yt-dlp is not installed",
-                         "fix": install_hint(),
-                         "note": "everything else in this folder works without it"})
+            return emit(missing_ytdlp())
         return emit({"ok": False, "why": str(exc)})
     except subprocess.TimeoutExpired:
         return emit({"ok": False, "why": "that took too long — try one video at a time"})

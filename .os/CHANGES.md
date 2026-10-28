@@ -3,6 +3,22 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-28.1
+
+- `/learn` takes a subject this folder has never heard of, like birds. It
+  used to stop there. Now it makes a place for it first.
+- `/learn` given a link looks for what you already have on that subject,
+  not on the link, so it adds to your old note instead of starting a second.
+- `./os learn` reads `youtube.com/live/…` links.
+- A subject split into rival camps, like diets, stays in Work while you
+  weigh them. Once you settle on one, it becomes a note.
+- Something learned just because you like it no longer gets a practice
+  exercise from the helper that does the long reading.
+- For anything that reads `./os learn --json` or `.os/learn.py`: both now
+  use the same field names. A missing yt-dlp says `fix` (was `install` from
+  `./os learn`), fetched videos are under `sources` (was `results` from
+  `learn.py`), and forgetting says `forgotten` (was `removed` from `learn.py`).
+
 ## 2026-10-23.1
 
 - There's a `/setup` now. Type it in the chat in a new folder. It says in

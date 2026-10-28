@@ -36,8 +36,8 @@ Every line starts with its own timestamp, so grep whole lines — a character
 window silently misses the middle of a 600-character one.
 
 ```bash
-grep -icE "(term|term|term)" *.txt          # density, ranks them
-grep -inE "(link in (the )?desc|book a call|sponsored|\.com/)" f.txt
+grep -icE "(term|term|term)" .os/transcripts/*.txt      # density, ranks them
+grep -inE "(link in (the )?desc|book a call|sponsored|\.com/)" .os/transcripts/<id>.txt
 ```
 
 Read the dense ones properly; skim the rest. On a real run this turned 21,000

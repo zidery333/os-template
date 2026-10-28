@@ -25,7 +25,8 @@
       "427c4e5c4f75470237e976cc810d53c3c6584915",
       "4eb6f30fe09332a0297623362901ae02c66f02a8",
       "6b8c2a07d19d4de607be5e3fbfea6b681ab2c00f",
-      "011080297572b66eb661029fe814c3397c2c3bcd"
+      "011080297572b66eb661029fe814c3397c2c3bcd",
+      "38d3444792b9e53939083c1589f33a894c251b3b"
     ],
     ".claude/hooks/mark-dirty.sh": [
       "827447642c152214315f2bd307aba995e22984d2"
@@ -59,7 +60,8 @@
     ".claude/skills/learn/NOTE.md": [
       "3f7c8843add51eb99eb30e7bd4f8b789bf730ba6",
       "f8dc62c9dcf410159c092a95e076ff4dcbd1df23",
-      "7cfa198e327a06273be487d4e597f0505f045635"
+      "7cfa198e327a06273be487d4e597f0505f045635",
+      "f92d9e774e7ae1b1747fd686b9688dba533c7ff3"
     ],
     ".claude/skills/learn/SKILL.md": [
       "25b156ff7dc552427d3e98c4aa6e4c07d4b8fdad",
@@ -68,12 +70,14 @@
       "b7e3ea12aece6730faa5af3e48529c7ce3321112",
       "e35b9f7e71b206aebd4da09be020aa7911de60b9",
       "1f9dc7e7135c39555d1395eb24befb34647d290f",
-      "9f8ca78c142bd3bb63233402b35b1db8570acd16"
+      "9f8ca78c142bd3bb63233402b35b1db8570acd16",
+      "4756546748360f1602f311db97449505e4f9530b"
     ],
     ".claude/skills/learn/SOURCES.md": [
       "5abab194cbf3cbeb374f33c29c64c9b269b24223",
       "72070579432a92de587b40fbe28e177ad42b1447",
-      "a121203af2616f9797ee57965967259e3aa8dec9"
+      "a121203af2616f9797ee57965967259e3aa8dec9",
+      "20502323e350476aac4790a3d0aba8e7f206a0eb"
     ],
     ".claude/skills/make-skill/SKILL.md": [
       "472a923fecf5064b84b10d56e075fd668742652f",
@@ -155,11 +159,13 @@
       "977285085b030e8fa19b7b501656528fc6bc7384",
       "cc9184436fb789fd84d80dce8fc0adeacb68b45f",
       "9c7bac7e56e7374658e96cf7443b2ef022b2be23",
-      "c4c2df37f4a5f556087643739022856a76f987c5"
+      "c4c2df37f4a5f556087643739022856a76f987c5",
+      "0c92c1f9a9001af8945c254452b63ae42808e7ae"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
-      "e565af6fb716a0c3c54bafd82cdd196306b61ca8"
+      "e565af6fb716a0c3c54bafd82cdd196306b61ca8",
+      "76c2d7e467045de0514fd1ab85afa17fbb511a13"
     ],
     ".os/upgrade.py": [
       "b02cb5841cb06fe71994843ae60e0f459e197d38",
@@ -260,7 +266,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-23.1",
+  "release": "2026-10-28.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

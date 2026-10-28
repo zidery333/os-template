@@ -11338,8 +11338,7 @@ def cmd_learn(os_: Zenith, argv: list[str]) -> int:
     def no_ytdlp() -> int:
         line = L.install_hint()
         if as_json:
-            print(json.dumps({"ok": False, "why": "yt-dlp not installed",
-                              "install": line}))
+            print(json.dumps(L.missing_ytdlp()))
             return 1
         Out.title("learn", "needs one thing first")
         Out.warn("This is the one part of Zenith that goes out to the internet,")

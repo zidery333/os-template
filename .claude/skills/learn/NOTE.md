@@ -13,7 +13,9 @@ comes out already carrying the shape below instead of a blank one.
 **The domain is the subject's, not `learning`.** Meta ads is `marketing`, squat
 form is `personal`, Postgres indexes is `engineering`. Put every learned note in
 `learning` and the domain stops telling `./os find` anything.
-`./os words` with no arguments lists the ones this folder knows.
+`./os words` with no arguments lists the ones this folder knows. A subject it
+doesn't know yet (birds, say) is made first, with a few of its words, rather
+than squeezed into the nearest one: `./os words --new birds "plumage" "wader"`.
 
 ## The shape
 
@@ -28,7 +30,8 @@ note and they belong at the top level where they can be scanned. If you are
 looking at `## What it says`, you made a plain note: `./os undo` and start again
 with `./os new learning`.
 
-Cite a `[MM:SS]` for every claim. Cite where the claim *starts*: sentences run
+Cite every claim: a `[MM:SS]` for a video, the URL and the date you read it for
+a page. Cite where a video's claim *starts*: sentences run
 across a stamp, so the line you found it on is often its second half.
 
 ## Topping up later

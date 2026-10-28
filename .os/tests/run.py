@@ -2520,6 +2520,7 @@ def test_a_link_is_read_however_it_was_pasted(t: Case) -> None:
                  "https://youtu.be/wt4p2oalmRY",
                  "https://www.youtube.com/shorts/wt4p2oalmRY",
                  "https://www.youtube.com/embed/wt4p2oalmRY?start=90",
+                 "https://www.youtube.com/live/wt4p2oalmRY?si=abc",
                  "https://m.youtube.com/watch?v=wt4p2oalmRY&t=42s",
                  "wt4p2oalmRY"):
         t.eq(learn.video_id(link), "wt4p2oalmRY", f"{link} names the video")
@@ -2571,8 +2572,8 @@ def test_learning_says_what_went_wrong_in_words(t: Case) -> None:
 
     bad = run("get", "https://example.com/not-a-video", expect=1)
     t.eq(bad["ok"], False, "a batch where nothing came back does not report success")
-    t.eq(bad["results"][0]["ok"], False, "a link that is not a video is reported per link")
-    t.ok("video" in bad["results"][0]["why"], "in words a person could act on")
+    t.eq(bad["sources"][0]["ok"], False, "a link that is not a video is reported per link")
+    t.ok("video" in bad["sources"][0]["why"], "in words a person could act on")
 
     empty = run("have")
     t.eq(empty["cached"], [], "nothing is cached in a fresh folder")
@@ -2582,7 +2583,7 @@ def test_learning_says_what_went_wrong_in_words(t: Case) -> None:
         "[00:00] flatten the back first\n", encoding="utf-8")
     t.eq(len(run("have")["cached"]), 1, "a cached transcript is listed")
     t.eq(run("have")["cached"][0]["words"], 5, "with how much is in it")
-    t.eq(run("forget", "wt4p2oalmRY")["removed"], 1, "and can be dropped again")
+    t.eq(run("forget", "wt4p2oalmRY")["forgotten"], 1, "and can be dropped again")
     t.eq(run("have")["cached"], [], "leaving nothing behind")
 
 
@@ -3358,6 +3359,44 @@ def test_a_missing_downloader_is_not_a_dead_end(t: Case) -> None:
     t.ok("yt-dlp" in payload["fix"], "which installs the thing it just named")
     t.ok("without it" in payload.get("note", ""),
          "and says the rest of the folder still works")
+
+
+@test
+def test_learn_answers_with_the_same_fields_both_ways(t: Case) -> None:
+    """`./os learn --json` and `learn.py` are the same answers, so the same names.
+
+    They drifted: `install` against `fix`, `sources` against `results`,
+    `forgotten` against `removed`. A caller that learned one read nothing from
+    the other. yt-dlp is stubbed, so nothing here goes online."""
+    def run(code: str, args: list) -> dict:
+        stub = ("import sys; sys.path.insert(0, '.os'); import learn; "
+                f"learn.ytdlp = lambda: {code}; ")
+        proc = subprocess.run(
+            [sys.executable, "-B", "-c", stub + "import engine, learn as L; "
+             "f = engine.main if sys.argv[1] == 'os' else L.main; "
+             "raise SystemExit(f(sys.argv[2:]))", *args],
+            cwd=str(t.box.root), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env=dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1"))
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            t.ok(False, f"{args} did not print JSON: {proc.stdout[:200]!r} {proc.stderr[-300:]!r}")
+            return {}
+
+    cache = learn.cache_dir(t.box.root) / "wt4p2oalmRY.txt"
+    pairs = (
+        ("yt-dlp missing", "None", ["learn", "--json", "wt4p2oalmRY"], ["list", "@someone"]),
+        ("a link that isn't a video", "'/bin/false'",
+         ["learn", "--json", "https://example.com/x"], ["get", "https://example.com/x"]),
+        ("what is cached", "None", ["learn", "--cached", "--json"], ["have"]),
+        ("forgetting one", "None", ["learn", "--forget", "--json", "wt4p2oalmRY"],
+         ["forget", "wt4p2oalmRY"]),
+    )
+    for what, stub, via_os, via_py in pairs:
+        cache.write_text("[00:00] flatten the back first\n", encoding="utf-8")
+        a, b = run(stub, ["os", *via_os]), run(stub, ["py", *via_py])
+        t.eq(sorted(a), sorted(b), f"{what}: the same fields from ./os learn and learn.py")
+        t.eq(a.get("ok"), b.get("ok"), f"{what}: and the same ok")
 
     # transcripts live in .os/, never in a bucket the sorter would adopt
     t.ok(learn.cache_dir(t.box.root).is_relative_to(t.box.root / ".os"),

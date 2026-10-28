@@ -18,19 +18,18 @@ time it's obvious; ask only when it isn't.
 **For using**: they want it to change what they do or what they make. Everything
 below applies. Be hard on the sources.
 
-**For liking**: a subject they find interesting, something learned for the
-pleasure of it, like birds or old maps. "I like this" is a complete reason. It
-doesn't have to be useful or change anything, so never ask what they'll do with
-it, and skip every step below marked *for using*. Nothing gets turned away for
-not fitting.
+**For liking**: something learned for the pleasure of it, like birds or old
+maps. "I like this" is a complete reason. It needn't be useful, so never ask
+what they'll do with it, and skip every step below marked *for using*. Nothing
+gets turned away for not fitting.
 
 ## Start where they already are
 
-`./os find "$ARGUMENTS"` first. Already covered? Extend that note and cite its
-name — never write a rival one. Read its `## Who to trust` before any source:
-whoever's advice held up when they tried it is read first, whoever's failed them
-last or not at all, and say which. Then, in one message, only what changes the
-answer. *For using*: what they'll do with it, and whether they've never tried,
+Nothing named? Ask what. Then `./os find "<the subject in plain words>"` (for a
+link, what it's about — never the link). Covered? Extend that note, cite its name,
+never write a rival. Read its `## Who to trust` before any source: whoever's
+advice held up is read first, whoever's failed them last or not at all, and say
+which. Then, in one message, only what changes the answer. *For using*: what they'll do with it, and whether they've never tried,
 are doing it badly, or are improving. If `$ARGUMENTS` says, skip the question.
 
 ## Two kinds of source, and a real note needs both
@@ -43,12 +42,12 @@ search result — lookalike domains are the business model of some subjects. Cit
 the URL and the date you read it. No official source, because it is a craft
 rather than a product, is a fine answer: say so rather than promoting a blog.
 
-**Practitioners** — people who do this for a living, showing real work. How it is
-actually done, what they judge, what goes wrong. Usually YouTube, and usually
-better than any article on the same subject. Count by *person*, not by upload,
-and stop when new sources stop adding a step, a judgement call or a mistake —
-that repetition *is* the method. Past three or four sources, hand it to
-`@student`: six transcripts is 40,000 words and belongs in its own context.
+**Practitioners** — people who do this for a living, showing real work: how it is
+done, what they judge, what goes wrong. Usually YouTube, usually better than any
+article. Count by *person*, not upload, and stop when new sources stop adding a
+step, a judgement call or a mistake — that repetition *is* the method. Past three
+or four sources, hand it to `@student`, saying whether it's for using or liking:
+six transcripts is 40,000 words and belongs in its own context.
 
 Where they conflict, the official source wins on **what is true** and the
 practitioner on **what is done**. Write the conflict down; don't smooth it over.
@@ -57,11 +56,12 @@ of transcripts into a read order.
 
 ## Judge the teacher before the lesson
 
-Who made it, what they have actually shipped, and when. A confident stranger is
-not a professional — say so when you couldn't tell. Almost everyone worth reading
-sells something; where the pitch lands is what matters, and `SOURCES.md` has the
-tells. Then stop, once, before writing: three lines on how much was advert and
-what survived, whether the sources agree, and what it'll be called. Then ask.
+Who made it, what they've shipped, and when. A confident stranger is not a
+professional — say so when you couldn't tell. Almost everyone worth reading sells
+something; where the pitch lands matters (`SOURCES.md` has the tells). Then stop,
+once: three lines on how much was advert and what survived, whether the sources
+agree, what it'll be called and under which subject — say if that subject is
+new. Then ask. Nothing is written, and no subject made, before they answer.
 
 ## Write it
 
@@ -73,17 +73,19 @@ subject hides one real disagreement; find it.
 One note, or a folder if the sources really disagree. Ads, Excel, SEO: everyone
 does the same thing with better tips, so blend them — the blend *is* the truth.
 Trading, diet, lifting: rival schools, so `./os new ongoing "<Subject>"`, one file
-per school, never blended. Mixing one school's entries with another's risk rules
-is how people get hurt.
+per school, never blended — mixing one school's entries with another's risk rules
+is how people get hurt. It stays in Work/ until they settle on one view; then
+`./os decide` it, `./os new learning` the winner, and `./os close` the subject.
 
-`./os new learning "<title>"` writes the note already in the right shape, and
-`NOTE.md` here is how to fill it.
+`./os new learning "<title>"` writes the note in the right shape (a new subject:
+`./os words --new` first, below), and `NOTE.md` here is how to fill it.
 
 Then teach the folder the words — eight to fifteen terms this subject uses that
 the folder doesn't, minus anything another domain already owns:
 
 ```bash
 ./os words <domain> "ad set" "learning phase" "roas"
+./os words --new <subject> "<term>" …     # no domain fits: make one, never squeeze
 ```
 
 That is how the next passing thought about it files itself. Say nothing about it.

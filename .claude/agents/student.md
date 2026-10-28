@@ -1,6 +1,6 @@
 ---
 name: student
-description: Goes and studies a subject properly — finds who actually does it for a living, reads or watches them in full, and comes back with the method plus an honest read on who is selling what. Use when the user wants to learn a craft, get good at something, or learn from a specific channel or creator.
+description: Goes and studies a subject properly — finds who actually does it for a living, reads or watches them in full, and comes back with the method plus an honest read on who is selling what. Called by /learn when a subject needs more than three or four sources, or a whole channel read — /learn asks first whether it is for using or for liking, and files what comes back.
 tools: Read, Write, Grep, Glob, Bash, WebSearch, WebFetch
 model: sonnet
 color: cyan
@@ -85,7 +85,8 @@ then the split.>
 <Only what's actually needed. Leave it out if nothing is.>
 
 ## Practice
-<One exercise, finishable today, with a pass condition.>
+<One exercise, finishable today, with a pass condition. Learned for liking?
+Leave this heading out.>
 
 ## Sources
 <The official one first: what it is, its URL, the date you read it. Then each

@@ -27,7 +27,8 @@ source:
 <!-- The one real conflict, and which side is better argued. Almost every
      subject has one; a note without it is usually incurious.
      Rival schools proper (trading, diet, lifting) don't belong in one note —
-     ./os new ongoing, one file per school, never blended. -->
+     ./os new ongoing, one file per school, never blended, until one
+     view is settled and becomes its own note. -->
 
 ## Judgement calls
 <!-- Where practitioners differ from beginners: the decision, and what they
