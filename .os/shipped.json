@@ -26,7 +26,8 @@
       "4eb6f30fe09332a0297623362901ae02c66f02a8",
       "6b8c2a07d19d4de607be5e3fbfea6b681ab2c00f",
       "011080297572b66eb661029fe814c3397c2c3bcd",
-      "38d3444792b9e53939083c1589f33a894c251b3b"
+      "38d3444792b9e53939083c1589f33a894c251b3b",
+      "c3854265b63a3070b394638ab28a1ae10e0255cd"
     ],
     ".claude/hooks/mark-dirty.sh": [
       "827447642c152214315f2bd307aba995e22984d2"
@@ -71,13 +72,15 @@
       "e35b9f7e71b206aebd4da09be020aa7911de60b9",
       "1f9dc7e7135c39555d1395eb24befb34647d290f",
       "9f8ca78c142bd3bb63233402b35b1db8570acd16",
-      "4756546748360f1602f311db97449505e4f9530b"
+      "4756546748360f1602f311db97449505e4f9530b",
+      "3b1fc7ec1f9af3206a0db2fc25cf01e64f32d744"
     ],
     ".claude/skills/learn/SOURCES.md": [
       "5abab194cbf3cbeb374f33c29c64c9b269b24223",
       "72070579432a92de587b40fbe28e177ad42b1447",
       "a121203af2616f9797ee57965967259e3aa8dec9",
-      "20502323e350476aac4790a3d0aba8e7f206a0eb"
+      "20502323e350476aac4790a3d0aba8e7f206a0eb",
+      "aaba240aa5281c5d2c9cc6484f5ba5a80ccd0d18"
     ],
     ".claude/skills/make-skill/SKILL.md": [
       "472a923fecf5064b84b10d56e075fd668742652f",
@@ -266,7 +269,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-28.1",
+  "release": "2026-10-28.2",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

@@ -50,9 +50,15 @@ or book — not the first search result. Lookalike domains and SEO mirrors are t
 whole business model of some subjects, and a mirror is months stale even when
 it is honest.
 
-`WebSearch` finds candidates, `WebFetch` reads them. Read the page; never
+`WebSearch` finds candidates, `WebFetch` reads them. Never type a URL you
+guessed — search for it, or follow a link to it. Read the page; never
 summarise it from a search snippet. Record the URL and the date you read it —
 a documentation page is a fact with an expiry date on it.
+
+A page that won't open (blocked, 403, 404) is not proof there is no official
+source. Write "couldn't access the official source" and the link you tried.
+Only when a search turns up nothing say "searched, found none" — never "no
+official source exists".
 
 Ranked search results, content farms, aggregators, wiki mirrors and "the best X
 of <this year>" listicles are never primary, and rarely worth a citation at all.

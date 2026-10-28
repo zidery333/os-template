@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-28.2
+
+- `/learn` searches for a subject's official page instead of guessing its
+  address. If the page won't open, the note says it couldn't get in and
+  which link it tried, rather than claiming there isn't one.
+
 ## 2026-10-28.1
 
 - `/learn` takes a subject this folder has never heard of, like birds. It

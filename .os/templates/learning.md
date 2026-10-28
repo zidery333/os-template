@@ -45,8 +45,9 @@ source:
      Learned for liking? Delete this heading. -->
 
 ## Sources
-<!-- The official one first, if there is one: what it is, its URL, the date you
-     read it. Then each practitioner: who they are, what they sell and at what
+<!-- The official one first: what it is, its URL, the date you read it. Couldn't
+     open it? "couldn't access the official source" and the link tried; none
+     found by searching? "searched, found none". Then each practitioner: who they are, what they sell and at what
      timestamp, the date, and the timestamps the method came from. Say which
      ones you rejected and why — that is as useful as the ones you kept. -->
 

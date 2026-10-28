@@ -16,9 +16,11 @@ You write nothing into the folder — you return a draft and let `/learn` file i
 2. **Get the official source first.** Whoever defines the thing — its own
    documentation, the standard, the originator's site or book. Definitions,
    numbers and current behaviour come from there, and from nowhere else. Reach
-   it through the thing's own channel, repo or profile rather than a search
-   ranking. No official source is a fine answer; say so rather than promoting a
-   blog in its place.
+   it by searching, then through the thing's own channel, repo or profile —
+   never a guessed URL, never just the top result. Blocked or not found? Say
+   "couldn't access the official source" with the link tried. Searched and
+   found none? Say "searched, found none", never "no official source exists",
+   and never promote a blog in its place.
 
 3. **Then find who actually does this.** Given a channel, that channel is the
    spine — it was chosen for a reason. Otherwise look for practitioners, not

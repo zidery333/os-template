@@ -27,20 +27,20 @@ gets turned away for not fitting.
 
 Nothing named? Ask what. Then `./os find "<the subject in plain words>"` (for a
 link, what it's about — never the link). Covered? Extend that note, cite its name,
-never write a rival. Read its `## Who to trust` before any source: whoever's
-advice held up is read first, whoever's failed them last or not at all, and say
-which. Then, in one message, only what changes the answer. *For using*: what they'll do with it, and whether they've never tried,
-are doing it badly, or are improving. If `$ARGUMENTS` says, skip the question.
+never write a rival. Read its `## Who to trust` before any source: who held up
+is read first, who failed last or not at all; say which. Then ask, in one
+message, only what changes the answer — *for using*: what they'll do with it, and
+whether they're new, doing it badly, or improving. Skip it if they've said.
 
 ## Two kinds of source, and a real note needs both
 
 **The official one** — whoever defines the thing: its own documentation, the
-standard, the originator's site or book. Definitions, numbers, current behaviour
-and anything that moves come from here and nowhere else. Reach it by following
-the link from the thing's own channel, repo, profile or book, never the first
-search result — lookalike domains are the business model of some subjects. Cite
-the URL and the date you read it. No official source, because it is a craft
-rather than a product, is a fine answer: say so rather than promoting a blog.
+standard, the originator's site or book. Definitions, numbers and anything that
+moves come from here alone. Find it with `WebSearch`, then the thing's own links:
+never type a guessed URL, never trust the first result. Cite the URL and date.
+Blocked or not found? Write "couldn't access the official source" and the link
+tried. Searched and found none? Say "searched, found none" — never "no official
+source exists" — and never promote a blog in its place.
 
 **Practitioners** — people who do this for a living, showing real work: how it is
 done, what they judge, what goes wrong. Usually YouTube, usually better than any
