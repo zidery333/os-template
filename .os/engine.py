@@ -274,7 +274,15 @@ def handle(name) -> str:
     A folder is `Q3 OKR Review`; the hint under it says `./os edit
     q3-okr-review`, and every command finds it either way."""
     text = str(getattr(name, "ident", name) or "")
+    if nameless(text):
+        return text       # "🎉🎉" said as "untitled" named some other thing
     return slugify(text) or text
+
+
+def nameless(text: str) -> bool:
+    """Has this name no letter or number in it, like "🎉🎉"? Then its file
+    name is the stand-in `untitled`, which says nothing about which one."""
+    return bool(str(text).strip()) and not re.search(r"[^\W_]", str(text), re.UNICODE)
 
 
 def nfc(text: str) -> str:
@@ -888,6 +896,10 @@ def _scalar(raw: str, key: str | None = None):
         if raw[0] == '"':
             inner = inner.replace('\\"', '"').replace("\\\\", "\\")
         return inner
+    # Checked first: `title: No` read back as False, and a tag `3.10` as 3.1
+    # (audit, 2026-10-28). A title or a tag is words, whatever they are.
+    if key in STRING_KEYS or key == "tags":
+        return raw
     low = raw.lower()
     if low in _SCALAR_TRUE:
         return True
@@ -895,8 +907,6 @@ def _scalar(raw: str, key: str | None = None):
         return False
     if low in ("null", "none", "~"):
         return None
-    if key in STRING_KEYS:
-        return raw
     if re.fullmatch(r"-?\d+", raw):
         return int(raw)
     if re.fullmatch(r"-?\d+\.\d+", raw):
@@ -1072,7 +1082,11 @@ def one_line(text: str) -> str:
 
 
 def _emit(value, key: str | None = None, in_list: bool = False) -> str:
-    if key in STRING_KEYS and isinstance(value, str) and re.fullmatch(r"-?\d+(\.\d+)?", value):
+    # Quoted when it would read back as something else: a number, or yes/no/
+    # null, which any other tool reading the header takes for true, false or none.
+    if (key in STRING_KEYS or key == "tags") and isinstance(value, str) \
+            and (re.fullmatch(r"-?\d+(\.\d+)?", value)
+                 or value.lower() in _SCALAR_TRUE | _SCALAR_FALSE | {"null", "none", "~"}):
         return '"' + value + '"'
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -1194,6 +1208,14 @@ def stamp_file(path: Path, meta_updates: dict, force: tuple = ()) -> dict:
     # run, and `updated:` is what "gone quiet" is measured from — so a date it
     # did not earn is a lie the whole folder then reads.
     if meta == was and "updated" in was:
+        return meta
+    # Only the filing fields ./os fills in itself, on a note with a date of
+    # its own: nothing they wrote changed, so it hasn't been touched. Sort
+    # re-dated a note from 2024 to today by adding its subject, and it never
+    # showed as gone quiet again (audit, 2026-10-28).
+    filed = {k for k in meta if k not in was or was[k] != meta[k]}
+    if "updated" in was and not force and filed <= {"title", "type", "domain", "tags"}:
+        write_text(path, set_fields(text, {k: meta[k] for k in filed}))
         return meta
     meta["updated"] = today()
     write_text(path, set_fields(text, {k: v for k, v in meta.items()
@@ -1573,7 +1595,10 @@ class Zenith:
         self._state_text = text
 
     def save_config(self) -> None:
-        write_text(self.dot / "config.json", json.dumps(self.config, indent=2) + "\n")
+        # Letters as they are: "—" came back as "\u2014" each time the name
+        # was set (follow-up to the audit, 2026-10-28).
+        write_text(self.dot / "config.json",
+                   json.dumps(self.config, indent=2, ensure_ascii=False) + "\n")
 
     def set_name(self, name: str) -> None:
         """Call the folder something else, wherever it says what it is called.
@@ -1821,7 +1846,9 @@ class Zenith:
                  "chat": this_chat()}
         undo = self.state.setdefault("undo", [])
         undo.append(entry)
-        keep = int(self.behaviour.get("keep_undo_steps", 20))
+        # At least the one just made: 0 kept every step (`undo[-0:]` is all of
+        # it), and a negative number threw away the newest (audit, 2026-10-28).
+        keep = max(1, int(self.behaviour.get("keep_undo_steps", 20)))
         self.state["undo"] = undo[-keep:]
         history = self.state.setdefault("history", [])
         history.append({"at": entry["at"], "label": label, "steps": len(self._pending)})
@@ -2380,8 +2407,10 @@ def loose_at_top(root: Path, buckets=None) -> list:
 
 def name_key(name: str, folder: bool) -> str:
     """The name a thing answers to, as names are compared: `Pizza/` and
-    `pizza.md` both answer to `./os show pizza`."""
-    return slugify(nfc(name if folder else Path(name).stem))
+    `pizza.md` both answer to `./os show pizza`. A name with no letters,
+    like `🎉🎉`, answers only to itself, not to the `untitled` stand-in."""
+    said = nfc(name if folder else Path(name).stem)
+    return said.lower() if nameless(said) else slugify(said)
 
 
 def names_in_group(base: Path, skip: Path | None = None) -> set[str]:
@@ -2513,6 +2542,20 @@ def catch_all(taxonomy: dict) -> str:
     `unsorted`."""
     domains = taxonomy.get("domains")
     return CATCH_ALL if isinstance(domains, dict) and CATCH_ALL in domains else "unsorted"
+
+
+#: A line that opens with a heading naming what it is: "Book notes:", "Notes
+#: on the trip:", "Thoughts about the garden:", "Film review:".
+NOTE_HEADING = re.compile(
+    r"^\s*([^:\n]{0,40}?\b(?:notes?|thoughts|review|summary|recap|impressions|takeaways"
+    r"|reflections?|observations?)\b[^:\n]{0,40}):", re.I)
+#: A heading that starts with one of these is a job, notes or not.
+JOB_FIRST = re.compile(r"^\s*(?:write|draft|prepare|finish|send|update|fix|make|publish|post|share"
+                       r"|email|print|type|file|read|review|redo|rewrite)\b", re.I)
+#: A short line that starts with one of these is a job: "buy milk", "book
+#: the dentist", "pay the gas bill". Not "call": "call me Sam" is about them.
+ERRAND = re.compile(r"^\s*(?:buy|book|pay|order|renew|cancel|return|post|email|ring|phone|text"
+                    r"|pick\s+up|drop\s+off|send|schedule|collect|fix|replace|clean|wash)\s+\S", re.I)
 
 
 class Classifier:
@@ -3019,6 +3062,27 @@ class Classifier:
             verdict["kind"] = "note"
             verdict["status"] = ""
             verdict["why"].append(lean_why)
+        # "Book notes: chapter three was slow" was work: "book" starts a line
+        # as a job ("book the dentist"). A line headed "<something> notes:",
+        # "Thoughts on …:" or "… review:" says what it is, a note about
+        # something, unless the heading itself is a job: "Write the release
+        # notes: due Friday" (follow-up to the audit, 2026-10-28).
+        said_text = body.strip() or str(title_src)
+        head = NOTE_HEADING.match(said_text)
+        if guessed and not declared and verdict["kind"] == "project" and head \
+                and not JOB_FIRST.match(head.group(1)) \
+                and self.score_intent("", said_text[head.end():])[0] != "pushing":
+            verdict["kind"], verdict["status"] = "note", ""
+            verdict["why"].append("headed as notes about something, not a job")
+        # "buy milk" was kept as a note, marked "wasn't sure": a few words that
+        # start with a job to do are something to do (audit, 2026-10-28).
+        # Only short ones: a paragraph that opens "Book" is about a book.
+        line = body.strip() or str(title_src).strip()
+        if guessed and not declared and verdict["kind"] == "note" and "\n" not in line \
+                and len(line.split()) <= 8 and ERRAND.match(line):
+            verdict["kind"], verdict["status"] = "project", PUSHING
+            verdict["flags"] = [f for f in verdict["flags"] if f != "needs-review"]
+            verdict["why"].append("a few words that start with a job to do")
         # What they said it is: --note or --work.
         if said == "note" and verdict["kind"] == "project":
             verdict["kind"], verdict["status"] = "note", ""
@@ -4026,7 +4090,9 @@ class Sorter:
                 dest = base / it.path.name
                 n = 2
                 while dest.exists() or ignored(dest):
-                    dest = base / f"{it.path.stem}-{n}{it.path.suffix if it.path.is_file() else ''}"
+                    # A folder's whole name: `v2.0 Launch` has no file type to keep apart
+                    dest = base / (f"{it.path.stem}-{n}{it.path.suffix}" if it.path.is_file()
+                                   else f"{it.path.name}-{n}")
                     n += 1
                 if self.dry:
                     self.moves.append(("id", self.os.rel(it.path), self.os.rel(dest)))
@@ -4040,9 +4106,14 @@ class Sorter:
                 it.spine = self.scanner.spine_of(new)
                 fixed += 1
             if not self.dry and it.spine and it.spine.exists():
+                # "unsorted" is the scanner's word for none, which check then
+                # reported as "no subject set" on a note sort had just filed
+                # (audit, 2026-10-28): the folder's catch-all subject instead.
                 stamp_file(it.spine, {"title": it.title,
                                       "type": TYPE_ON_DISK.get(it.kind, it.kind),
-                                      "domain": it.domain, "tags": it.tags})
+                                      "domain": it.domain if it.domain != "unsorted"
+                                      else catch_all(self.os.taxonomy),
+                                      "tags": it.tags})
             it.ident = it.path.stem if it.path.is_file() else it.path.name
         return fixed
 
@@ -4315,7 +4386,7 @@ class Sorter:
 # the indexer — registry, human maps, dashboard
 # ---------------------------------------------------------------------------
 
-GENERATED = "<!-- written by Zenith. Don't edit by hand — it gets overwritten. -->"
+GENERATED = "<!-- written by ./os. Don't edit by hand — it gets overwritten. -->"
 
 
 def md_cell(text: str, link_text: bool = False) -> str:
@@ -4333,7 +4404,9 @@ def md_cell(text: str, link_text: bool = False) -> str:
 #: newline ended the table row halfway through the link, so that row and the one
 #: after it both stopped being rows. Percent-encoding is the escape markdown
 #: understands, and it leaves anything not listed — accents, kanji — readable.
-_LINK_ESCAPES = {" ": "%20", "\t": "%09", "\n": "%0A", "\r": "%0D",
+#: `%` and `#` too: "Issue #12 fix" linked to a place on a page called
+#: "Issue%20", and "50%" made "%%20", which isn't an escape (audit, 2026-10-28).
+_LINK_ESCAPES = {"%": "%25", "#": "%23", " ": "%20", "\t": "%09", "\n": "%0A", "\r": "%0D",
                  "(": "%28", ")": "%29", "|": "%7C", "<": "%3C", ">": "%3E",
                  '"': "%22", "'": "%27", "`": "%60"}
 
@@ -4352,6 +4425,8 @@ HOOK_BLURBS = {
     "mark-dirty.sh": "Notices when a file changed.",
     "settle.sh": "Re-reads the folder when you stop typing, so search stays current.",
     "plain-words.sh": "After each reply, catches stuffy words and has them said again plainly.",
+    "keep-sources.sh": "Asks you first before anything in a sources/ folder or a decisions.md is rewritten.",
+    "scratch-only.sh": "While helpers test in scratch copies, keeps them out of this folder.",
 }
 
 
@@ -4452,7 +4527,9 @@ class Indexer:
     def write_catalog(self, items: list[Item]) -> None:
         skills = [i for i in items if i.kind == "skill"]
         agents = [i for i in items if i.kind == "agent"]
-        hooks = [i for i in items if i.kind == "hook"]
+        # A hook's own test is not a hook: keep-sources-test.sh was listed as
+        # one that "runs on its own" (audit, 2026-10-28).
+        hooks = [i for i in items if i.kind == "hook" and not i.path.stem.endswith("-test")]
         # It opened "Extras for Claude Code", which told any other AI reading
         # it that the skills weren't for it. AGENTS.md says they are.
         lines = [
@@ -6106,6 +6183,12 @@ class Finder:
         """Every thing answering to this name, by the first way that fits any:
         its name on disk, that name as a handle, then its title."""
         exact, slug = ident.lower(), self._slug(ident)
+        if nameless(ident):
+            # Its slug is the stand-in "untitled", which fits Work/Untitled
+            # too: `./os close 🎉🎉` put that away instead (audit, 2026-10-28).
+            hits = [it for it in items if exact in (self._where(it)[0], nfc(it.title).lower())
+                    and (where is None or where(it))]
+            return hits
         for same in (lambda it: self._where(it)[0] == exact,
                      lambda it: self._slug(it.ident) == slug,
                      lambda it: self._slug(it.title) in (exact, slug)):
@@ -6295,8 +6378,13 @@ class Archivist:
             # held goes back to a live phase; everything else keeps its own word.
             was = str(meta.get("was") or "").strip()
             status = was or ("—" if str(meta.get("type", "")) != "work" else PUSHING)
+            # Its Log ended "Closed as done" while it was live again (audit,
+            # 2026-10-28): coming back is said there too, where there is one.
+            _m, body = parse_frontmatter(text)
+            if re.search(r"^##\s+Log\s*$", body, re.M):
+                body = with_log_line(body, f"- {today()} · Brought back out of the archive")
             write_text(item.spine, set_fields(text, {"status": status, "updated": today()},
-                                              drop=("was", "archived", "origin")))
+                                              drop=("was", "archived", "origin"), body=body))
         moved = self.os.move_item(item.path, dest)
         self.os.commit(f"restore {ident}")
         return moved
@@ -6443,8 +6531,12 @@ class Archivist:
         text = read_to_rewrite(item.spine)
         self.os.snapshot(item.spine)
         meta, body = parse_frontmatter(text)
+        # A folder already called that came back first, and this one landed
+        # beside it as Raw-2 while the Log named Raw (audit, 2026-10-28).
+        landed = moved.relative_to(item.path).as_posix()
         said = with_log_line(body, f"- {today()} · Brought {rel.as_posix()} back out of "
-                                   f"{self.os.rel(found)}")
+                                   f"{self.os.rel(found)}"
+                                   + (f", as {landed}: {rel.as_posix()} was taken" if landed != rel.as_posix() else ""))
         write_text(item.spine, set_fields(text, {"updated": today()}, body=said))
         self.os.commit(f"bring back part of {ident}")
         return moved
@@ -8057,19 +8149,19 @@ WORDMARK = wordmark()
 HELP = """
   {name} — {tagline}
 
-  {c1}THE FIVE YOU'LL ACTUALLY USE{c0}
+  {c1}THE ONES YOU'LL ACTUALLY USE{c0}
     ./os                           what's going on right now
     ./os save "<anything>"         write it down — I file it for you
     ./os find <words>              search everything you've ever saved
     ./os show <name>               one thing: state, next action, log
     ./os open <name>               show me where something is on disk
-    ./os undo                      take back the last thing Zenith did
+    ./os undo                      take back the last thing ./os did
     ./os decide <name> "<text>"    write a settled thing into its ## Decisions
 
   {c1}STARTING, AND STOPPING{c0}
     ./os new work "<name>"         start something you're pushing on
     ./os new ongoing "<name>"      start something you'll just keep up
-    ./os new note "<name>"         write a note yourself
+    ./os new note "<name>"         write a note yourself · learning: a how-to
     ./os new skill "<name>"        a job your AI should do the same way
     ./os hold <name>               no next action, just keep it level
     ./os push <name>               back on the go
@@ -8078,7 +8170,7 @@ HELP = """
 
   {c1}HOUSEKEEPING (rarely needed){c0}
     ./os sort                      file what you dropped in · --regroup groups by subject
-    ./os check                   is anything broken?   --fix repairs it
+    ./os check                     is anything broken?   --fix repairs it
     ./os tidy                      what's gone stale, doubled up or unfiled
     ./os backup · ./os checkpoint  a zip of it all · a save point for hand edits
     ./os update · ./os addon       the newest version · extra skills to add
@@ -8087,9 +8179,9 @@ HELP = """
     ./os demo · ./os name "<you>"  a two-minute tour · your name on this folder
 
   {c1}IF YOU NEED IT{c0}
-    ./os last                      what happened the last time anyone was here
+    ./os last · ./os learn         the last session here · a video's words
     ./os help <command>            more about any one (most take --json)
-    ./os test                      prove it still works, on a throwaway copy
+    ./os test · ./os snag          prove it still works · a fault in this folder
     ./os index · ./os brief        rebuild the list · what your AI gets told
 
   Nothing is ever deleted, and every move ./os makes can be undone (./os undo).
@@ -9022,9 +9114,13 @@ def add_next_step(os_: Zenith, item: Item, said: str, text: str, landed: Path,
         landed.unlink()
     remember_save(os_, text, item.path)
     if as_json:
+        # Only the name, with nothing after it, adds nothing: said as added,
+        # an AI told them it was written down (audit, 2026-10-28).
         print(json.dumps({"saved": os_.rel(item.path), "id": item.ident, "kind": "project",
-                          "title": item.title, "filed": True, "added_to": item.ident,
-                          "under": "keeps coming back" if held else "next action"}, indent=2))
+                          "title": item.title, "filed": bool(step),
+                          "added_to": item.ident if step else None, "already": not step,
+                          "under": ("keeps coming back" if held else "next action") if step else None},
+                         indent=2))
         return 0
     Out.title("saved")
     if not step:
@@ -9056,6 +9152,25 @@ ABOUT_THEM_SAID = re.compile(
     r"^\s*(?:(?:please[,\s]+)?(?:call\s+me(?!\s+(?:back|later|when|if|at|on|about|after|before"
     r"|tomorrow|tonight|today|asap)\b)|from\s+now\s+on|i\s+prefer"
     r"|keep\s+(?:your\s+|the\s+)?answers)\b|about\s+me\s*[:\-–—]\s*\S)", re.I)
+#: After "From now on" or "I prefer", a word that says it is about them or
+#: how they want answers. "I prefer the second quote from the plumber" and
+#: "From now on the kitchen budget is 5000" went into About me marked
+#: (said), as if they were about the person (audit, 2026-10-28).
+ABOUT_THEM_HOW = re.compile(
+    r"\b(?:me|my|i|i'm|you|your|answers?|repl(?:y|ies)|respon(?:d|ses?)|bullets?|tables?"
+    r"|short(?:er)?|long(?:er)?|brief|concise|detail(?:ed)?|plain|words|sentences|tone|explain"
+    r"|english|french|german|spanish|italian|portuguese|dutch|chinese|japanese|korean)\b", re.I)
+ABOUT_THEM_LOOSE = re.compile(r"^\s*(?:please[,\s]+)?(?:from\s+now\s+on|i\s+prefer)\b[,\s]*", re.I)
+
+
+def about_them(text: str) -> bool:
+    """Is this saved line about them: what to call them, how they want answers?"""
+    if not ABOUT_THEM_SAID.match(text):
+        return False
+    loose = ABOUT_THEM_LOOSE.match(text)
+    return not loose or bool(ABOUT_THEM_HOW.search(text[loose.end():]))
+
+
 #: The "About me:" in front of a line, which the note's own name already says.
 ABOUT_THEM_LEAD = re.compile(r"^\s*about\s+me\s*[:\-–—]\s*", re.I)
 
@@ -9150,6 +9265,11 @@ def cmd_decide(os_: Zenith, argv: list[str]) -> int:
     if not re.search(r"[^\W_]", line, re.UNICODE):
         die(f'what was decided?   ./os decide {handle(item)} "a new one, not another repair"')
     warn_if_claimed(os_, item)
+    if item.kind == "archive":
+        # Allowed — a lesson from a finished thing is still a decision — but
+        # said, as hold and push say it, since it lands out of sight (audit, 2026-10-28).
+        Out.warn(f"{item.ident} is archived — this goes in its Decisions there. "
+                 f"Still live?  ./os back {handle(item)}")
     return write_decision(os_, item, DECISION_LEAD.sub("", line).strip() or line)
 
 
@@ -9324,7 +9444,13 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
     if not src and len(argv) == 1 and argv[0].strip():
         lone = argv[0].strip()
         candidate = Path(lone).expanduser()
-        if candidate.name and candidate.exists():
+        try:
+            there = bool(candidate.name) and candidate.exists()
+        except (OSError, ValueError):
+            # Python 3.9 asks the disk about a 300-letter sentence as if it
+            # were a file name, and the disk says "too long" (audit, 2026-10-28).
+            there = False
+        if there:
             src, argv = str(candidate), []
         elif _looks_like_a_path(lone):
             die(f"there is no file at  {lone}\n"
@@ -9417,6 +9543,10 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
                 text = sys.stdin.read()
             except (OSError, KeyboardInterrupt):
                 text = ""
+        if text.strip() in (".", "..", "./", "../"):
+            # "no words in that" was wrong: it names a folder (audit, 2026-10-28).
+            die("that's a folder, not something to save — name a file in it, or put words in quotes:   "
+                './os save "the thing on your mind"')
         if not re.search(r"[^\W_]", text, re.UNICODE):
             # Emoji and punctuation are `\W`, so "🎉🎉🎉" and "..." land here
             # too — and being told "tell me what to save" when you plainly did
@@ -9442,7 +9572,7 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
         # "Call me Sam" is a line in their About me note, not a thing of its
         # own: see add_about_them. One line only; several that open "From now
         # on" are a page of notes, and are filed as one.
-        if ABOUT_THEM_SAID.match(text) and "\n" not in text.strip() \
+        if about_them(text) and "\n" not in text.strip() \
                 and said != "work" and not (apart or into):
             return add_about_them(os_, text, as_json)
         already = said_before(os_, text)
@@ -9560,7 +9690,10 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
         other = "--work" if verdict["kind"] == "note" else "--note"
         line = re.sub(r"\s+", " ", typed.strip())
         again = (f"./os save {other} {shell_word(src)}" if src else
-                 f"./os save {other} {shell_word(line)}" if typed and len(line) <= 60
+                 # words that start with a dash need the `--` they came with,
+                 # or the hint is refused as an option (audit, 2026-10-28)
+                 f"./os save {other} {'-- ' if line.startswith('-') else ''}{shell_word(line)}"
+                 if typed and len(line) <= 60
                  and "\n" not in typed.strip() else f"save it again with {other}")
         Out.note(f"{'work' if other == '--work' else 'a note'}, not "
                  f"{KIND_WORDS[verdict['kind']]}?  ./os undo, then {again}")
@@ -9575,7 +9708,7 @@ def cmd_new(os_: Zenith, argv: list[str]) -> int:
     anyway = _flag(argv, "--anyway", "--force")   # before the title is read off argv
     if not argv:
         die('what kind?   ./os new work "Fix the boiler"\n'
-            "     kinds: work, ongoing, note, skill, helper")
+            "     kinds: work, ongoing, note, learning, skill, helper")
     kind = argv[0]
     title = " ".join(argv[1:]).strip().strip('"')
     if not title:
@@ -10048,6 +10181,50 @@ def link_file(dest: str) -> str | None:
     return path if angle else unquote(path)
 
 
+#: A heading, any level. Under `## Log` or `## Decisions` is the record.
+RECORD_HEAD = re.compile(r"^(#{1,6})\s+(.*?)[\s#]*$")
+RECORD_SECTIONS = ("log", "decisions")
+
+
+def record_lines(text: str) -> list[bool]:
+    """For each line of `text`, is it under a `## Log` or `## Decisions`
+    heading? Those lines are history: a path in one says where something was
+    on the day it was written, and stays true only if nothing rewrites it."""
+    out, inside, level, fence = [], False, 0, ""
+    for line in text.splitlines():
+        bare = line.strip()
+        mark = MD_FENCE.match(line)
+        if mark and (not fence or mark.group(1) == fence):
+            fence = "" if fence else mark.group(1)
+        head = None if fence or mark else RECORD_HEAD.match(bare)
+        if head and (not inside or len(head.group(1)) <= level):
+            inside = head.group(2).strip().lower() in RECORD_SECTIONS
+            level = len(head.group(1))
+            out.append(False)
+            continue
+        out.append(inside)
+    return out
+
+
+def outside_the_record(text: str, change) -> str:
+    """`change` applied to all of `text` but its `## Log` and `## Decisions`
+    lines, which are left exactly as they are (AGENTS.md, rule 4)."""
+    lines = text.splitlines(keepends=True)
+    marks = record_lines(text)
+    if not any(marks):
+        return change(text)
+    out, run, kept = [], [], False
+    for line, mine in zip(lines, marks + [False] * (len(lines) - len(marks))):
+        if run and mine != kept:
+            out.append("".join(run) if kept else change("".join(run)))
+            run = []
+        run.append(line)
+        kept = mine
+    if run:
+        out.append("".join(run) if kept else change("".join(run)))
+    return "".join(out)
+
+
 class Relinker:
     """Keep links between notes working when ./os moves things.
 
@@ -10137,7 +10314,7 @@ class Relinker:
             # written with plain spaces: kept that way, so it reads as theirs
             new = new.replace("(", "%28").replace(")", "%29")
         else:
-            new = md_link(new.replace("%", "%25")).replace("#", "%23")
+            new = md_link(new)
         return new + hashmark + anchor if hashmark else new
 
     def rewrite(self, text: str, was_in: str, now_in: str) -> str:
@@ -10269,7 +10446,13 @@ class Relinker:
                 if not any(n in data for n in needles) or b"\x00" in data[:8000]:
                     continue
                 rel = self.os.rel(path)
-                for n, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+                text = data.decode("utf-8", "replace")
+                history = record_lines(text) if name.lower().endswith(".md") else []
+                for n, line in enumerate(text.splitlines(), 1):
+                    if n <= len(history) and history[n - 1]:
+                        continue      # the record says where it was then, and stays
+                    if name.lower().endswith(".md") and line.startswith("origin:"):
+                        continue      # close wrote it: where it came from, on purpose
                     m = found.search(line)
                     if m:
                         out.append({"file": rel, "line": n, "text": line.strip(),
@@ -10318,8 +10501,12 @@ class Relinker:
             # page: a skill and a bot's notes went on naming where a note had
             # been after sort moved it (reported, 2026-10). Inside code fences
             # too: in a skill, that is the command it runs.
+            # Not under ## Log or ## Decisions: "it is in Archive/…" was true
+            # the day it was written, and rewritten it says what nobody saw.
+            # A link there is still kept working above; its words aren't changed.
             if paths is not None and self._writes_paths(now):
-                linked = paths.sub(lambda m: self.forward(m.group(0)), linked)
+                linked = outside_the_record(
+                    linked, lambda part: paths.sub(lambda m: self.forward(m.group(0)), part))
             if linked == text:
                 continue
             if not self.os.keep_before(path, was):
@@ -10374,6 +10561,12 @@ def cmd_rename(os_: Zenith, argv: list[str]) -> int:
     is_dir = not item.path.is_file()
     wanted = folder_name(title, slug) if is_dir else f"{slug}{item.path.suffix}"
     target = item.path.with_name(wanted)
+    if target == item.path and title == item.title:
+        # It said "renamed" and kept a step to undo for nothing (audit, 2026-10-28).
+        Out.title("rename")
+        Out.ok(f"it's already called {title} — nothing changed")
+        Out.raw()
+        return 0
     # A Mac's disk doesn't tell capitals apart, so `Q3 Okr Review` to
     # `Q3 OKR Review` found the item itself in the way and was refused.
     try:
@@ -10457,9 +10650,28 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
     kind = _opt(argv, "--kind")
     bucket = _opt(argv, "--in")
     limit = _count(argv, "--limit", 20)
+    # A bare `--` says what follows is words, not options, and is not itself
+    # one: `./os find -- "("` searched for "-- (" (audit, 2026-10-28).
+    if "--" in argv:
+        argv.remove("--")
     query = " ".join(argv).strip()
     if not query:
         die("what are you looking for?   ./os find boiler")
+    # In the folder's own words: `--kind work` found nothing at all, since
+    # inside it is "project", and `--kind bogus` said only "nothing matched"
+    # (audit, 2026-10-28).
+    if kind:
+        said = kind
+        kind = kind.lower()
+        kind = next((k for k, w in KIND_LABEL.items() if w == kind), TYPE_FROM_DISK.get(kind, kind))
+        if kind not in KIND_LABEL:
+            die(f"there is no kind called {said} — one of: "
+                + ", ".join(sorted(set(KIND_LABEL.values()))))
+    if bucket:
+        named = {b.lower(): b for b in os_.buckets()}
+        if bucket.lower() not in named:
+            die(f"there is no {bucket}/ here — one of: {', '.join(os_.buckets())}")
+        bucket = named[bucket.lower()]
     finder = Finder(os_)
     hits = finder.search(query, limit=limit, kind=kind, bucket=bucket, notes_only=notes_only)
 
@@ -10472,13 +10684,14 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
         print(json.dumps([{"score": s, "id": i.ident, "title": i.title, "kind": i.kind,
                            "path": os_.rel(i.path), "snippet": sn, **inside(i)}
                           for s, i, sn in hits], indent=2))
+        # 0 even with no hits: what reads this reads the list, and [] says it.
         return 0
     Out.title("found", f'"{query}"')
     # Offered as a command to type, never searched for on its own: `bike` is
     # a real word, and bake is not what they asked for.
     words = [finder.near.get(w, w) for w in re.split(r"\s+", unaccented(nfc(query).lower().strip())) if w]
     more = (["--notes"] if notes_only else []) \
-        + (["--kind", kind] if kind else []) + (["--in", bucket] if bucket else [])
+        + (["--kind", KIND_LABEL.get(kind, kind)] if kind else []) + (["--in", bucket] if bucket else [])
     offer = paint("./os find " + " ".join(shell_word(w) for w in words + more), S.GOLD)
     if not hits:
         Out.warn("nothing matched — try fewer words, or a different one")
@@ -10674,24 +10887,27 @@ def cmd_last(os_: Zenith, argv: list[str]) -> int:
         _, body = parse_frontmatter(read_ends(item.spine))
         out = []
         for line in _clean(_sections(body).get("log", ""), 0):
-            m = re.match(r"(\d{4}-\d{2}-\d{2})\s*[—:-]?\s*(.*)", line)
+            # `·` too: the Log's own mark, which came back as "· Fired." (audit, 2026-10-28)
+            m = re.match(r"(\d{4}-\d{2}-\d{2})\s*[—:·-]?\s*(.*)", line)
             if m:
                 out.append((m.group(1), m.group(2).strip() or line))
         return out
 
-    entries = []       # (day, title, handle, text)
+    entries = []       # (day, title, handle, text, id)
     for item in items:
         if item.bucket.startswith("_"):
             continue
         for day, text in logged(item):
-            entries.append((day, item.title, handle(item), text))
+            entries.append((day, item.title, handle(item), text, item.ident))
     days = sorted({d for d, *_ in entries} | {h["at"][:10] for h in history if h.get("at")},
                   reverse=True)
     if _flag(argv, "--json"):
         day = days[0] if days else ""
         print(json.dumps({"day": day,
-                          "touched": [{"title": t, "name": n, "log": x}
-                                      for d, t, n, x in entries if d == day],
+                          # "id", as find and status say it; "name" kept for
+                          # whatever already reads it (audit, 2026-10-28)
+                          "touched": [{"title": t, "id": i, "name": n, "log": x}
+                                      for d, t, n, x, i in entries if d == day],
                           "filed": [h for h in history if h.get("at", "")[:10] == day]},
                          indent=2))
         return 0
@@ -10704,7 +10920,7 @@ def cmd_last(os_: Zenith, argv: list[str]) -> int:
     age = days_since(day)
     when = "today" if age <= 0 else ("yesterday" if age == 1 else f"{age} days ago")
     Out.title("last time", f"{day} · {when}")
-    touched = [(t, n, x) for d, t, n, x in entries if d == day]
+    touched = [(t, n, x) for d, t, n, x, _i in entries if d == day]
     if touched:
         Out.raw()
         for title, name, text in touched[:12]:
@@ -11445,10 +11661,23 @@ def cmd_snag(os_: Zenith, argv: list[str]) -> int:
     store = os_.dot / "snags.json"
     try:
         snags = json.loads(store.read_text(encoding="utf-8"))
-        if not isinstance(snags, list):
-            snags = []
-    except (OSError, ValueError):
+    except FileNotFoundError:
         snags = []
+    except (OSError, ValueError):
+        snags = None
+    if not isinstance(snags, list):
+        # A snag must never stop the work it was noted in, so it starts over;
+        # but read as none, the next one wrote over all of them (audit,
+        # 2026-10-28). The broken file is kept beside it, and said.
+        aside = unique_path(store.with_name(f"snags-unreadable-{today()}.json"))
+        try:
+            store.rename(aside)
+            Out.warn(f"{os_.rel(store)} couldn't be read — kept as {os_.rel(aside)}, and started again")
+        except OSError:
+            pass
+        snags = []
+    # One with no words, written by hand, stopped every snag command with a traceback.
+    snags = [s for s in snags if isinstance(s, dict) and str(s.get("text") or "").strip()]
 
     def key(t: str) -> str:
         return re.sub(r"[^a-z0-9 ]+", "", re.sub(r"\s+", " ", t.lower())).strip()
@@ -11542,7 +11771,21 @@ def cmd_snag(os_: Zenith, argv: list[str]) -> int:
                 lines += [f"- {other['text']}" for other in group["with"]]
                 lines.append("")
         out = os_.root / "template-feedback.md"
-        write_text(out, "\n".join(lines).rstrip() + "\n")
+        # After --clear that file is the only record of what was cleared, and
+        # the next export wrote over it with the new ones alone (audit,
+        # 2026-10-28). Holding a snag this export doesn't, it is kept, and
+        # this one gets a dated name beside it.
+        page = "\n".join(lines).rstrip() + "\n"
+        same = [p for p in sorted(os_.root.glob("template-feedback*.md")) if read_utf8(p) == page]
+        old = read_utf8(out) if out.exists() and not same else None
+        if same:
+            out = same[0]
+        elif old is not None:
+            said = {s["text"] for s in ranked} | {o["text"] for g in clustered(ranked) for o in g["with"]}
+            lost = [h for h in re.findall(r"^## (.+)$", old, re.M) if h.strip() not in said]
+            if lost:
+                out = unique_path(os_.root / f"template-feedback-{today()}.md")
+        write_text(out, page)
         if clear:
             write_text(store, "[]\n")     # written out, so safe to put away
         if as_json:
@@ -12070,9 +12313,9 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
         newer = bool(have and got and _release_key(got) > _release_key(have))
         if not fresh and not newer:
             Out.ok("this folder already has the newest version")
-            _then_addons(os_, preview, addons_from)
+            code = _then_addons(os_, preview, addons_from)
             Out.raw()
-            return 0
+            return code
         if have and got and _release_key(got) < _release_key(have) and not anyway:
             die(f"this folder has {have}, newer than the published {got}.\n"
                 "     ./os update --anyway goes back to the published one")
@@ -12089,15 +12332,17 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
                               cwd=str(os_.root), text=True)
         if proc.returncode == 2:
             return 1            # it stopped before changing anything, and said why
+        if proc.returncode == 3:
+            return 1            # it stopped partway, and said so: once is enough
         if proc.returncode != 0:
             Out.bad("the update stopped partway — ./os update again finishes it. "
                     "What it replaced is in .os/backups/before-upgrade-*")
             return proc.returncode
-    _then_addons(os_, preview, addons_from)
+    code = _then_addons(os_, preview, addons_from)
     if not preview:
         Out.note("./os undo can't reverse an update — the backup above can")
         Out.raw()
-    return 0
+    return code
 
 
 def _unmerged(os_: Zenith, stamp: Path, rel: str) -> bool:
@@ -12323,15 +12568,16 @@ def _addons(root: Path) -> dict:
             and any((root / rel).is_file() for rel in a["files"])}
 
 
-def _then_addons(os_: Zenith, preview: bool, source: str) -> None:
+def _then_addons(os_: Zenith, preview: bool, source: str) -> int:
     """After an update, every addon this folder has, brought up to date by
-    the program that is here now: the new one."""
+    the program that is here now: the new one. Its exit is passed on: an
+    addon that failed to update was followed by a clean exit (audit, 2026-10-28)."""
     if not _addons(os_.root):
-        return
+        return 0
     sys.stdout.flush()
-    subprocess.run([str(os_.root / "os"), "addon", "--update",
+    return subprocess.run([str(os_.root / "os"), "addon", "--update",
                     *(["--dry-run"] if preview else []), *(["--from", source] if source else [])],
-                   cwd=str(os_.root))
+                   cwd=str(os_.root)).returncode
 
 
 def cmd_addon(os_: Zenith, argv: list[str]) -> int:
@@ -13307,8 +13553,37 @@ _os "$@"
 
 
 def cmd_completion(os_: Zenith, argv: list[str]) -> int:
-    print(_completion((argv[0] if argv else os.environ.get("SHELL", "")).lower()))
+    shell = (argv[0] if argv else os.environ.get("SHELL", "")).lower()
+    # Anything but bash got the zsh script: `completion fish` printed it
+    # with no word that it was the wrong one (audit, 2026-10-28).
+    if argv and not any(s in shell for s in ("bash", "zsh")):
+        die(f"there's tab-completion for zsh and bash, not {argv[0]}:   ./os completion zsh")
+    print(_completion(shell))
     return 0
+
+
+def call_them(os_: Zenith, owner: str, was: str) -> None:
+    """Their name in About me too, where every chat looks for what to call
+    them: `./os name "Sam"` set it only in config.json, which no chat reads
+    (follow-up to the audit, 2026-10-28). A "Call me" line with the name it
+    had before is changed, not kept beside the new one: two names would be
+    one wrong."""
+    import contextlib
+    import io
+    note = about_them_note(os_, Scanner(os_).scan())
+    if note is not None and was and note.spine and note.spine.exists():
+        text = read_to_rewrite(note.spine)
+        old = re.compile(r"^([-*]\s+)Call me " + re.escape(was) + r"\.?(\s*\(said\))?\s*$", re.I | re.M)
+        if old.search(text):
+            with Lock(os_, "name"):
+                os_.snapshot(note.spine)
+                write_text(note.spine, set_fields(old.sub(lambda m: f"{m.group(1)}Call me {owner}. (said)",
+                                                          text, count=1), {"updated": today()}))
+                os_.record("edit", os_.rel(note.spine))
+                os_.commit("name")
+            return
+    with contextlib.redirect_stdout(io.StringIO()):
+        add_about_them(os_, f"Call me {owner}", True)
 
 
 def cmd_name(os_: Zenith, argv: list[str]) -> int:
@@ -13324,12 +13599,15 @@ def cmd_name(os_: Zenith, argv: list[str]) -> int:
         Out.note('./os name --name "Studio"      call the folder something else')
         Out.raw()
         return 0
+    was_owner = str(os_.config.get("owner") or "")
     if owner:
         os_.config["owner"] = owner
     if label:
         os_.set_name(label)
     os_.save_config()
     Indexer(os_).build()
+    if owner and owner != was_owner:
+        call_them(os_, owner, was_owner)
     Out.title("name")
     Out.ok(f"{os_.config.get('name', 'Zenith')} · "
            f"{os_.config.get('owner') or 'no owner set'}")
@@ -13359,7 +13637,7 @@ DETAIL = {
               'os save --into kitchen-renovation "quotes from three tilers"',
               "os save ~/Movies/garden-timelapse.mov"],
              "Wrong place? ./os undo puts it back, every time."),
-    "new": ('os new <work|ongoing|note|learning|skill|agent> "<name>"',
+    "new": ('os new <work|ongoing|note|learning|skill|helper> "<name>"',
             "Start something from a blank template, already named and stamped. "
             "If you already have something by nearly the same name it stops and says so "
             "— add --anyway if you really want both.",
@@ -13482,7 +13760,7 @@ DETAIL = {
              "left out unless you ask for them with --kind skill. --notes looks "
              "only in Notes and what was put away from Notes, and never shows "
              "a word from Work: it is for a helper told to keep out of Work.",
-             ["os find boiler", "os find garden --kind project",
+             ["os find boiler", "os find garden --kind work",
               "os find weekly --kind skill", "os find --notes boiler"],
              "You don't have to remember where you put it. A misspelling gets "
              "you the right spelling to try."),
@@ -13962,8 +14240,13 @@ def main(argv: list[str] | None = None) -> int:
         Out.bad(f"the disk would not let me finish: {exc.strerror or exc}")
         if where:
             Out.note(relative_to_root(Path(where), root))
-        Out.note("nothing was left half-moved — ./os undo reverses whatever did happen"
-                 if os_.stopped_partway else "nothing was left half-moved")
+        # update and addon copy files in without undo steps, so that can't be
+        # said of them: an addon half-copied was reported as nothing moved.
+        if handler in (cmd_update, cmd_addon):
+            Out.note("it may have stopped partway — run it again and it finishes")
+        else:
+            Out.note("nothing was left half-moved — ./os undo reverses whatever did happen"
+                     if os_.stopped_partway else "nothing was left half-moved")
         Out.raw()
         return 1
 

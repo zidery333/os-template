@@ -35,8 +35,8 @@ them in this order:
    Tell them how to open it in its new place (step 6), and stop: this chat is
    finished. The next `/setup` there carries on.
 2. **`linked`**: it's still linked to the template's GitHub page, from a
-   `git clone`. Run `./os setup --unlink` without asking, and say in one line:
-   "I cut its link to the template's GitHub page, so it's yours alone now."
+   `git clone`. Ask: "Your saves would go into the template's history. Shall I
+   cut that link? Everything saved so far stays." On a yes, `./os setup --unlink`.
 3. **`no-git`, `no-claude` or `claude-not-found`**: give them the exact line to
    paste, from `fix`, and say what it's for in a few words.
 4. **`downloads`**: leave it for step 6, where the folder gets its name.
@@ -51,9 +51,14 @@ to keep the name it has. Then:
 ./os name --name "<the folder's name>"
 ```
 
-Write how they like answers into their About me note, once, in their own
-words: `./os save "From now on keep answers short"`. Ask it as one question
-with choices: short, normal or full detail.
+Write how they like answers into their About me note, once. Ask it as one
+question with choices, then save the sentence that goes with their pick:
+
+- short: `./os save "From now on keep answers short"`
+- normal: `./os save "From now on keep answers to a few short paragraphs"`
+- full detail: `./os save "From now on give me answers in full detail"`
+
+If they answer in their own words instead, save those, starting "From now on".
 
 ## 4. An old folder
 
@@ -103,10 +108,11 @@ to move it. A plain name renames it where it is. A path moves it there, like
 ```
 
 After a move, this chat still looks in the old place, so it's finished. Tell
-them how to open the folder again:
+them how to open the folder again, using the path the move printed, never a
+guess at it:
 
 - **In the Claude app:** start a new chat and pick the folder, under its new name.
-- **In a terminal:** `cd ~/<Name> && claude`
+- **In a terminal:** the `cd … && claude` line the move printed, as it printed it.
 
 If nothing moved, end with `./os checkpoint "Set up"` instead.
 

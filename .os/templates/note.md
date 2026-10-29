@@ -16,6 +16,7 @@ source:
 ## What it says
 
 ## Why it matters to me
+<!-- In their words, only if they said. Nobody said? Delete this heading. -->
 
 ## Related
 <!-- Other things here, by name: how-to-bleed-a-radiator, Fix the Boiler -->

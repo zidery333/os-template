@@ -12,14 +12,16 @@
       "38f6ddcce47c1850039d6d339b33cf580358313a",
       "3badb40d03b33527d7024586e3d72d1facaa7bd0",
       "aa303f16191ad00561676f4bd2a9a2881552aed6",
-      "134a3134e590c0d19e0f29eff9e9f235cd6b5b3d"
+      "134a3134e590c0d19e0f29eff9e9f235cd6b5b3d",
+      "95296f9fb4df8a0c4e66f6b5c2b925f32f02e7bd"
     ],
     ".claude/agents/reviewer.md": [
       "85c25f7e6c33e624c5819aa88aa312561809e92a",
       "f13ca30600636e8c6f81bd47b7efb0adb4fc8530",
       "f9d81dc1b30485526c61e167c9b158a420d11228",
       "3e3b781179dd9b4e6f1392e936a91cfa4d919a25",
-      "7ee619201441059db146722dadd02d1de556c60a"
+      "7ee619201441059db146722dadd02d1de556c60a",
+      "4f7160a794894e35c425efcebb9561d9ee700f87"
     ],
     ".claude/agents/student.md": [
       "427c4e5c4f75470237e976cc810d53c3c6584915",
@@ -27,10 +29,12 @@
       "6b8c2a07d19d4de607be5e3fbfea6b681ab2c00f",
       "011080297572b66eb661029fe814c3397c2c3bcd",
       "38d3444792b9e53939083c1589f33a894c251b3b",
-      "c3854265b63a3070b394638ab28a1ae10e0255cd"
+      "c3854265b63a3070b394638ab28a1ae10e0255cd",
+      "01ad93488a039cd16c7d193b54cd09f4f3a0893d"
     ],
     ".claude/hooks/mark-dirty.sh": [
-      "827447642c152214315f2bd307aba995e22984d2"
+      "827447642c152214315f2bd307aba995e22984d2",
+      "ee15c808e68f7ffd1423772db00aa592e157afc8"
     ],
     ".claude/hooks/session-start.sh": [
       "c5cf660b7593146a5f6cd27d023925c23525e97f",
@@ -85,7 +89,8 @@
     ".claude/skills/make-skill/SKILL.md": [
       "472a923fecf5064b84b10d56e075fd668742652f",
       "7a8c30c3e98de7300b52c4af0c6c5e2097db13d1",
-      "c7ae7ec567c920ba21c708142bed8a2b80ce1a38"
+      "c7ae7ec567c920ba21c708142bed8a2b80ce1a38",
+      "5228e0f4902bbb89aeb72509c0a435980ada83ea"
     ],
     ".claude/skills/save/SKILL.md": [
       "533966aafee3a4d1f648c0380c3f0c8c65c5914c",
@@ -94,7 +99,8 @@
       "90b59dc051297c0d41feabc78606cbc7d0b48bf2",
       "71fe6004842ec7fb7c7bd4962a557a743d92834a",
       "06e2a2557c7a047a4d4b273cef338c9f192bdf1e",
-      "c902ba515ea9cfeb6e86efc3fa316382dfd311e2"
+      "c902ba515ea9cfeb6e86efc3fa316382dfd311e2",
+      "335eb133a826dc9db20ad91b81c4c6c2a5904300"
     ],
     ".claude/skills/tidy/SKILL.md": [
       "13a987e8d4ae79e0d2c6ce5955a2ca298dc17e70",
@@ -103,7 +109,8 @@
       "ffd50c3f356a20d036f941c4524ef929ab80c00f",
       "600a613f35696f5c057e7dc3f66f5132fa98696c",
       "82a64f941225436155c2274351f6d58ad03029a2",
-      "248b367b84387111e19087326e67dc944ebc8842"
+      "248b367b84387111e19087326e67dc944ebc8842",
+      "23674999fc7af1813daedcdcb62ee4be127b9e3b"
     ],
     ".claude/skills/wrapup/SKILL.md": [
       "3cdf8c093eb1a9f185b8a45f978bcdc9bb04d420",
@@ -112,7 +119,8 @@
       "a11abf8ac9abf23a80bf6dec3892cc87c4b39726",
       "119133b5e129cc20f118bf4578999a7e422819ce",
       "ba560738f1cfc9485a72cad46937fd4ea246aeae",
-      "1315c4527ad5d602d06c6d98d6ae383968352974"
+      "1315c4527ad5d602d06c6d98d6ae383968352974",
+      "247a32bbaf19410bd0f59bff5090ac22e3d9446c"
     ],
     "AGENTS.md": [
       "1465c7fd260a28aeb5b61b3a7fa1c45011fb4422",
@@ -134,17 +142,21 @@
       "c9fe50a4823f8be584622eca89e72f51f9ff02ca",
       "b8ced0088a60cfed62b610c80f834fbdcd8a9d8b",
       "33e76abb9a8f419320a8a20f1c94617944bc0a48",
-      "c84a620ad6d086f19b8bbb618912fcecda02ca75"
+      "c84a620ad6d086f19b8bbb618912fcecda02ca75",
+      "3b1d58abe10a140315a1680c96090ce11c5cff89"
     ],
     ".claude/skills/decide/SKILL.md": [
-      "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e"
+      "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e",
+      "7ad6dab4ca512976b59bd7ffd473d35339790a80"
     ],
     ".claude/skills/handoff/SKILL.md": [
       "398733315dc52ff972dc06b22e8592f32cd1d1bb",
-      "a2e1589f211353e1286c194ff1f6de578ba57105"
+      "a2e1589f211353e1286c194ff1f6de578ba57105",
+      "7446628fb434357b687c0074c0c8e5b8dfa94dcb"
     ],
     ".claude/skills/commands/SKILL.md": [
-      "4466f23ac9fbfae74b36a8245793237319bd3ed5"
+      "4466f23ac9fbfae74b36a8245793237319bd3ed5",
+      "716b19f6d87641157b671f842169363827779dee"
     ],
     "os": [
       "bb7de1bb647842ec1f518e495677380a4dffabe9"
@@ -163,7 +175,8 @@
       "cc9184436fb789fd84d80dce8fc0adeacb68b45f",
       "9c7bac7e56e7374658e96cf7443b2ef022b2be23",
       "c4c2df37f4a5f556087643739022856a76f987c5",
-      "0c92c1f9a9001af8945c254452b63ae42808e7ae"
+      "0c92c1f9a9001af8945c254452b63ae42808e7ae",
+      "025cf550902df2431301767674f4c7e5b4ed3b62"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
@@ -177,13 +190,15 @@
       "bf37f3650e115e8553f2db9bc8433bc042809f40",
       "87b5caf4067546842404ccaa925098e72a6ff723",
       "7b71fc6bd3e4a8431b2b44ba33615e81bed6b4fe",
-      "cbd4df57089d21dfc8b6320c0020cf23cae0013d"
+      "cbd4df57089d21dfc8b6320c0020cf23cae0013d",
+      "c27fe51a4ee320f0f72d929ca3260738de90526d"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
       "48ef7c6634aaae040d1a31968e3e5db58fab14c6",
       "d46fe385abc12e6970368116f0ee02a4e341b392",
-      "4a8904daea864eba82dbdb4680c0774de295901e"
+      "4a8904daea864eba82dbdb4680c0774de295901e",
+      "b1cfbb36960f8420e49cb95d32d74954a4d9bebf"
     ],
     ".gitignore": [
       "110cb56982daa3818afbb83c42b9ac5d6a966009",
@@ -203,7 +218,8 @@
       "b668a836a6b81808f416024b0b3afeece15b50c4"
     ],
     ".claude/skills/setup/SKILL.md": [
-      "bd0392f6ec9ee049d267ea76bc6cee808e5c8038"
+      "bd0392f6ec9ee049d267ea76bc6cee808e5c8038",
+      "14fd16be45da50509b6e18e575108537dd153779"
     ]
   },
   "keywords": {
@@ -269,7 +285,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-28.2",
+  "release": "2026-10-28.3",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
@@ -370,7 +386,8 @@
       "8f20f2ed2b92493dc3f1d16c5ac47da0469eaddb"
     ],
     "PostToolUse": [
-      "cf03b5ded385e0550ca83f1d05defda0f6a74fac"
+      "cf03b5ded385e0550ca83f1d05defda0f6a74fac",
+      "60947b8189c4f5176baae504da76204ddbb498be"
     ],
     "Stop": [
       "dc29c4b9ce49068ea9e7f9c7196af6f3b9862378",

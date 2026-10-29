@@ -10,8 +10,6 @@ updated: {{DATE}}
 # {{TITLE}}
 
 <!-- One line each: what to call me, how I like answers, anything every new
-     chat should know. End each line with how sure it is:
-       (said)     I said it myself.
-       (guessed)  worked out from watching me. Fix it if it's wrong.
-       (unsure)   seen somewhere, never checked with me.
-     A guess is cheap to fix: correct it, don't delete it. -->
+     chat should know. Only what I said myself, ending (said). Every chat
+     reads this as true, so a guess here turns into a fact. Think you've
+     noticed something about me? Ask me first, then write what I said. -->

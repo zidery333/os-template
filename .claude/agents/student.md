@@ -39,9 +39,9 @@ You write nothing into the folder — you return a draft and let `/learn` file i
 
 6. **Judge the teacher.** What have they actually shipped, and what are they
    selling? The tells are in the transcript with a timestamp on them: *our
-   community*, *payouts*, *link in the description*, *free training*, *apply*,
-   a Discord. The inverse tell is stronger — someone teaching real mechanics
-   (sizing, where the stop goes) is doing the work. Not to dismiss them; plenty
+   community*, *link in the description*, *free training*, *apply*, a Discord.
+   The inverse tell is stronger — someone teaching the real mechanics, the
+   exact numbers and the steps people get wrong, is doing the work. Not to dismiss them; plenty
    of good practitioners sell things. Say who sells what, and say when you
    couldn't establish who somebody is at all.
 

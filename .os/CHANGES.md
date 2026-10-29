@@ -3,6 +3,66 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-28.3
+
+- A handoff writes only what you said or what's already in the folder.
+  It no longer fills in things like "nothing has been sent yet", adds a
+  decision for the handover, or puts a "no step yet" box in Next action.
+- Saving something no longer adds a guess about where it came from.
+- A new piece of work no longer starts with an empty bullet under Open
+  questions.
+- A note headed "Book notes:", "Trip notes:" or "Film review:" stays a
+  note. One whose words after the heading are a job, like "Meeting notes:
+  send the deck by Friday", is still work.
+- `./os name "Sam"` writes "Call me Sam" into your About me note. A new
+  name takes the old one's place.
+- Setting the name keeps letters like "—" as they are in .os/config.json.
+- Putting part of something away, or bringing it back, no longer changes
+  what its Log and Decisions say. Those lines stay as they were written.
+- A name made only of symbols, like 🎉🎉, keeps its own name. Before, it
+  could be mixed up with something called Untitled, and closing one closed
+  the other.
+- Tidying a folder whose name has a dot in it, like "v2.0 Launch", keeps
+  the whole name.
+- A long sentence saves on a Mac's own Python. It used to stop with "File
+  name too long".
+- Writing out your snags again keeps the earlier file when it holds ones
+  you cleared.
+- Your About me note only takes what you said yourself. "I prefer the
+  plumber's second quote" is filed with your other notes, not in About me.
+- Decisions no longer get a "rules out" part you never said.
+- Closing something no longer asks you to fix its own "origin" line by hand.
+- "buy milk", "book the dentist" and other short jobs are filed as work.
+- Bringing something back out of the archive says so in its Log. Bringing
+  back one folder beside a newer one says the name it landed under.
+- Tidying no longer marks old notes as changed today, and no longer gives
+  them the subject "unsorted".
+- `./os find --kind work` works, and a kind or folder that doesn't exist
+  says so.
+- Updates keep the newest few copies from before, and clear older ones
+  themselves. An update that stops says so once.
+- A broken list of snags is kept aside instead of being written over.
+- The weekly tidy, setup, save, handoff and wrap-up instructions match what
+  the folder actually does, and never write things you didn't say.
+- A title or tag like "No", "On" or "3.10" stays as you wrote it.
+- Links in the list to names with # or % in them work.
+- `./os find -- "("` searches for what comes after the `--`.
+- `./os save .` says it's a folder. `./os new` lists every kind.
+  `./os decide` on something put away says it's in the archive.
+- `./os completion fish` says there's only zsh and bash. Renaming something
+  to the name it has says nothing changed.
+- `./os help` counts right, and lists `learn`, `snag` and learning notes.
+- Two skills no longer answer to the same words: "what should I work on"
+  is catch-up, "save my progress" is wrap-up, a rule for one piece of work
+  is a decision, and learning a craft is /learn.
+- Setup asks before it cuts the folder's link to the template's GitHub page.
+- For anything that runs `.os/upgrade.py` itself: it exits 3, not 1, when it
+  stopped partway and said so. `./os save --json` gives `added_to: null` and
+  `already: true` when nothing was added. `./os last --json` gives each
+  thing's `id`, as find does; `name` is still there. `./os help new` says
+  `helper` where it said `agent`; both still work.
+
+
 ## 2026-10-28.2
 
 - `/learn` searches for a subject's official page instead of guessing its

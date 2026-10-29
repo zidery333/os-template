@@ -1,4 +1,4 @@
-<!-- written by Zenith. Don't edit by hand — it gets overwritten. -->
+<!-- written by ./os. Don't edit by hand — it gets overwritten. -->
 # What this folder can do
 
 Skills any AI here can use. In Claude Code, type a `/name` **in the chat** (not the terminal) to run one. Helpers get sent off on their own when a job suits them. None of this is required — `./os help` is the plain version, and it works in any terminal with or without an AI.

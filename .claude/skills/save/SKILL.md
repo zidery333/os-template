@@ -1,6 +1,6 @@
 ---
 name: save
-description: Write something down into this folder and file it — a thought, a link, a quote, a file, a half-formed idea. Use whenever the user says remember this, save this, note that, write this down, jot this down, don't let me forget, from now on, I prefer, always, stop doing, or drops something mid-conversation that shouldn't be lost.
+description: Write something down into this folder and file it — a thought, a link, a quote, a file, a half-formed idea. Use whenever the user says remember this, save this, note that, write this down, jot this down, don't let me forget, from now on, I prefer, always, stop doing (about them or their answers), or drops something mid-conversation that shouldn't be lost. Not a rule for one piece of work (/decide), and not "save my progress" (/wrapup).
 argument-hint: [what to save]
 allowed-tools: Bash(./os:*), Bash(${CLAUDE_PROJECT_DIR}/os:*), Read, Edit
 ---
@@ -10,7 +10,7 @@ allowed-tools: Bash(./os:*), Bash(${CLAUDE_PROJECT_DIR}/os:*), Read, Edit
 Saving costs nothing. Deciding costs everything. Never ask where it should go.
 
 ```bash
-./os save "<their words, plus the context they didn't say>"
+./os save "<their words, plus context this chat or the folder gave>"
 ./os save <path>          # something already on disk
 ```
 
@@ -21,9 +21,10 @@ command returns, so never follow it with `./os new work` for the same thing.
 
 ## What a good save looks like
 
-Their words, kept exactly, plus the context future-them will need and didn't say:
-what it's about, why it came up, the source if there is one. Five things in one
-message is five saves, not one.
+Their words, kept exactly. Add context only when this chat or the folder already
+gave it: what it's about, the source, a date their "Friday" means. Never a guess
+at where it came from or why, like "action from a meeting": every later chat
+reads the note as true. Five things in one message is five saves, not one.
 
 ## A file
 
@@ -37,16 +38,23 @@ one sentence of what it is and 3–5 tags into its card, like
 
 "Call me Sam", "keep answers short", "I'm vegetarian": a fact about them, or
 about how they want answers, is not a note of its own. It is one line in their
-About me note. `./os save` puts it there itself when their words start with
-"call me", "from now on", "I prefer" or "keep answers", marks it (said), and
-starts the note if there is none. Anything else about them goes in by hand, as
-one line marked (said): `./os open "About me"` says where the note is, and
-`./os new note "About me" --domain personal` makes one. Every session starts
-with its first lines and its newest.
+About me note, marked (said). `./os save` puts it there itself when their words
+start with "call me" or "keep answers", or start with "from now on" or "I
+prefer" and go on about them or their answers. It starts the note if there is
+none, the way `./os new note "About me" --domain personal` would. For anything
+else about them, put "About me:" in front:
 
-"Always…" and "stop doing…" are the same thing: how they want things done.
-Each goes straight into About me as one line in their words, with no question
-first. It is not a note, a task or a settings change.
+```bash
+./os save "About me: <their words>"
+```
+
+"Always…" and "stop doing…" about how they want things done go straight into
+About me the same way, in their words, with no question first. A rule for one piece of work ("from
+now on we invoice on Fridays") is not about them: it is a decision for that
+work, with `./os decide <name> "<their words>"`.
+
+Only what they said goes in About me. Something you noticed about them is a
+question to ask, not a line to write.
 
 ## Rules
 

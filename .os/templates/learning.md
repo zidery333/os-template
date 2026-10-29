@@ -11,8 +11,8 @@ source:
 # {{TITLE}}
 
 ## In one line
-<!-- The whole method in one sentence. If you only reread one line in a year,
-     this is it. One sentence — if it needs three, you haven't got it yet. -->
+<!-- The whole method in one sentence: the one line worth rereading in a year.
+     If it needs three, the method isn't clear yet. -->
 
 ## Why I'm learning this
 <!-- For using only. One line, in their words: what they're going to do with it.
@@ -20,7 +20,7 @@ source:
      liking? Delete this heading: "I like it" needs no reason written down. -->
 
 ## The method
-<!-- Numbered, in order. Each step: what to do, how you know it's right, and
+<!-- Numbered, in order. Each step: what to do, how to tell it's right, and
      the setting or number it needs where that isn't obvious. -->
 
 ## Where they disagree

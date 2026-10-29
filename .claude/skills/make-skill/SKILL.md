@@ -1,6 +1,6 @@
 ---
 name: make-skill
-description: Build a new reusable skill or helper for this folder — interview, write, check, register. Use when the user says make a skill, automate this, I keep asking you to do X, turn this into a command, make this a button, or build me a helper.
+description: Build a new reusable skill or helper for this folder — interview, write, check, register. Use when the user says make a skill, automate this, I keep asking you to do X, turn this into a command, make this a button, or build me a helper — a new one, not handing this project to one (/handoff).
 argument-hint: [skill|helper] [what it should do]
 allowed-tools: Bash(./os:*), Bash(${CLAUDE_PROJECT_DIR}/os:*), Read, Write, Edit
 ---
@@ -28,7 +28,7 @@ exact words they'll say when they want it**, **what finished looks like**, and
 `$ARGUMENTS` already answers them.
 
 ```bash
-./os new skill "<Name>"      # or: ./os new agent "<Name>"
+./os new skill "<Name>"      # or: ./os new helper "<Name>"
 ```
 
 Then replace the template — don't append to it:

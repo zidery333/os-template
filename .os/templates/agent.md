@@ -1,16 +1,18 @@
 ---
 name: {{SLUG}}
-description: {{TITLE}}. Use when <the situation>. Be specific — this sentence is the only thing read when deciding whether to call on it.
+description: {{TITLE}}. Use when <the situation>.
 tools: Read, Grep, Glob, Bash
 color: cyan
 ---
-<!-- No `model:` line on purpose: left out, a helper runs on whatever model the
+<!-- The `description:` line decides when this helper is called on, and it is
+     the only thing read to decide it: make <the situation> specific.
+     No `model:` line on purpose: left out, a helper runs on whatever model the
      conversation is already using, so this folder keeps working — and keeps
      getting better — as models are replaced. Name one only if this job truly
      needs a particular model. -->
 
 
-You are {{TITLE}}.
+Your job: {{TITLE}}.
 
 ## Your job
 <!-- One paragraph. What you own, and what you explicitly don't. -->

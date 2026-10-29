@@ -11,17 +11,18 @@ updated: {{DATE}}
 # {{TITLE}}
 
 ## What good looks like
-<!-- One sentence. What are you trying to make true? -->
+<!-- One sentence, in their words: what they're trying to make true. -->
 
 ## Why now
-<!-- Why you're pushing on this now and not later.
-     If you can't answer, it probably wants ./os hold instead. -->
+<!-- Why they're pushing on this now and not later, in their words.
+     Nobody said? Leave it empty rather than guess. No answer at all
+     usually means it wants ./os hold instead. -->
 
 ## Next action
 - [ ] 
 
 ## Open questions
-- 
+<!-- What's still undecided, and who decides it. Empty is fine. -->
 
 ## Decisions
 <!-- Date · what was decided · what it rules out. Add to this; never rewrite it. -->

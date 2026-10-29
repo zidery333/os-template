@@ -644,6 +644,10 @@ def change_note(argv: list[str]) -> int:
     return 0
 
 
+#: The exit when it stopped partway and has said so: ./os update says nothing more.
+STOPPED_PARTWAY = 3
+
+
 def main(argv: list[str]) -> int:
     if "--record" in argv:
         return record()
@@ -791,11 +795,13 @@ def main(argv: list[str]) -> int:
                 elif not dry:
                     copy(src, aside / rel, text)
                 return
-            fresh.append(rel)
+            # Counted once it is written: a file the disk refused was said as
+            # replaced, beside "couldn't write" for it (audit, 2026-10-28).
             if not dry:
                 copy(src, dst, text)
                 if dst.suffix == ".sh" or rel == "os":
                     dst.chmod(0o755)
+            fresh.append(rel)
         except OSError as exc:
             failed.append(f"{rel} ({exc.strerror or exc})")
 
@@ -851,7 +857,7 @@ def main(argv: list[str]) -> int:
         sys.stdout.flush()
         print("  ✖ the update stopped partway. Put right what's above, then run it again to finish; "
               f"what it replaced is in {backup.relative_to(root)}", file=sys.stderr)
-        return 1
+        return STOPPED_PARTWAY
 
     # 3. settings: .claude/settings.json and each subject's keywords are
     #    replaced while still as released. What they changed is merged.
@@ -1031,8 +1037,22 @@ def main(argv: list[str]) -> int:
     if (kept or typo) and not dry:
         say("  merge:  ask your AI to fold each set-aside file into yours, or diff them by hand;")
         say("          once that's done,  ./os update --done  clears them away")
+    # Each update kept a whole copy from before it, and nothing ever cleared
+    # one: the advice was to delete them by hand, which this folder's own
+    # rules tell an AI never to do (audit, 2026-10-28). The newest few stay,
+    # as many as keep_backups says, the way ./os backup keeps its zips.
+    if not dry:
+        try:
+            keep = max(1, int(json.loads((root / ".os" / "config.json").read_text())
+                              .get("behaviour", {}).get("keep_backups", 3)))
+        except (OSError, ValueError, TypeError, AttributeError):
+            keep = 3
+        olds = sorted(p for p in (root / ".os" / "backups").glob("before-upgrade-*") if p.is_dir())
+        for old in olds[:-keep]:
+            shutil.rmtree(old, ignore_errors=True)
     say("  next:  cd " + str(root) + "   ·   ./os check   ·   ./os")
-    say("         happy with it? delete " + str(backup.relative_to(root)) if not dry else
+    say("         the copy from before is in " + str(backup.relative_to(root))
+        + " — the newest few are kept, older ones cleared" if not dry else
         "         run it without --dry-run to do it")
     say()
     return 0

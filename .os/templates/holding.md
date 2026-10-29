@@ -11,8 +11,8 @@ updated: {{DATE}}
 # {{TITLE}}
 
 ## What good looks like
-<!-- One sentence. The standard you're keeping. There's no next action here —
-     if one shows up and you mean to chase it, ./os push this. -->
+<!-- One sentence, in their words: the standard they're keeping. There's no
+     next action here — if one shows up and they mean to chase it, ./os push this. -->
 
 ## How often
 <!-- Weekly, monthly, every spring. -->

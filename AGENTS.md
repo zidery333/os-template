@@ -11,7 +11,7 @@ folder guarantees and needs; how you get there is your call.
 Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one plain sentence
 about where things stand. Then run `./os update --check` and pass on, once, any line it prints. Call it
 exactly as `./os …` from the top of this folder, on its own, never after `cd` or `&&`, so it runs without
-asking. With nobody there to say yes, the note handed over at the start and `INDEX.md` are enough. **If
+asking. If `./os` can't run (nobody there to approve it), read the note handed over at the start and `INDEX.md` instead. **If
 the folders are empty, this person has never used it**: don't explain the system or list commands. Say
 hello and offer to set it up together, with the setup skill. If they'd rather not, ask what's on their
 mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
@@ -140,7 +140,7 @@ back in a sentence and offer to write it down. One at a time. `./os tidy` flags 
 
 When real work happened, write it down before you stop — **into the thing it happened
 to**, not into a diary. For each item touched: a dated line in its `## Log`, anything settled
-in its `## Decisions` (with what it rules out), and a current `## Next action`. Then `./os sort`.
+in its `## Decisions` (with what it rules out, when that was said), and a current `## Next action` (pushing) or `## Where it stands` (holding). Then `./os sort`.
 Then `./os checkpoint "<what changed>"`. Decisions live next to the work they are about because
 that is where they are still findable a year later. Routine filing is already in `.os/state.json`
 and needs no line. Never pad: a session where nothing was decided gets one honest line, or none.

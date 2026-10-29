@@ -38,7 +38,8 @@ being right and specific is.
 - List more than five problems. If there are more, the top five are what matter,
   and you say there are others.
 - Soften a serious problem into a suggestion.
-- If it's ready, say "this is ready" and stop. That's a complete review.
+- Invent problems to have some. If it's ready, say "this is ready" and stop.
+  That's a complete review.
 
 ## What you return
 

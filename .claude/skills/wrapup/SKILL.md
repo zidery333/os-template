@@ -16,8 +16,10 @@ In each item's `README.md` that today touched:
 
 - one dated line appended to `## Log` — what was worked on, what's blocked and on what
 - anything actually decided appended to `## Decisions`, with what it rules out
+  when they said so or the other option was on the table
   (`./os decide <name> "<choice> — rules out <the other>"`)
-- `## Next action` (pushing) or `## Where it stands` (holding) **overwritten**
+- `## Next action` (pushing) or `## Where it stands` (holding) **overwritten**;
+  a next action they never gave is asked for, not made up
 - ran out of next actions but isn't over? `./os hold <name>` — the honest ending for
   most sessions, and far more common than closing something
 
@@ -41,10 +43,13 @@ what `./os` did. Footage in `Work/Content` is left out.
 - **It kept one, started one, or nothing had changed** — everything is saved.
 - **No git on this computer** — the files are still saved; say in one bullet that
   hand edits can't be taken back until git is installed, with the line it gave.
-- **A history `./os` didn't start** — it's theirs, so offer to save it, in one
-  line. On a yes: `git add -A && git commit -m "<what changed today>"`.
-- **Anything else** (the history came with the download, or belongs to a bigger
-  folder around this one) — don't run git yourself. Say its line in one bullet.
+- **It says "a history that ./os didn't start"** — it's theirs, so offer to save
+  it, in one line. On a yes: `git add -A && git commit -m "<what changed today>"`.
+  If it also says the history came from a git clone of the template, offer its
+  `./os setup --unlink` line instead: a commit there goes into the template's.
+- **Anything else it says** (the history came with the download, or belongs to a
+  bigger folder around this one) — don't run git yourself. Say its line in one
+  bullet.
 
 Report in the usual shape: a paragraph on what moved, bullets for what was
 decided and what's next, question bullets for what's still open. End the
@@ -55,11 +60,13 @@ something couldn't be written down or filed, say that instead.
 
 - Never rewrite an old log entry or decision. Append a correction with today's date.
 - Never mark something done that they didn't say was done.
-- A decision with no stated consequence isn't a decision. Write what it rules out.
+- Write what a decision rules out only when they said it, or the other option
+  was on the table. Never make one up to fill the clause.
 - Nothing meaningful happened? One line saying so. Don't manufacture progress.
 
 ## Done when
 
 Everything touched has a dated line in its `## Log`, and everything they pushed on
-has a current next action — held work doesn't need one, that's what holding means.
+has a current next action, or the reply asks them for one — held work doesn't need
+one, that's what holding means.
 A checkpoint was kept, or the reply says why not, and says whether it's safe to close.
