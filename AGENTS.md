@@ -74,7 +74,7 @@ stops generating false guilt. Only offer `./os close` when they say it is genuin
 ./os new ongoing "..."   start something they'll just keep up
 ./os new learning "..."  a note about how something is done, in that shape
 ./os hold <name>         no next action — just keep it level
-./os push <name>         back on the go — a note pushed becomes work
+./os push <name>         back on the go — a note pushed becomes work · ./os note <name>  and back
 ./os find <words>        search everything — forgives plurals, offers near words · --notes keeps out of Work/
 ./os show <name>         one item: state, next action, decisions, recent log
 ./os last                what happened the last time anyone worked here
@@ -88,7 +88,7 @@ stops generating false guilt. Only offer `./os close` when they say it is genuin
 ./os learn --list <url>  what a channel has · ./os learn <id> its actual words
 ./os words               the words it files by · ./os words <domain> "<word>" adds one
 ./os snag "<text>"       something wrong with THIS folder, not their work
-./os check --fix         repair anything broken · ./os update  get the newest version (--done once merged)
+./os check --fix         repair anything broken · ./os update  get the newest version (--done once merged, --undo to go back)
 ./os addon               extra skills for one kind of work · ./os addon <name> adds one
 ```
 
@@ -140,7 +140,7 @@ back in a sentence and offer to write it down. One at a time. `./os tidy` flags 
 
 When real work happened, write it down before you stop — **into the thing it happened
 to**, not into a diary. For each item touched: a dated line in its `## Log`, anything settled
-in its `## Decisions` (with what it rules out, when that was said), and a current `## Next action` (pushing) or `## Where it stands` (holding). Then `./os sort`.
+in its `## Decisions` (with what it rules out, when that was said), and a current `## Next action` (pushing: only one they named, else empty) or `## Where it stands` (holding). Then `./os sort`.
 Then `./os checkpoint "<what changed>"`. Decisions live next to the work they are about because
 that is where they are still findable a year later. Routine filing is already in `.os/state.json`
 and needs no line. Never pad: a session where nothing was decided gets one honest line, or none.

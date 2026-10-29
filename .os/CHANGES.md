@@ -3,6 +3,37 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-29.1
+
+- `./os find --json` now ends with exit code 1 when nothing is found, the
+  same as plain `./os find`. It still prints `[]` first. A script that
+  stops on any error should treat 1 as "nothing found".
+- `./os learn --list` shows roughly when each video went up, like
+  "about 2024-10", for a search or a channel.
+- `./os setup` no longer wipes the date of your last tidy.
+- `./os checkpoint` now saves in a git history you set up yourself. It
+  waits if git is partway through a merge or rebase, and leaves out
+  Work/Content.
+- `./os setup --bring` keeps any old folder's CLAUDE.md in Archive. Before,
+  only folders laid out the old me/notes/work way kept it.
+- `./os update --undo` puts back the version you had before the last
+  update. It stops if you changed one of those files since, and says
+  which. Works for updates made from this version on.
+- If the program file goes missing, `./os` puts it back by itself and
+  says where from.
+- `./os note <name>` turns a piece of work back into a note, every word
+  kept. `./os undo` takes it back.
+- `./os new ... --dry-run` says where it would go and what it might
+  duplicate, and writes nothing.
+- Fewer things written that you never said:
+  - Saved work only gets a next action when your words say what to do.
+    A description like "the roof is leaking" leaves it empty.
+  - A new skill or helper no longer starts with a blank "Use when <…>"
+    an AI could read as real. `./os check` names any blank left from before.
+  - The skills and helpers ask, or leave a line empty, rather than fill in
+    a next action, how often, a blocker, a reason, a disagreement, or
+    a rule from an old folder you never confirmed.
+
 ## 2026-10-28.3
 
 - A handoff writes only what you said or what's already in the folder.

@@ -19,20 +19,33 @@ HERE="$(cd -P "$(dirname "$src")" && pwd)"
 ENGINE="$HERE/.os/engine.py"
 if [ ! -s "$ENGINE" ]; then
   # Missing, or empty: an update stopped while it was replacing the program.
-  # The copy it made first is the way back.
-  kept=""
-  for copy in "$HERE"/.os/backups/before-upgrade-*/.os/engine.py; do
-    [ -s "$copy" ] && kept="$copy"
-  done
-  printf '\033[38;5;167m  ✖ something is missing or empty: %s\033[0m\n' "$ENGINE" >&2
-  if [ -n "$kept" ]; then
-    printf '   The last update kept a copy from before it. To put it back:\n' >&2
-    printf '     cp "%s" "%s"\n' "$kept" "$ENGINE" >&2
-    printf '   Then ./os update brings in the newest again.\n' >&2
+  # It is put back by itself, from the last kept version in git, or else from
+  # the copy the update made first, and the line below says which.
+  from=""
+  spare="$HERE/.os/engine.py.restoring"
+  rm -f "$spare"
+  if command -v git >/dev/null 2>&1 \
+     && git -C "$HERE" show HEAD:.os/engine.py > "$spare" 2>/dev/null && [ -s "$spare" ]; then
+    from="the last checkpoint"
   else
-    printf '   This file has to sit in the top of a Zenith folder to work.\n' >&2
+    kept=""
+    for copy in "$HERE"/.os/backups/before-upgrade-*/.os/engine.py; do
+      [ -s "$copy" ] && kept="$copy"
+    done
+    if [ -n "$kept" ] && cp "$kept" "$spare" 2>/dev/null && [ -s "$spare" ]; then
+      from="the copy the last update kept"
+    fi
   fi
-  exit 1
+  if [ -n "$from" ] && mv -f "$spare" "$ENGINE"; then
+    printf '\033[38;5;179m  ! .os/engine.py was missing or empty — put back from %s\033[0m\n' "$from" >&2
+    printf '   ./os update brings in the newest again.\n' >&2
+  else
+    rm -f "$spare"
+    printf '\033[38;5;167m  ✖ something is missing or empty: %s\033[0m\n' "$ENGINE" >&2
+    printf '   There is no copy to put back, in git or in .os/backups/.\n' >&2
+    printf '   This file has to sit in the top of a Zenith folder to work.\n' >&2
+    exit 1
+  fi
 fi
 
 PY="${ZENITH_PYTHON:-}"

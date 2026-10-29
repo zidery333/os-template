@@ -229,6 +229,10 @@ def listing(url: str, limit: int = LIST_LIMIT) -> List[dict]:
         raise RuntimeError("no-ytdlp")
     fields = "%(id)s\t%(view_count)s\t%(upload_date)s\t%(duration)s\t%(title)s"
     done = _run([exe, "--flat-playlist", "--playlist-end", str(limit),
+                 # A quick listing carries no upload date at all. This reads one
+                 # off YouTube's own "3 weeks ago", so it is close, not exact —
+                 # which is why the listing says "about".
+                 "--extractor-args", "youtubetab:approximate_date",
                  # `--` first: a "URL" starting with a dash is never read as
                  # one of yt-dlp's own options (`--exec`, say).
                  "--ignore-errors", "--print", fields, "--", as_listing(url)])
@@ -241,7 +245,9 @@ def listing(url: str, limit: int = LIST_LIMIT) -> List[dict]:
         rows.append({
             "id": vid,
             "views": int(views) if views.isdigit() else None,
-            "date": date if date.isdigit() else None,
+            # YYYYMMDD, worked out from "3 weeks ago": close, never exact.
+            "date": date if date.isdigit() and len(date) == 8 else None,
+            "date_is_approximate": True,
             "minutes": round(int(secs) / 60) if secs.isdigit() else None,
             "title": title,
             "url": f"https://www.youtube.com/watch?v={vid}",

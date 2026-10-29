@@ -1,6 +1,6 @@
 ---
 name: {{SLUG}}
-description: {{TITLE}}. Use when <the situation>.
+description: {{TITLE}}.
 tools: Read, Grep, Glob, Bash
 color: cyan
 ---

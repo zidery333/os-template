@@ -6,14 +6,16 @@
       "121487c6d60f5c36c5bf9b716743b54a135e84d2",
       "785b33a1acb6042e571d20bfef79d701757fb4d9",
       "4468c6fd487460e7dd02ff8330dda984fc550059",
-      "5d6ee350bc75c0918bc198d189de249eb9f1fca6"
+      "5d6ee350bc75c0918bc198d189de249eb9f1fca6",
+      "fc277a5ad80fafcd5102ebc830ae05fe97bd6531"
     ],
     ".claude/agents/researcher.md": [
       "38f6ddcce47c1850039d6d339b33cf580358313a",
       "3badb40d03b33527d7024586e3d72d1facaa7bd0",
       "aa303f16191ad00561676f4bd2a9a2881552aed6",
       "134a3134e590c0d19e0f29eff9e9f235cd6b5b3d",
-      "95296f9fb4df8a0c4e66f6b5c2b925f32f02e7bd"
+      "95296f9fb4df8a0c4e66f6b5c2b925f32f02e7bd",
+      "1b1c19e4748c3373bf5c1b8da6d240feea75adec"
     ],
     ".claude/agents/reviewer.md": [
       "85c25f7e6c33e624c5819aa88aa312561809e92a",
@@ -30,7 +32,8 @@
       "011080297572b66eb661029fe814c3397c2c3bcd",
       "38d3444792b9e53939083c1589f33a894c251b3b",
       "c3854265b63a3070b394638ab28a1ae10e0255cd",
-      "01ad93488a039cd16c7d193b54cd09f4f3a0893d"
+      "01ad93488a039cd16c7d193b54cd09f4f3a0893d",
+      "5e3af1a1be6822f00ec1d41b7ac5c851732c51ae"
     ],
     ".claude/hooks/mark-dirty.sh": [
       "827447642c152214315f2bd307aba995e22984d2",
@@ -77,14 +80,16 @@
       "1f9dc7e7135c39555d1395eb24befb34647d290f",
       "9f8ca78c142bd3bb63233402b35b1db8570acd16",
       "4756546748360f1602f311db97449505e4f9530b",
-      "3b1fc7ec1f9af3206a0db2fc25cf01e64f32d744"
+      "3b1fc7ec1f9af3206a0db2fc25cf01e64f32d744",
+      "34618296f75ccc3eaa04542b92d8e154523ef0b7"
     ],
     ".claude/skills/learn/SOURCES.md": [
       "5abab194cbf3cbeb374f33c29c64c9b269b24223",
       "72070579432a92de587b40fbe28e177ad42b1447",
       "a121203af2616f9797ee57965967259e3aa8dec9",
       "20502323e350476aac4790a3d0aba8e7f206a0eb",
-      "aaba240aa5281c5d2c9cc6484f5ba5a80ccd0d18"
+      "aaba240aa5281c5d2c9cc6484f5ba5a80ccd0d18",
+      "8eb07d1b70a50ed8afbf08adadd542446c66b9d4"
     ],
     ".claude/skills/make-skill/SKILL.md": [
       "472a923fecf5064b84b10d56e075fd668742652f",
@@ -110,7 +115,8 @@
       "600a613f35696f5c057e7dc3f66f5132fa98696c",
       "82a64f941225436155c2274351f6d58ad03029a2",
       "248b367b84387111e19087326e67dc944ebc8842",
-      "23674999fc7af1813daedcdcb62ee4be127b9e3b"
+      "23674999fc7af1813daedcdcb62ee4be127b9e3b",
+      "4ad15dcfbb1530c82242e2ec848e3440546745df"
     ],
     ".claude/skills/wrapup/SKILL.md": [
       "3cdf8c093eb1a9f185b8a45f978bcdc9bb04d420",
@@ -120,7 +126,8 @@
       "119133b5e129cc20f118bf4578999a7e422819ce",
       "ba560738f1cfc9485a72cad46937fd4ea246aeae",
       "1315c4527ad5d602d06c6d98d6ae383968352974",
-      "247a32bbaf19410bd0f59bff5090ac22e3d9446c"
+      "247a32bbaf19410bd0f59bff5090ac22e3d9446c",
+      "cc1236d899620949afb9a6bcc40d9616c36a3a0b"
     ],
     "AGENTS.md": [
       "1465c7fd260a28aeb5b61b3a7fa1c45011fb4422",
@@ -143,23 +150,27 @@
       "b8ced0088a60cfed62b610c80f834fbdcd8a9d8b",
       "33e76abb9a8f419320a8a20f1c94617944bc0a48",
       "c84a620ad6d086f19b8bbb618912fcecda02ca75",
-      "3b1d58abe10a140315a1680c96090ce11c5cff89"
+      "3b1d58abe10a140315a1680c96090ce11c5cff89",
+      "a33b912e098a37ddd0fd01fc1ee0aafc164cbd01"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e",
-      "7ad6dab4ca512976b59bd7ffd473d35339790a80"
+      "7ad6dab4ca512976b59bd7ffd473d35339790a80",
+      "cca0af09fa78fae035bbadd0723ac1d335e229d2"
     ],
     ".claude/skills/handoff/SKILL.md": [
       "398733315dc52ff972dc06b22e8592f32cd1d1bb",
       "a2e1589f211353e1286c194ff1f6de578ba57105",
-      "7446628fb434357b687c0074c0c8e5b8dfa94dcb"
+      "7446628fb434357b687c0074c0c8e5b8dfa94dcb",
+      "62d0cd515327be818f849a940958a22d0bef8ccb"
     ],
     ".claude/skills/commands/SKILL.md": [
       "4466f23ac9fbfae74b36a8245793237319bd3ed5",
       "716b19f6d87641157b671f842169363827779dee"
     ],
     "os": [
-      "bb7de1bb647842ec1f518e495677380a4dffabe9"
+      "bb7de1bb647842ec1f518e495677380a4dffabe9",
+      "d78f7b0c82b00c6d2616003cf240bddc7b78b256"
     ],
     ".os/engine.py": [
       "bac237136e89196303b5a92c4b5a36792a42fd8c",
@@ -176,12 +187,14 @@
       "9c7bac7e56e7374658e96cf7443b2ef022b2be23",
       "c4c2df37f4a5f556087643739022856a76f987c5",
       "0c92c1f9a9001af8945c254452b63ae42808e7ae",
-      "025cf550902df2431301767674f4c7e5b4ed3b62"
+      "025cf550902df2431301767674f4c7e5b4ed3b62",
+      "1ee66b8c56d110efdb32387c53fa574e671e5760"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
       "e565af6fb716a0c3c54bafd82cdd196306b61ca8",
-      "76c2d7e467045de0514fd1ab85afa17fbb511a13"
+      "76c2d7e467045de0514fd1ab85afa17fbb511a13",
+      "1959dc8f72cac95f58691114593463772ad6f4df"
     ],
     ".os/upgrade.py": [
       "b02cb5841cb06fe71994843ae60e0f459e197d38",
@@ -191,7 +204,8 @@
       "87b5caf4067546842404ccaa925098e72a6ff723",
       "7b71fc6bd3e4a8431b2b44ba33615e81bed6b4fe",
       "cbd4df57089d21dfc8b6320c0020cf23cae0013d",
-      "c27fe51a4ee320f0f72d929ca3260738de90526d"
+      "c27fe51a4ee320f0f72d929ca3260738de90526d",
+      "c2cbfac9ad15be49963a986c84781527b0ba37b7"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
@@ -219,7 +233,8 @@
     ],
     ".claude/skills/setup/SKILL.md": [
       "bd0392f6ec9ee049d267ea76bc6cee808e5c8038",
-      "14fd16be45da50509b6e18e575108537dd153779"
+      "14fd16be45da50509b6e18e575108537dd153779",
+      "5c0398b55d2f29a020a28a73e4646fd460ea8a48"
     ]
   },
   "keywords": {
@@ -285,7 +300,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-28.3",
+  "release": "2026-10-29.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

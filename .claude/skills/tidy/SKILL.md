@@ -28,7 +28,7 @@ once they agree. Describing the problem back to them is not the job.
   `./os push <name>` makes it work. Right where it is: delete the `flags:` line
   at its top, and it stops being listed here.
 - **not touched in a while**, and **gone quiet — still pushing these?** → one question: is this still real? Still real gets a next action
-  doable this week; real but not being chased gets `./os hold <name>` — the common
+  doable this week, one they give, never one you pick for them; real but not being chased gets `./os hold <name>` — the common
   answer, and the easy one to miss; over gets `./os close <name>`.
 - **keeping level** → not a problem list. Read it to ask whether the standard is
   still being met, and act only if it isn't.
@@ -55,8 +55,8 @@ once they agree. Describing the problem back to them is not the job.
   needed. Mention it once; `./os learn --cached` lists them.
 - **Broken**, from `./os check` → `./os check --fix` handles the mechanical. Two things sharing a
   name in different folders is fine, not broken: a command asks which one, so
-  leave them. A skill with no `description:`: write one naming the trigger
-  words. A note with "no subject set": offer the subject that fits, and set its
+  leave them. A skill with no `description:`: ask them what they would say to
+  ask for it, and write the description from their words. A note with "no subject set": offer the subject that fits, and set its
   `domain:` on a yes. A broken link: relink to where the thing sits now.
 - **Snags**, from `./os snag` → the folder's own faults, not their job to fix. Offer
   `./os snag --export` once so they have a page to hand over, and tell them to

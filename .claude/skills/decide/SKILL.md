@@ -29,8 +29,8 @@ to no item, `./os save "<the decision, and what it rules out>"` files it as a no
 
 ## Rules
 
-- Never ask which item. Pick the one being discussed; if two fit, write it to
-  both and say so.
+- Don't ask which item when one is plainly being discussed: write it there.
+  If two fit, ask once which; never write it into one they didn't name.
 - Never rewrite an earlier decision. A reversal is a new line saying what it
   replaces.
 - Reply with the paragraph only: what was written and where.

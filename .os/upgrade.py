@@ -41,7 +41,9 @@ Brings the machinery up to date and leaves the person's things alone:
                and headers, then `./os sort` gives every renamed folder its Title Case
 
 Everything replaced is copied first into <folder>/.os/backups/before-upgrade-<stamp>/,
-so nothing is lost even if the new version is not wanted. The folder's
+so nothing is lost even if the new version is not wanted. Its undo.json says what
+each file looked like straight after, which is how `./os update --undo` puts
+the folder back. The folder's
 .os/shipped.json is written last, so an update that stopped partway is
 finished by running it again.
 """
@@ -1026,6 +1028,20 @@ def main(argv: list[str]) -> int:
         new = root / ".os" / "shipped.json.new"
         new.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(new, root / ".os" / "shipped.json")
+    # 7. what every file it touched looks like now, so `./os update --undo`
+    #    can tell an edit made since from what this update wrote, and take
+    #    out what this update added. The backup holds what was there before.
+    if not dry:
+        after = {}
+        for rel in to_back:
+            top = root / rel
+            for f in ([top] if top.is_file() else sorted(top.rglob("*")) if top.is_dir() else []):
+                if f.is_file() and "__pycache__" not in f.parts:
+                    after[f.relative_to(root).as_posix()] = sha1(f)
+        (backup / "undo.json").write_text(json.dumps({
+            "release_before": str(before.get("release") or ""),
+            "release_after": str(read_shipped(root / ".os" / "shipped.json").get("release") or ""),
+            "touched": to_back, "after": after}, indent=2) + "\n")
     say()
     # What changed, in words. The lines above say which files; this says
     # what they'll notice.

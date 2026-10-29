@@ -67,8 +67,8 @@ new. Then ask. Nothing is written, and no subject made, before they answer.
 
 Keep only what transfers — the steps, the judgement behind each, the beginner
 mistakes, the kit really used. *For using*: drop theory that changes nothing
-they'd do on Monday. *For liking*: keep what makes it interesting to them. Every
-subject hides one real disagreement; find it.
+they'd do on Monday. *For liking*: what makes it interesting to them. Find where
+good sources really disagree; agreed, say so. Never make up a split.
 
 One note, or a folder if the sources really disagree. Ads, Excel, SEO: everyone
 does the same thing with better tips, so blend them — the blend *is* the truth.

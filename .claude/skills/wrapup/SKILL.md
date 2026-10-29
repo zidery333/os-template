@@ -14,7 +14,8 @@ year from now, by the name of the thing itself.
 
 In each item's `README.md` that today touched:
 
-- one dated line appended to `## Log` — what was worked on, what's blocked and on what
+- one dated line appended to `## Log` — what was worked on, and what's blocked and on
+  what only when they said so or it plainly failed in front of you
 - anything actually decided appended to `## Decisions`, with what it rules out
   when they said so or the other option was on the table
   (`./os decide <name> "<choice> — rules out <the other>"`)
@@ -26,8 +27,8 @@ In each item's `README.md` that today touched:
 Facts only: no summary of the conversation, no adjectives.
 
 Anything decided that belongs to no one item, and any loose end raised and not
-resolved, goes to `./os save "<the decision, and what it rules out>"` — it gets
-filed as a note under its own name.
+resolved, goes to `./os save "<the decision>"`, with what it rules out only when
+they said it (see Rules). It gets filed as a note under its own name.
 
 If this folder keeps its own end-of-session steps in `wrapup-extra.md`,
 inside `.claude/`, do what it says.
@@ -43,10 +44,10 @@ what `./os` did. Footage in `Work/Content` is left out.
 - **It kept one, started one, or nothing had changed** — everything is saved.
 - **No git on this computer** — the files are still saved; say in one bullet that
   hand edits can't be taken back until git is installed, with the line it gave.
-- **It says "a history that ./os didn't start"** — it's theirs, so offer to save
-  it, in one line. On a yes: `git add -A && git commit -m "<what changed today>"`.
-  If it also says the history came from a git clone of the template, offer its
-  `./os setup --unlink` line instead: a commit there goes into the template's.
+- **It says git is in the middle of something** (a merge, a rebase) — say its line;
+  never finish or undo their git work yourself.
+- **It says the history came from a git clone of the template** — offer its
+  `./os setup --unlink` line: a commit there goes towards the template's.
 - **Anything else it says** (the history came with the download, or belongs to a
   bigger folder around this one) — don't run git yourself. Say its line in one
   bullet.

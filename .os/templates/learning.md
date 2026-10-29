@@ -16,16 +16,17 @@ source:
 
 ## Why I'm learning this
 <!-- For using only. One line, in their words: what they're going to do with it.
-     This is what makes the note worth reopening, so don't skip it. Learned for
-     liking? Delete this heading: "I like it" needs no reason written down. -->
+     This is what makes the note worth reopening, so ask for it. Nobody said?
+     Leave it empty; never a reason they didn't give. Learned for liking?
+     Delete this heading: "I like it" needs no reason written down. -->
 
 ## The method
 <!-- Numbered, in order. Each step: what to do, how to tell it's right, and
      the setting or number it needs where that isn't obvious. -->
 
 ## Where they disagree
-<!-- The one real conflict, and which side is better argued. Almost every
-     subject has one; a note without it is usually incurious.
+<!-- The one real conflict, and which side is better argued. If the sources
+     agree, write that they agree, and who: never make up a split to fill this.
      Rival schools proper (trading, diet, lifting) don't belong in one note —
      ./os new ongoing, one file per school, never blended, until one
      view is settled and becomes its own note. -->

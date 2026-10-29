@@ -437,7 +437,11 @@ def first_step(text: str) -> str:
     8 of 12 everyday saves came back as work with `- [ ] ` left empty, even
     "… First step is booking the photo appointment." An open checkbox wins,
     then a first or next step said in so many words, then the opening
-    sentence — "Call mum on Sunday" is its own next action."""
+    sentence — "Call mum on Sunday" is its own next action.
+
+    The opening sentence only when it starts with something to do. "The roof
+    has been leaking since spring" came back as the next step: a description
+    of the problem, never said as one (2026-10-28). Not sure means empty."""
     text = COMMENT_RE.sub(" ", str(text or ""))
     box = re.search(r"^[ \t]*[-*][ \t]*\[ \][ \t]*(\S.*)$", text, re.M)
     said = box or SAID_STEP.search(text)
@@ -449,6 +453,8 @@ def first_step(text: str) -> str:
         lines = [ln.strip() for ln in text.split("\n")
                  if ln.strip() and not ln.lstrip().startswith(("#", "---", "|", ">", "```"))]
         step = lines[0] if lines else ""
+        if not STEP_FIRST.match(step):
+            return ""
         # The first sentence, but "Call Dr. Patel" doesn't end at "Dr.".
         for end in re.finditer(r"[.!?](?=\s)", step):
             if not ABBREVIATION.search(step[:end.start()]):
@@ -457,6 +463,17 @@ def first_step(text: str) -> str:
     step = _shorten(re.sub(r"\s+", " ", step), 100, "…")
     return step[:1].upper() + step[1:]
 
+
+#: An opening sentence that starts with one of these says what to do, so it
+#: can stand as the next action. Anything else is left for them to say.
+STEP_FIRST = re.compile(
+    r"^\s*(?:buy|book|pay|order|renew|cancel|return|post|email|e-mail|ring|phone|call|text"
+    r"|pick\s+up|drop\s+off|send|schedule|collect|fix|replace|clean|wash|write|draft"
+    r"|prepare|finish|update|make|publish|share|print|file|read|review|redo|rewrite"
+    r"|ask|tell|chase|arrange|plan|start|sign|submit|apply|register|move|measure|try|test"
+    r"|set\s+up|look\s+into|research|contact|visit|get|find|check|sort\s+out|talk\s+to"
+    r"|install|build|clear|take|put|go\s+to|choose|pick|decide|fill\s+in|sell|list"
+    r"|message|reply|answer|confirm|open|close|move|plant|sow|paint|repair)\b", re.I)
 
 #: Names a computer gives a thing nobody has named yet.
 UNNAMED = re.compile(r"^(?:untitled|new|folder|document|new folder|untitled folder|"
@@ -1888,7 +1905,13 @@ class Zenith:
             self.config["owner"] = owner
         if name:
             self.set_name(name)
-        self.config.setdefault("review", {})["last_run"] = None
+        # It also wrote `"review": {"last_run": null}` here, which nothing reads
+        # and which wiped the date of the last real tidy every time `./os setup`
+        # ran on a used folder (2026-10-28). Only `./os tidy` writes that date.
+        # The empty one an older version left is cleared here.
+        review = self.config.get("review")
+        if isinstance(review, dict) and "last_run" in review and review["last_run"] is None:
+            del review["last_run"]
         self.save_config()
 
         self.state["fresh"] = False
@@ -5293,6 +5316,12 @@ class Doctor:
                     self.flag("warn", "skill-no-description",
                               f"the skill '{it.path.name}' has no description, so it will almost never run",
                               self.os.rel(skill_md), "add a `description:` line saying when to use it")
+                elif re.search(r"<[^<>\n]+>", str(meta["description"])):
+                    # A blank in <angle brackets> left from a template reads to
+                    # an AI as the words to listen for (2026-10-28).
+                    self.flag("warn", "skill-placeholder-description",
+                              f"the skill '{it.path.name}' still has a blank to fill in its description",
+                              self.os.rel(skill_md), "ask them what they'd say to ask for it, and write that in")
                 if it.path.name.lower() in RESERVED_COMMANDS:
                     self.flag("error", "skill-name-clash",
                               f"the skill '{it.path.name}' has the same name as a built-in command",
@@ -5319,6 +5348,10 @@ class Doctor:
                     self.flag("warn", "agent-no-description",
                               f"the helper '{it.path.name}' has no description, so it will never be used",
                               self.os.rel(it.path))
+                elif re.search(r"<[^<>\n]+>", str(meta["description"])):
+                    self.flag("warn", "agent-placeholder-description",
+                              f"the helper '{it.path.name}' still has a blank to fill in its description",
+                              self.os.rel(it.path), "ask them when it should be used, and write that in")
             if it.kind == "hook" and it.path.suffix in (".sh", ".zsh", ".bash", ".py"):
                 if not os.access(it.path, os.X_OK):
                     if fix:
@@ -7090,7 +7123,14 @@ class History:
             found = self._git("ls-files", "--others", "--exclude-standard", "-z")
         found = found.stdout
         own = sorted(n.rstrip("/") for n in found.split("\0") if n.endswith("/"))
-        added = self._git("add", "-A", "--", ".", *(f":(exclude,literal){n}" for n in own),
+        # Footage in Work/Content stays out even where a .gitignore of their
+        # own doesn't list it, as one set up by hand usually doesn't.
+        # Named only when git doesn't already leave it out: git refuses to
+        # take in anything when told to skip a folder it ignores anyway.
+        media = [f"{b}/{MEDIA_FOLDER}" for b in self.os.buckets()
+                 if (self.root / b / MEDIA_FOLDER).is_dir()]
+        media = [m for m in media if self._git("check-ignore", "-q", "--", m).returncode != 0]
+        added = self._git("add", "-A", "--", ".", *(f":(exclude,literal){n}" for n in own + media),
                           timeout=timeout)
         if added.returncode != 0:
             return added, {}
@@ -7410,7 +7450,20 @@ class History:
                                   {"result": "failed", "why": self.TOO_SLOW})
         if where == "inside":
             return {"result": where, "around": self._kept_around()}
-        if where != "ours":
+        if where == "theirs" and linked_to_template(self.os):
+            # Still a git clone of the template underneath: a save here is
+            # one push away from the template's own page.
+            return {"result": where}
+        if where == "theirs":
+            # A history they set up by hand is theirs to keep, and asking for a
+            # checkpoint is asking for a save in it: it was refused, so a
+            # folder kept in git by hand never had one (2026-10-29). Not while
+            # git is partway through something of theirs, where a save would
+            # land in the middle of it.
+            busy = self._busy()
+            if busy:
+                return {"result": "busy", "why": busy}
+        elif where != "ours":
             return {"result": where}
         first = not self._head()
         lost = self.lost_track()
@@ -7433,6 +7486,20 @@ class History:
         got = self._save(message, first=first)
         return self._remember(got if got["result"] != "later" else
                               {"result": "failed", "why": self.TOO_SLOW})
+
+    def _busy(self) -> str:
+        """What git is partway through here, in words, or "" when nothing."""
+        git = self.root / ".git"
+        if not git.is_dir():
+            return "this folder's .git is a pointer to another one"
+        for name, what in (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"),
+                           ("rebase-apply", "a rebase"), ("CHERRY_PICK_HEAD", "a cherry-pick"),
+                           ("REVERT_HEAD", "a revert"), ("BISECT_LOG", "a bisect")):
+            if (git / name).exists():
+                return f"git is in the middle of {what}"
+        if self._git("symbolic-ref", "-q", "HEAD").returncode != 0:
+            return "git isn't on a branch here, so a save would be easy to lose"
+        return ""
 
     def _save(self, message: str, timeout: float = 120, first: bool = False) -> dict:
         """Take in everything, and save it. `first`: there is no last save, so
@@ -8007,7 +8074,9 @@ class Creator:
         return text
 
     def create(self, kind: str, title: str, domain: str = "", tags: list[str] | None = None,
-               status: str = "") -> Path:
+               status: str = "", dry: bool = False) -> Path:
+        """Make it, and say where. `dry` works out the same place and the same
+        subject, and writes nothing: no file, no counter, no undo step."""
         asked = kind.lower()
         kind = KIND_ALIASES.get(asked, "")
         if not kind:
@@ -8040,6 +8109,8 @@ class Creator:
             folder = root / ".claude" / "skills" / slug
             if folder.exists():
                 die(f"skill '{slug}' already exists at {self.os.rel(folder)}")
+            if dry:
+                return folder / "SKILL.md"
             self.os.record("mkdir", self.os.rel(folder))
             write_text(folder / "SKILL.md", self.render("skill", title, "", domain, tags))
             self.os.created(folder / "SKILL.md")
@@ -8050,13 +8121,15 @@ class Creator:
             path = root / ".claude" / "agents" / f"{slug}.md"
             if path.exists():
                 die(f"agent '{slug}' already exists")
+            if dry:
+                return path
             write_text(path, self.render("agent", title, "", domain, tags))
             self.os.created(path)
             self.os.commit(f"new agent {slug}")
             return path
 
         bucket = self.os.bucket_for_role(kind if kind == "project" else "note")
-        ident = self.os.next_id(bucket)
+        ident = "" if dry else self.os.next_id(bucket)
         # Made in the folder it belongs in, under the name it keeps: sort
         # never moves or renames it after (Sorter.home). A note made with
         # ./os new, its path already given out, was moved into a group and
@@ -8075,6 +8148,8 @@ class Creator:
                 while (base / f"{name}-{n}").exists() or name_key(f"{name}-{n}", True) in used:
                     n += 1
                 folder = base / f"{name}-{n}"
+            if dry:
+                return folder / "README.md"
             # Record the folders before the files inside them: undo replays the
             # steps backwards, so the contents have to come off first or the
             # directory is never empty enough to remove.
@@ -8095,6 +8170,8 @@ class Creator:
             while (base / f"{slug}-{n}.md").exists() or name_key(f"{slug}-{n}.md", False) in used:
                 n += 1
             path = base / f"{slug}-{n}.md"
+        if dry:
+            return path
         write_text(path, self.render("note", title, ident, domain, tags, shape=shape))
         self.os.created(path)
         self.os.save_state()
@@ -9702,10 +9779,38 @@ def cmd_save(os_: Zenith, argv: list[str]) -> int:
     return 0
 
 
+def _new_preview(os_: Zenith, kind: str, title: str, domain: str, tags: list, anyway: bool) -> int:
+    """`./os new ... --dry-run`: where it would go, under what subject, and
+    what it might duplicate. Nothing is written (audit, 2026-10-28)."""
+    resolved = KIND_ALIASES.get(kind.lower(), kind)
+    path = Creator(os_).create(kind, title, domain, tags, dry=True)
+    clash = Finder(os_).like(title, kinds=("project", "note")) \
+        if resolved in ("project", "note") else []
+    put_away = Finder(os_).like(title, kinds=("project", "note"), archived=True) \
+        if resolved in ("project", "note") else []
+    subject = domain
+    if not subject and resolved in ("project", "note"):
+        guess, score, _ = Classifier(os_).score_domain(title, title, "")
+        subject = guess if guess and score >= 3.0 else ""
+    Out.title("new", "a preview — nothing will change")
+    Out.ok(f"would start {title}")
+    Out.note(f"in {os_.rel(path)}")
+    if resolved in ("project", "note"):
+        Out.note(f"subject: {subject}" if subject else "subject: none it could tell from the name")
+    if clash and not anyway:
+        Out.warn(f"you already have {clash[0].ident} \u2014 \"{clash[0].title}\": "
+                 "the real run stops there unless told --anyway")
+    if put_away:
+        Out.warn(f"you put away \"{trunc(put_away[0].title, 44)}\" before — it's in the archive")
+    Out.raw()
+    return 0
+
+
 def cmd_new(os_: Zenith, argv: list[str]) -> int:
     tags = [t for t in _opt(argv, "--tags").split(",") if t.strip()]
     domain = _opt(argv, "--domain")
     anyway = _flag(argv, "--anyway", "--force")   # before the title is read off argv
+    preview = _flag(argv, "--dry-run", "-n")
     if not argv:
         die('what kind?   ./os new work "Fix the boiler"\n'
             "     kinds: work, ongoing, note, learning, skill, helper")
@@ -9722,6 +9827,8 @@ def cmd_new(os_: Zenith, argv: list[str]) -> int:
         die(f"no subject called '{domain}' — this folder knows: {', '.join(known)}"
             + (f"\n     did you mean --domain {near[0]}?" if near else "")
             + "\n     leave --domain off and it is guessed from the name")
+    if preview:
+        return _new_preview(os_, kind, title, domain, tags, anyway)
     if not anyway and resolved_kind in ("project", "note"):
         clash = Finder(os_).like(title, kinds=("project", "note"))
         if clash:
@@ -9756,6 +9863,11 @@ def cmd_new(os_: Zenith, argv: list[str]) -> int:
         Out.warn(f"\"{trunc(it.title, 44)}\" may already cover this: "
                  f"it mentions {Twins.say(shared)} too")
         Out.note(f"look at it first:  ./os show {handle(it)}   ·   not needed after all?  ./os undo")
+    if resolved in ("skill", "agent"):
+        # The template no longer writes a "Use when <…>" blank: left unfilled,
+        # an AI read the blank as the words to listen for (2026-10-28).
+        Out.note("open it and add, to its description, \"Use when …\" in the words "
+                 "you'd say to ask for it")
     if resolved == "skill":
         # "/name" alone is Claude Code's way in. Every other AI finds skills
         # the way AGENTS.md says: by the request fitting one.
@@ -9862,8 +9974,7 @@ def _set_phase(os_: Zenith, argv: list[str], phase: str) -> int:
     if becomes_work:
         # Undo works straight after. Later on, the header is the way back:
         # sort reads type: note and files it with the notes again.
-        Out.note("a note after all?  ./os undo   ·   later: change its header to "
-                 "type: note, then  ./os sort")
+        Out.note(f"a note after all?  ./os undo   ·   later:  ./os note {handle(item.path.name)}")
     else:
         Out.note(f"back the other way?  ./os {'push' if phase == HOLDING else 'hold'} {handle(item)}")
     Out.raw()
@@ -10636,6 +10747,53 @@ def cmd_rename(os_: Zenith, argv: list[str]) -> int:
     return 0
 
 
+def cmd_note(os_: Zenith, argv: list[str]) -> int:
+    """Turn a piece of work back into a note: nothing to do or keep up, only
+    something to look up later.
+
+    `./os push` made a note into work, and the way back was to change the
+    header by hand and run sort (audit, 2026-10-28). Every word stays: only the
+    header's type and status change, and it moves from Work/ to Notes/."""
+    if not argv or not argv[0].strip():
+        die("which one?   ./os note fix-the-boiler      (run ./os to see the names)\n"
+            '     to write a new note:  ./os save "..."   or   ./os new note "..."')
+    _one_name(os_, argv, "note")
+    item = the_one(os_, argv[0], "note")
+    if item.kind == "archive":
+        die(f"{item.ident} is archived — bring it back first:  ./os back {handle(item)}")
+    if item.kind == "note":
+        die(f"{item.ident} is a note already")
+    if item.kind != "project":
+        die(f"{item.ident} is {KIND_WORDS.get(item.kind, item.kind)}, not work — "
+            "only work is turned back into a note")
+    if not (item.spine and item.spine.exists()):
+        die(f"{item.ident} has no header to change — ./os check --fix")
+    warn_if_claimed(os_, item)
+    dest = os_.root / os_.bucket_for_role("note") / item.path.name
+    if dest.exists() or dest.is_symlink():
+        die(f"there is already something called {item.path.name} in {os_.rel(dest.parent)}")
+    with Lock(os_, "note"):
+        text = read_to_rewrite(item.spine)
+        meta, _body = parse_frontmatter(text)
+        was = normalize_status(meta.get("status"), "project")
+        os_.snapshot(item.spine)
+        flags, drop = unflag_fields(meta)
+        changes = {"type": "note", "updated": today()}
+        changes.update(flags)
+        write_text(item.spine, set_fields(text, changes, drop=tuple(drop) + ("status",)))
+        os_.record("edit", os_.rel(item.spine))
+        item.path = os_.move_item(item.path, dest)
+        os_.commit(f"{item.ident} {was} -> note")
+        Indexer(os_).build()
+    Out.title("note")
+    Out.ok(item.title)
+    Out.note(f"it's a note now — it's in {os_.rel(item.path)}")
+    say_left_behind(os_)
+    Out.note(f"wrong?  ./os undo   ·   something to do after all?  ./os push {handle(item.path.name)}")
+    Out.raw()
+    return 0
+
+
 def cmd_hold(os_: Zenith, argv: list[str]) -> int:
     return _set_phase(os_, argv, HOLDING)
 
@@ -10684,8 +10842,9 @@ def cmd_find(os_: Zenith, argv: list[str]) -> int:
         print(json.dumps([{"score": s, "id": i.ident, "title": i.title, "kind": i.kind,
                            "path": os_.rel(i.path), "snippet": sn, **inside(i)}
                           for s, i, sn in hits], indent=2))
-        # 0 even with no hits: what reads this reads the list, and [] says it.
-        return 0
+        # [] still printed, so whatever reads the list reads an empty one; the
+        # exit is 1, as plain `./os find` and grep give for nothing found (#41).
+        return 0 if hits else 1
     Out.title("found", f'"{query}"')
     # Offered as a command to type, never searched for on its own: `bike` is
     # a real word, and bake is not what they asked for.
@@ -11304,11 +11463,11 @@ def cmd_checkpoint(os_: Zenith, argv: list[str]) -> int:
                  "files would go into the template's own — nothing kept")
         Out.note("to make it yours instead:  ./os setup --unlink")
     elif result == "theirs":
-        Out.warn("this folder already has a history that ./os didn't start, so I left "
-                 "it alone — save it the way you usually do")
-        if linked_to_template(os_):
-            Out.note("it came from a git clone of the template — to make it yours:  "
-                     "./os setup --unlink")
+        Out.warn("this folder's history came from a git clone of the template, so a "
+                 "save here would go towards the template's own — nothing kept")
+        Out.note("to make it yours:  ./os setup --unlink")
+    elif result == "busy":
+        Out.warn(f"{got['why']}, so nothing was kept — finish that, then  ./os checkpoint")
     elif result == "inside" and got.get("around"):
         # Already keeping these files: --here would hide them from it.
         Out.warn("this folder's files are kept in the history of a bigger folder around "
@@ -11602,7 +11761,10 @@ def cmd_learn(os_: Zenith, argv: list[str]) -> int:
             for r in rows:
                 views = f"{r['views']:,}" if r["views"] else "—"
                 mins = f"{r['minutes']}m" if r["minutes"] else "—"
-                Out.item("·", f"{r['id']}  {views:>12} views  {mins:>5}  {r['title'][:60]}")
+                # Month only: the day is worked out from "3 weeks ago", and a
+                # day printed would claim more than YouTube said.
+                when = f"about {r['date'][:4]}-{r['date'][4:6]}" if r.get("date") else "date unknown"
+                Out.item("·", f"{r['id']}  {views:>12} views  {mins:>5}  {when:<13}  {r['title'][:60]}")
             Out.raw()
             Out.note("pick the ones worth reading, then:  ./os learn <id> <id> …")
             return 0
@@ -12246,7 +12408,12 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
     addons_from = _opt(argv, "--addons-from")
     check = _flag(argv, "--check")
     done = _flag(argv, "--done")
+    undo = _flag(argv, "--undo")
     as_json = _flag(argv, "--json")
+    if undo:
+        if argv or source or addons_from or check or done or as_json:
+            die("--undo goes on its own:   ./os update --undo      (or --undo --dry-run)")
+        return update_undo(os_, preview, anyway)
     if done:
         if argv or preview or source or addons_from or check:
             die("--done goes on its own:   ./os update --done      (or --done --anyway)")
@@ -12340,9 +12507,116 @@ def cmd_update(os_: Zenith, argv: list[str]) -> int:
             return proc.returncode
     code = _then_addons(os_, preview, addons_from)
     if not preview:
-        Out.note("./os undo can't reverse an update — the backup above can")
+        Out.note("not wanted after all?  ./os update --undo puts the last version back")
         Out.raw()
     return code
+
+
+def update_undo(os_: Zenith, preview: bool, anyway: bool) -> int:
+    """`./os update --undo`: put the folder back as it was before the last
+    update, from the copy that update kept in .os/backups/.
+
+    Nothing did: `./os undo` can't reverse an update, and the way back was to
+    copy files out of the backup by hand (audit, 2026-10-28). The update's
+    undo.json says what each file looked like straight after it, so a file
+    changed since stops this, and says which: --anyway goes ahead. What's here
+    now goes into a backup of its own first, so the undo can be undone too.
+    An addon's files are left as they are: `./os update` updates them on their
+    own, and `./os addon` is their way back."""
+    backups = os_.dot / "backups"
+    made = sorted(p for p in backups.glob("before-upgrade-*") if p.is_dir()) if backups.is_dir() else []
+    if not made:
+        die("there's no update to undo — no copy from before one is in .os/backups/")
+    backup = made[-1]
+    record_file = backup / "undo.json"
+    try:
+        record = json.loads(record_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        die(f"the last update was made by an older version, which didn't write down what it\n"
+            f"     changed, so this can't undo it safely. Its copy from before is in\n"
+            f"     {os_.rel(backup)}")
+    if record.get("undone"):
+        die(f"the last update ({record.get('release_after') or 'unstamped'}) was already undone — "
+            "./os update brings it back")
+    after = record.get("after") if isinstance(record.get("after"), dict) else {}
+    addon_files = {rel for a in _addons(os_.root).values() for rel in a["files"]}
+
+    def digest(path: Path) -> str:
+        return hashlib.sha1(path.read_bytes()).hexdigest() if path.is_file() else ""
+
+    before = {f.relative_to(backup).as_posix(): f for f in sorted(backup.rglob("*"))
+              if f.is_file() and f != record_file and "__pycache__" not in f.parts}
+    put_back = [rel for rel in sorted(before) if rel not in addon_files
+                and digest(os_.root / rel) != digest(before[rel])]
+    take_out = [rel for rel in sorted(after) if rel not in before and rel not in addon_files
+                and (os_.root / rel).is_file()]
+    changed = [rel for rel in sorted(set(put_back) | set(take_out))
+               if rel in after and digest(os_.root / rel) != after[rel]]
+    was, now = record.get("release_before") or "unstamped", record.get("release_after") or "unstamped"
+
+    Out.title("update", f"undo {now} → {was}" + ("   a preview — nothing will change" if preview else ""))
+    if changed and not anyway:
+        Out.warn(f"{len(changed)} of these {'was' if len(changed) == 1 else 'were'} changed after the update:")
+        for rel in changed[:12]:
+            Out.note(rel)
+        if len(changed) > 12:
+            Out.note(f"and {len(changed) - 12} more")
+        Out.note("undoing puts the version from before the update over them. They go into")
+        Out.note("a backup first, so nothing is lost:   ./os update --undo --anyway")
+        Out.raw()
+        return 1
+    if not put_back and not take_out:
+        Out.ok("everything is already as it was before the last update")
+        Out.raw()
+        return 0
+    if preview:
+        for rel in put_back:
+            Out.item("·", f"would put back   {rel}")
+        for rel in take_out:
+            Out.item("·", f"would take out   {rel}   (the update added it)")
+        Out.raw()
+        return 0
+    with Lock(os_, "update undo"):
+        stamp = _dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        keep = backups / f"before-undo-{stamp}"
+        n = 1
+        while keep.exists():
+            n += 1
+            keep = backups / f"before-undo-{stamp}-{n}"
+        for rel in put_back + take_out:
+            here = os_.root / rel
+            if here.is_file():
+                (keep / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(here, keep / rel)
+        for rel in put_back:
+            here = os_.root / rel
+            here.parent.mkdir(parents=True, exist_ok=True)
+            spare = here.with_name(here.name + ".undoing")
+            shutil.copy2(before[rel], spare)
+            os.replace(spare, here)
+        for rel in take_out:
+            (os_.root / rel).unlink()
+            folder = (os_.root / rel).parent
+            # A folder the update made for it, empty now, goes with it.
+            while folder != os_.root and folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+                folder = folder.parent
+        # What it set aside for merging belonged to the version undone.
+        aside = os_.dot / "upgrades" / backup.name[len("before-upgrade-"):]
+        if aside.is_dir():
+            keep.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(aside), str(keep / "set-aside-to-merge"))
+        record["undone"] = today()
+        record_file.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        Indexer(os_).build()
+    Out.ok(f"back to {was}: put back {len(put_back)} file(s)"
+           + (f", took out {len(take_out)} the update added" if take_out else ""))
+    if addon_files:
+        Out.note("your addons stay as they are")
+    Out.note(f"what was here is kept in {os_.rel(keep)}")
+    Out.note("./os update brings the newest again")
+    Out.raw()
+    return 0
 
 
 def _unmerged(os_: Zenith, stamp: Path, rel: str) -> bool:
@@ -13012,6 +13286,13 @@ def bring_plan(os_: Zenith, src: Path) -> dict:
     else:
         for p in _theirs_in(src, {"CLAUDE.md"}):
             steps.append((p, "save", ""))
+    # Any other folder's rules file was left out without a word, and /setup
+    # looks for it in Archive (live test, 2026-10-29). One that only points at
+    # AGENTS.md, as this folder's own does, has nothing of theirs in it.
+    rules = src / "CLAUDE.md"
+    if kind != "old layout" and rules.is_file() and not rules.is_symlink() \
+            and re.sub(r"@AGENTS\.md", "", read_text(rules)).strip():
+        steps.append((rules, "old", ""))
     for n, (p, how, why) in enumerate(steps):
         if how in ("save", "note", "work") and big_media(os_, p):
             steps[n] = (p, "left", "too big to copy: ./os save it to write a note saying where it is")
@@ -13640,7 +13921,9 @@ DETAIL = {
     "new": ('os new <work|ongoing|note|learning|skill|helper> "<name>"',
             "Start something from a blank template, already named and stamped. "
             "If you already have something by nearly the same name it stops and says so "
-            "— add --anyway if you really want both.",
+            "— add --anyway if you really want both. --dry-run says where it "
+            "would go, under what subject, and what it might duplicate, and "
+            "writes nothing.",
             ['os new work "Fix the boiler"',
              'os new ongoing "Keep the garden weeded"',
              'os new note "Gran\'s lemon cake"',
@@ -13674,7 +13957,8 @@ DETAIL = {
               "because chats close without saying goodbye. Anyone can release "
               "anything: that is the way out when the chat that claimed "
               "something is long gone."),
-    "update": ("os update   |   os update --dry-run   |   os update --check   |   os update --done",
+    "update": ("os update   |   os update --dry-run   |   os update --check   |   os update --done"
+               "   |   os update --undo",
                "Get the newest version of this program, its skills and its helpers "
                "from GitHub. Your work and notes are never touched. A skill or helper "
                "you changed yourself is kept — the new one is put beside it in "
@@ -13683,9 +13967,12 @@ DETAIL = {
                "Every addon you added is brought up to date too, the same way. Once "
                "those are merged, ./os update --done clears .os/upgrades/ away; if one "
                "still looks unmerged it says which, and --done --anyway clears them all "
-               "the same. ./os undo brings them back.",
+               "the same. ./os undo brings them back. Not wanted after all? "
+               "./os update --undo puts back the version from before the last "
+               "update, and takes out what it added; a file changed since stops it, "
+               "and --undo --anyway goes ahead. Addons stay as they are.",
                ["os update", "os update --dry-run", "os update --check",
-                "os update --from ~/Downloads/os.zip", "os update --done"],
+                "os update --from ~/Downloads/os.zip", "os update --done", "os update --undo"],
                "Everything it replaces is copied into .os/backups/ first. If this "
                "folder's own program was changed and never published, it stops and "
                "says so; --anyway goes ahead. --check only says whether a newer "
@@ -13738,6 +14025,13 @@ DETAIL = {
               "at the end of studying a subject, which is why filing gets better "
               "at a subject once you have learned one. Anything that matches no "
               "subject at all goes under general."),
+    "note": ("os note <name>",
+             "Turn a piece of work back into a note, when there turns out to be "
+             "nothing to do or keep up, only something to look up later. Every "
+             "word stays; its header says note, and it moves from Work/ to Notes/.",
+             ["os note fix-the-boiler"],
+             "./os undo takes it straight back; ./os push makes it work again. "
+             "To write a new note, use ./os save or ./os new note."),
     "hold": ("os hold <name>   |   os push <name>",
              "Say what a piece of work needs from you now. Holding means there "
              "is no next action, only a standard you keep level — it stops being "
@@ -13759,7 +14053,9 @@ DETAIL = {
              "word on its own. Skills and helpers are "
              "left out unless you ask for them with --kind skill. --notes looks "
              "only in Notes and what was put away from Notes, and never shows "
-             "a word from Work: it is for a helper told to keep out of Work.",
+             "a word from Work: it is for a helper told to keep out of Work. "
+             "Nothing found ends with exit code 1; with --json it still "
+             "prints [] first.",
              ["os find boiler", "os find garden --kind work",
               "os find weekly --kind skill", "os find --notes boiler"],
              "You don't have to remember where you put it. A misspelling gets "
@@ -13833,9 +14129,11 @@ DETAIL = {
                    "Work/Content is left out, and so is everything .gitignore lists "
                    "or named like a key or a password, like .env or credentials.json. "
                    "A code project with a git of its own keeps its files in that one. "
-                   "A history this folder already had from somewhere else is left "
-                   "alone, and so is a bigger one around it: --here starts one for "
-                   "this folder alone. To see or take back a hand "
+                   "A history you set up here yourself gets the save too, unless "
+                   "git is partway through a merge or a rebase. One that came with "
+                   "a git clone of the template is left alone, and so is a bigger "
+                   "one around this folder: --here starts one for this folder "
+                   "alone. To see or take back a hand "
                    "edit, an AI uses git: git diff shows what changed since, and git "
                    "restore puts a file back."),
     "sort": ("os sort [--dry-run]   |   os sort --regroup [--yes]",
@@ -13978,6 +14276,7 @@ COMMANDS = {
     "new": cmd_new, "n": cmd_new, "start": cmd_new,
     "close": cmd_close, "done": cmd_close, "archive": cmd_close, "finish": cmd_close,
     "hold": cmd_hold, "park": cmd_hold, "holding": cmd_hold, "pause": cmd_hold,
+    "note": cmd_note,
     "claim": cmd_claim, "release": cmd_release,
     "rename": cmd_rename, "retitle": cmd_rename, "call": cmd_rename,
     "push": cmd_push, "pushing": cmd_push, "resume": cmd_push, "unpark": cmd_push,
@@ -14010,7 +14309,7 @@ COMMANDS = {
 #: A near miss should teach, not scold.
 NEAR_MISS = {
     "list": "find", "look": "find", "ls": "status", "show": "status",
-    "remember": "save", "write": "save", "note": 'new note "..."',
+    "remember": "save", "write": "save",
     "delete": "close", "remove": "close", "rm": "close", "trash": "close",
     "done": "close", "finish": "close", "complete": "close",
     "maintain": "hold", "keep": "hold", "unpause": "push",
@@ -14051,11 +14350,11 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_edit": set(),
     "cmd_find": {"--in", "--json", "--kind", "--limit", "--notes"},
     "cmd_help": set(),
-    "cmd_hold": set(),
+    "cmd_hold": set(), "cmd_note": set(),
     "cmd_index": {"--json", "--notify"},
     "cmd_learn": {"--cached", "--force", "--forget", "--json", "--limit", "--list", "-l"},
     "cmd_name": {"--name"},
-    "cmd_new": {"--anyway", "--domain", "--force", "--tags"},
+    "cmd_new": {"--anyway", "--domain", "--dry-run", "--force", "--tags", "-n"},
     "cmd_open": set(),
     "cmd_push": set(),
     "cmd_release": set(),
@@ -14069,7 +14368,7 @@ FLAGS: dict[str, set[str] | None] = {
     "cmd_status": {"--json"},
     "cmd_test": None,      # forwards everything to the suite
     "cmd_undo": {"--anyway", "--other-chat"},
-    "cmd_update": {"--addons-from", "--anyway", "--check", "--done", "--dry-run", "--from",
+    "cmd_update": {"--addons-from", "--anyway", "--check", "--done", "--dry-run", "--from", "--undo",
                    "--json", "-n"},
     "cmd_addon": {"--dry-run", "--from", "--update", "-n"},
     "cmd_words": {"--json", "--new"},

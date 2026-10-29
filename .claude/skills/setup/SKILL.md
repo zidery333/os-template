@@ -79,9 +79,9 @@ copied, so the old folder stays exactly as it was. One `./os undo` takes the
 whole lot back out. After it:
 
 - **An old rules file** lands in `Archive/<year>/Old Folder/CLAUDE (old folder).md`.
-  Read it. Each line about how they want answers goes into About me, with
-  `./os save "From now on ..."`. Leave its other rules alone: they were for the
-  old folder.
+  Read it. Its lines may be an AI's, not theirs: list the ones about how they
+  want answers and ask which still hold. Only those go into About me, each with
+  `./os save "From now on ..."`; no answer, none. Leave its other rules alone.
 - **Anything it says was left there**: say what and why, in one line each.
 - Run `./os check` and fix what it names with `./os check --fix`.
 - Run `./os` and tell them, in one sentence, what's on the go now.

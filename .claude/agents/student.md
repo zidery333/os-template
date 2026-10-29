@@ -61,7 +61,7 @@ Everything below, in your final message. Nothing on disk but the cache.
   `.os/templates/learning.md`, so `/learn` files what you hand back rather than
   reshaping it. Read that file if anything below is unclear; don't add headings
   of your own, and leave out `## Why I'm learning this` — that answer is theirs,
-  not yours, and `/learn` fills it.
+  not yours. `/learn` writes it only from what they said, or leaves it empty.
 
 ```
 # How <the craft> is actually done

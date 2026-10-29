@@ -10,7 +10,7 @@ They never type `./os`. They talk. So the menu is what they can *say*, not
 what the terminal accepts.
 
 ```bash
-./os brief --json --quiet     # where things stand, so the menu can be specific
+./os brief                    # where things stand, so the menu can be specific
 ```
 
 Read `.claude/CATALOG.md` for the skills and helpers actually installed here,

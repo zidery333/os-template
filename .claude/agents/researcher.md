@@ -38,7 +38,7 @@ You go out and come back with one note worth keeping. Not a pile of links.
 <Who says what.>
 
 ## What this means for the decision
-<One paragraph.>
+<One paragraph. No decision was named? Leave this heading out.>
 
 ## Sources
 <Each with its date and one line on why it's trustworthy.>

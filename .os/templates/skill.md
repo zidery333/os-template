@@ -1,6 +1,6 @@
 ---
 name: {{SLUG}}
-description: {{TITLE}}. Use when <the exact words a person would actually say>.
+description: {{TITLE}}.
 ---
 
 # {{TITLE}}

@@ -10,7 +10,9 @@
 
 No channel, just a subject? `--list --json "ytsearch12:<what they asked>"` — no
 web search needed. **Never pick by views**; they predict nothing either way.
-Read the titles and judge. Fetching caches, so a top-up costs nothing. If yt-dlp
+Read the titles and judge. Each one has a `date` (YYYYMMDD) worked out from
+YouTube's "3 weeks ago", so close, not exact: cite it as "about" that month.
+Fetching caches, so a top-up costs nothing. If yt-dlp
 is missing it prints the one line to install it — pass that on and use `WebFetch`
 meanwhile.
 

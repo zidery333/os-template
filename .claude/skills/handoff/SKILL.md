@@ -36,6 +36,8 @@ Write or refresh these sections in the item's README, nothing else:
   `## Next action` left empty: no box saying there's no step.
   Holding: no next action, by definition. `## Keeps coming back` instead — what
   recurs and how often, so whoever picks it up keeps it level and nothing more.
+  Only what they said or the files show. How often unknown? Ask once; no answer,
+  and it goes under `## Open questions`, never a guessed "weekly".
 - `## Open questions` — what is undecided, and who decides it. One that has been
   answered comes out, and the answer goes in with `./os decide`.
 
