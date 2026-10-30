@@ -116,11 +116,6 @@ copied as a template; the key rule buried in the middle. Fix the causes,
 biggest first, run the checks above, then hand back the whole fixed prompt
 with a short line on what changed and why.
 
-## Also worth saying
-
-- **Long chats drift.** For custom instructions, warn that the format slips
-  after many messages, and a one-line reminder fixes it.
-- **Polite questions are taken literally.** "Can you suggest changes?" gets
-  suggestions, not changes.
-- **A job they'll run in this folder again and again** should become a
-  skill. Offer /make-skill.
+For custom instructions, warn that the format slips in long chats, and a
+one-line reminder fixes it. A job they'll run in this folder again and again
+should become a skill: offer /make-skill.
