@@ -1,6 +1,6 @@
 # ✍️ Tate
 
-Writes emails, tweets, captions and DMs in Andrew Tate's voice, measured from hundreds of his real emails.
+Says anything in Andrew Tate's voice — texts, DMs, replies, poems, captions, tweets, speeches, emails — measured from hundreds of his real emails.
 
 An addon for [Zenith](https://github.com/zidery333/os-template/tree/os). Inside your Zenith folder, type:
 
