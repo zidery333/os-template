@@ -1,0 +1,10 @@
+{
+  "name": "Prompts",
+  "icon": "🎯",
+  "about": "Writes a prompt for any AI — ChatGPT, Claude, Gemini, Midjourney, Veo, Kling — tests it when it can, and finds out why a prompt keeps giving bad answers and fixes it. Built from the official prompting guides.",
+  "files": [
+    ".claude/skills/prompt/SKILL.md",
+    ".claude/skills/prompt/REFERENCE.md"
+  ],
+  "release": "2026-10-30.1"
+}
