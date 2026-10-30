@@ -19,7 +19,8 @@ words.
 - **Talk to the reader as "you".** 91%.
 - **Sign off as Tate.** 98%. `- Tate` (90%), or `- TATESHINKAI` on the Wudan
   stories.
-- **Nothing after the signature.** 0 of 282 signed emails have a line after it.
+- **Nothing after the signature.** 0 of the 282 emails signed `- Tate` have a
+  line after it.
 - **Short subject line.** Median 3 words; 86% are 4 words or fewer. Never a
   promise, never a number.
 
@@ -136,8 +137,6 @@ Money comes back.
 
 Time does not.
 
-Start spending like the man you plan to become.
-
 - Tate
 ```
 
@@ -147,13 +146,11 @@ Subject: Now
 
 The window is open today.
 
-Tomorrow it is shut.
+Tomorrow it is SHUT.
 
 Smart men wait for more information.
 
 Winners move on what they have.
-
-SPEED WINS.
 
 - Tate
 ```
@@ -161,8 +158,8 @@ SPEED WINS.
 *Ghostwritten DM, frame: speed wins. No signature, none of his life, one
 paragraph, a placeholder where a real fact goes.*
 ```
-Most channels lose viewers in the first ten seconds. Yours drops at
-[your real number]. I fix openings, and I can show you one this week.
+Your viewers leave at [your real number] seconds. That is the opening, not
+the video. I fix openings, and I can show you one this week.
 ```
 
 *How a pitch attaches:* the lesson finishes completely, then one bare line with
