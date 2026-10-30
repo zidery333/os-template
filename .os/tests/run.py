@@ -5262,10 +5262,10 @@ def test_about_me_said_outright_starts_the_about_me_note(t: Case) -> None:
     it, and one ./os undo takes back the line and the note both."""
     root = t.box.root
     note = root / "Notes" / "about-me.md"
-    said = t.box.run("save", "About me: I trade NQ futures from London, mornings only").stdout
+    said = t.box.run("save", "About me: I keep bees in Leeds, weekends only").stdout
     t.ok(note.is_file(), f"with no About me yet, the save starts one\n{said}")
     text = note.read_text()
-    t.ok("- I trade NQ futures from London, mornings only. (said)" in text,
+    t.ok("- I keep bees in Leeds, weekends only. (said)" in text,
          f"the line is in it, without 'About me:' in front\n{text}")
     t.eq(sorted(p.name for p in (root / "Notes").rglob("*.md")), ["about-me.md"],
          "and no loose note is made for it")
@@ -5704,16 +5704,16 @@ def test_saved_work_that_names_work_is_its_next_step(t: Case) -> None:
 
 @test
 def test_a_page_about_work_you_have_goes_inside_it(t: Case) -> None:
-    """`./os save` made a note about the setups for 'Build a Trading Bot for
-    NQ1!' a brand-new piece of work beside it, and it had to be taken back
+    """`./os save` made a note about the wiring for 'Build a Weather Station for
+    Shed2!' a brand-new piece of work beside it, and it had to be taken back
     and written inside the work by hand (snag, 2026-09-29). Something whose
     title or first lines name a piece of work, marks and capitals aside, goes
     inside it as a file of its own, with a dated line in its ## Log. --into
     picks the work outright, --new keeps it apart, and ./os undo takes any of
     them back. A few words in common are not its name."""
     root = t.box.root
-    t.box.run("new", "work", "Build a Trading Bot for NQ1!")
-    work = next(p for p in (root / "Work").iterdir() if p.name.startswith("Build a Trading"))
+    t.box.run("new", "work", "Build a Weather Station for Shed2!")
+    work = next(p for p in (root / "Work").iterdir() if p.name.startswith("Build a Weather"))
     readme = work / "README.md"
     before = readme.read_text()
 
@@ -5722,18 +5722,18 @@ def test_a_page_about_work_you_have_goes_inside_it(t: Case) -> None:
 
     away = t.box.tmp / "Desktop"
     away.mkdir()
-    setups = away / "nq-setups.md"
-    setups.write_text("# NQ bot - my own setups\n\n"
-                      "The setups I trade by hand, for build a trading bot for NQ1.\n\n"
-                      "## Opening drive\nWait for the first 5-minute bar to close above the "
-                      "overnight high, then buy the first pullback.\n\n"
-                      "## Fade the open\nIf the gap is over 80 points, fade it back to "
-                      "the prior close.\n")
+    setups = away / "shed-wiring.md"
+    setups.write_text("# Shed station - my own wiring\n\n"
+                      "The wiring I did by hand, for build a weather station for Shed2.\n\n"
+                      "## Rain gauge\nRun the cable along the gutter, then down the "
+                      "back wall to the logger.\n\n"
+                      "## Wind vane\nIf the pole is over 3 metres, brace it back to "
+                      "the fence post.\n")
     got = t.box.json("save", str(setups))
     t.eq(got.get("into"), work.name, f"it goes into the work its first lines name: {got}")
     inside = root / got["saved"]
     t.eq(inside.parent, work, "as a file inside that work's folder")
-    t.ok("Fade the open" in inside.read_text(), "with every word of it")
+    t.ok("Wind vane" in inside.read_text(), "with every word of it")
     t.eq(listed(), [work.name], "and no new work is made")
     log = readme.read_text().split("## Log", 1)[1]
     t.ok(f"- {engine.today()}" in log and inside.name in log,
@@ -5742,9 +5742,9 @@ def test_a_page_about_work_you_have_goes_inside_it(t: Case) -> None:
     t.ok(not inside.exists(), "undo takes the file back out")
     t.eq(readme.read_text(), before, "and the Log line")
 
-    pasted = ("Build a Trading Bot for NQ1 - broker notes\n"
-              "Rithmic gives the cleanest fills, Tradovate the easiest API.\n"
-              "Both charge per side.")
+    pasted = ("Build a Weather Station for Shed2 - parts notes\n"
+              "The metal sensors read cleanest, the plastic ones are easiest to wire.\n"
+              "Both need a solar panel.")
     said = t.box.run("save", pasted).stdout
     t.ok(work.name in said and f"{work.name}/" in said, f"the reply says where it went\n{said}")
     t.ok("--new" in said, "and how to keep it apart instead")
@@ -5752,10 +5752,10 @@ def test_a_page_about_work_you_have_goes_inside_it(t: Case) -> None:
     t.box.run("undo")
 
     # The title the snag had, which never names the work: --into puts it there.
-    own = away / "the-owners-setups.md"
-    own.write_text("# NQ bot - the owner's own setups\n\nOpening drive, fade the open, "
-                   "and the 2pm reversal.\n")
-    got = t.box.json("save", "--into", "build-a-trading-bot-for-nq1", str(own))
+    own = away / "the-owners-wiring.md"
+    own.write_text("# Shed station - the owner's own wiring\n\nRain gauge, wind vane, "
+                   "and the 2pm reading.\n")
+    got = t.box.json("save", "--into", "build-a-weather-station-for-shed2", str(own))
     t.eq(got.get("into"), work.name, "--into picks the work outright")
     t.ok((root / got["saved"]).parent == work, "and it's inside it")
     t.box.run("undo")
@@ -5766,9 +5766,9 @@ def test_a_page_about_work_you_have_goes_inside_it(t: Case) -> None:
     t.ok(inside.name not in readme.read_text(), "and nothing is written in the work")
     t.box.run("undo")
 
-    loose = away / "bot-ideas.md"
-    loose.write_text("# Trading bot ideas for crypto\n\nA bot for NQ is one thing; one for "
-                     "Bitcoin trades all weekend.\n")
+    loose = away / "station-ideas.md"
+    loose.write_text("# Weather station ideas for the roof\n\nA station for a shed is one thing; one for "
+                     "a roof takes all the wind.\n")
     t.ok(t.box.json("save", str(loose))["saved"].startswith("Notes/"),
          "a few words in common are not its name")
     t.box.run("save", "--into", "nothing-called-this", "a line", expect=1)
@@ -11147,19 +11147,19 @@ def test_rename_moves_the_name_and_the_title_together(t: Case) -> None:
 
 @test
 def test_no_name_it_makes_trips_up_a_terminal(t: Case) -> None:
-    """`Build a Trading Bot for NQ1!` was a folder no command could name: the
+    """`Build a Weather Station for Shed2!` was a folder no command could name: the
     shell read the ! as "the last command", even in quotes, and the folder
     had to be reached as Work/Build* (snag, 2026-09-29). No name ./os makes
     has a mark like that in it; the title in the header keeps their words.
     One made by hand is named by ./os check, with the rename to type."""
     import shlex
     root = t.box.root
-    t.box.run("new", "work", "Build a Trading Bot for NQ1!")
-    folder = root / "Work" / "Build a Trading Bot for NQ1"
+    t.box.run("new", "work", "Build a Weather Station for Shed2!")
+    folder = root / "Work" / "Build a Weather Station for Shed2"
     t.ok(folder.is_dir(), f"the ! is left off the folder: {sorted(p.name for p in (root / 'Work').iterdir())}")
-    t.ok("title: Build a Trading Bot for NQ1!" in (folder / "README.md").read_text(),
+    t.ok("title: Build a Weather Station for Shed2!" in (folder / "README.md").read_text(),
          "and kept in its title")
-    t.box.run("rename", "build-a-trading-bot-for-nq1", "Q&A: what's next? [$5 {draft}] `x`")
+    t.box.run("rename", "build-a-weather-station-for-shed2", "Q&A: what's next? [$5 {draft}] `x`")
     names = [p.name for p in (root / "Work").iterdir()]
     t.eq(len(names), 1, "renamed, it is still one thing")
     t.ok(not engine.SHELL_MARKS.search(names[0]), f"and a rename makes no such name: {names[0]}")
@@ -11554,9 +11554,9 @@ def test_a_saved_page_to_look_things_up_in_is_a_note(t: Case) -> None:
     still work."""
     away = t.box.tmp / "Downloads"
     away.mkdir()
-    odds = away / "MFFU 50k eval odds by edge.md"
+    odds = away / "Northgate 50k eval odds by edge.md"
     odds.write_text(
-        "# MFFU 50k eval odds by edge, reference simulated 2026-09-29\n\n"
+        "# Northgate 50k eval odds by edge, reference simulated 2026-09-29\n\n"
         "Reference numbers. 10,000 simulated attempts per row: the eval is passed when "
         "the profit target is hit before the trailing drawdown is.\n\n"
         "| Edge per trade | Pass odds | Attempts to pass | Cost per pass |\n"
@@ -11569,16 +11569,16 @@ def test_a_saved_page_to_look_things_up_in_is_a_note(t: Case) -> None:
         "edge. Next week's eval needs to be passed in fewer attempts.\n\n"
         "| Risk per trade | Pass odds at 0.10R | Days to pass |\n| --- | --- | --- |\n"
         "| $100 | 61% | 14 |\n| $200 | 58% | 8 |\n| $400 | 49% | 4 |\n")
-    firms = away / "prop-firms-bots.md"
+    firms = away / "test-firms-bots.md"
     firms.write_text(
-        "# Prop firms that allow trading bots, checked 2026-09-29\n\n"
-        "What each firm's rules page says about bots. Need to look into Apex again.\n\n"
+        "# Test firms that allow bots, checked 2026-09-29\n\n"
+        "What each firm's rules page says about bots. Need to look into Summit again.\n\n"
         "| Firm | Bots allowed | News trading | Notes |\n| --- | --- | --- | --- |\n"
-        "| MFFU | Yes, eval and funded | No | No HFT |\n"
-        "| Topstep | Yes | Restricted | Must be your own bot |\n"
-        "| Apex | Not on funded | Yes | Semi-automated only |\n"
-        "| Tradeify | Yes | Yes | Copy trading allowed |\n\n"
-        "Open: whether Apex counts a trade copier as a bot.\n")
+        "| Northgate | Yes, eval and funded | No | No HFT |\n"
+        "| Ridgeway | Yes | Restricted | Must be your own bot |\n"
+        "| Summit | Not on funded | Yes | Semi-automated only |\n"
+        "| Harbor | Yes | Yes | Copy trading allowed |\n\n"
+        "Open: whether Summit counts a trade copier as a bot.\n")
     said = ("so the first five minutes are noise and you want to wait for the range to "
             "set before you build anything then we need to fix how the bot handles a "
             "fast market and I said it has to stand aside when the spread widens").split()
@@ -11598,8 +11598,8 @@ def test_a_saved_page_to_look_things_up_in_is_a_note(t: Case) -> None:
     t.eq(got["kind"], "note", "long research with Open: and a plan in it is a note")
     t.eq([p.name for p in (t.box.root / "Work").iterdir()], [], "and no work was made")
 
-    plain = t.box.run("save", "Topstep allows bots on funded accounts").stdout
-    t.ok('./os undo, then ./os save --work "Topstep allows bots on funded accounts"' in plain,
+    plain = t.box.run("save", "Ridgeway allows bots on funded accounts").stdout
+    t.ok('./os undo, then ./os save --work "Ridgeway allows bots on funded accounts"' in plain,
          f"the reply after a save says how to make it work instead\n{plain}")
 
     # A file says it is work with a ## Next action, or with type: work.
@@ -13086,7 +13086,8 @@ def test_win_an_update_brings_addons_up_to_date_without_the_launcher(t: Case) ->
         "        raise OSError(errno.ENOEXEC, '%1 is not a valid Win32 application')\n"
         "    return real(args, *a, **k)\n"
         "subprocess.run = run\n", encoding="utf-8")
-    said = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), "update", "--from", str(published)],
+    said = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), "update", "--from", str(published),
+                           "--addons-from", str(v1)],
                           cwd=str(root), env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1",
                                                   PYTHONPATH=str(shim)),
                           capture_output=True, text=True, timeout=180)
@@ -14056,13 +14057,25 @@ def test_r21_a_shortcut_pointed_elsewhere_during_a_move_keeps_the_old_place(t: C
     """A shortcut pointed somewhere else while the move copied went back to
     where it led before (round 21 review of the move)."""
     link = t.box.root / "Notes" / "where"
+    # Pointed elsewhere just after it was copied, whatever order the copy
+    # takes. Pointed during the big file's copy, it passed on a Mac, which
+    # copies in the order things were made, and failed on Linux, whose order
+    # copied the shortcut after: the copy then had the new place, and the
+    # move rightly went ahead (first Linux run of the os download, 2026-10-30).
+    real_symlink = os.symlink
 
-    def repoint(lock_file: Path) -> None:
-        link.unlink()
-        link.symlink_to("/usr")
+    def symlink(to, at, *a, **k):
+        real_symlink(to, at, *a, **k)
+        if Path(at).name == "where" and Path(at) != link:
+            link.unlink()
+            real_symlink("/usr", link)
     t.box.root.joinpath("Notes").mkdir(exist_ok=True)
     link.symlink_to("/etc")
-    seen, ended = _slow_move(t, repoint)
+    os.symlink = symlink
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        os.symlink = real_symlink
     t.ok(ended not in (0, None), f"it stops ({ended})")
     t.eq(os.readlink(link), "/usr", "and the shortcut leads where it was pointed")
 
@@ -14917,9 +14930,21 @@ def test_an_update_brings_each_addon_up_to_date(t: Case) -> None:
     t.ok("up to date" in again, f"run again, there's nothing new\n{again}")
     t.eq(len(list((root / ".os" / "upgrades").rglob("SKILL.md"))), 1, "and nothing is set aside twice")
 
-    gone = t.box.run("addon", "--update", "--from", str(t.box.tmp / "nowhere")).stdout
+    # A file they changed whose addon copy never moved has nothing new to
+    # merge. It was set aside all the same, and ./os check asked for a merge
+    # of the file they started with (double-check, 2026-10-30).
+    (glazes / "RECIPES.md").write_text("v2 recipes\nmy own glaze\n")
+    still = t.box.run("addon", "--update", "--from", str(v2)).stdout
+    t.ok("up to date" in still and "RECIPES.md" not in still,
+         f"an edit to a file the addon didn't change is just theirs\n{still}")
+    t.eq(list((root / ".os" / "upgrades").rglob("RECIPES.md")), [], "and nothing is set aside for it")
+    t.eq((glazes / "RECIPES.md").read_text(), "v2 recipes\nmy own glaze\n", "their edit stays")
+
+    gone = t.box.run("addon", "--update", "--from", str(t.box.tmp / "nowhere"), expect=1).stdout
     t.ok("yours is kept as it is" in gone, f"an addon that can't be had is left as it is\n{gone}")
     t.ok((glazes / "SKILL.md").is_file(), "and nothing of it is touched")
+    # It ended with a clean exit, so ./os update said nothing went wrong.
+    t.box.run("update", "--from", str(published), "--addons-from", str(t.box.tmp / "nowhere"), expect=1)
 
 
 @test
@@ -15966,16 +15991,16 @@ def test_a_new_learning_note_keeps_the_name_it_was_made_with(t: Case) -> None:
     """Sort renamed a note made minutes before with ./os new learning,
     ...-as-codeable-rules.md to ...-as-codeable.md, after its path had been
     given out (reported, 2026-10). What ./os new makes keeps its name."""
-    made = t.box.run("new", "learning", "TJR and the Powell 10am strategy as codeable rules").stdout
+    made = t.box.run("new", "learning", "Ana and the Friday 10am routine as codeable rules").stdout
     rel = next(line.strip() for line in made.splitlines() if line.strip().startswith("Notes/"))
     path = t.box.root / rel
     t.ok(path.is_file(), f"./os new says where it made it ({rel})")
     # Filled in by an AI straight after, its title spelled a little
     # differently, which is what sort renamed it for.
     path.write_text(path.read_text().replace(
-        "title: TJR and the Powell 10am strategy as codeable rules",
-        "title: TJR and the Powell 10 am strategy as codeable rules"))
-    t.ok("title: TJR and the Powell 10 am" in path.read_text(), "its title was filled in")
+        "title: Ana and the Friday 10am routine as codeable rules",
+        "title: Ana and the Friday 10 am routine as codeable rules"))
+    t.ok("title: Ana and the Friday 10 am" in path.read_text(), "its title was filled in")
     for words in HOME_FACTS:
         t.box.run("save", words)
     t.box.run("sort")

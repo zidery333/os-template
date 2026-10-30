@@ -3,6 +3,18 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-30.1
+
+- On Linux, `./os sort` no longer puts `V2.0 Launch` next to an existing
+  `v2.0 Launch`. Two names that differ only in capitals count as the same
+  name, as they do on a Mac or Windows.
+- Updating an addon no longer sets aside a file of yours that the addon
+  didn't change, so `./os check` stops asking you to merge it.
+- If an addon can't be updated, `./os update` now ends with an error
+  instead of looking like it worked.
+- `./os help` now lists `new --domain`, `find --limit`, `tidy --json` and
+  `learn --cached`.
+
 ## 2026-10-29.2
 
 - A notes folder with a file called `skill.md` in it stays in Notes, as it

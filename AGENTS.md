@@ -11,7 +11,7 @@ folder guarantees and needs; how you get there is your call.
 Run `./os`. It says what's open, what's waiting and what has gone stale. Open with one plain sentence
 about where things stand. Then run `./os update --check` and pass on, once, any line it prints. Call it
 exactly as `./os …` from the top of this folder, on its own, never after `cd` or `&&`, so it runs without
-asking. If `./os` can't run (nobody there to approve it), read the note handed over at the start and `INDEX.md` instead. **If
+asking. If `./os` can't run (nobody there to approve it), read the note handed over at the start and `INDEX.md` instead, or, where neither is there yet, look at what's in `Work/` and `Notes/`. **If
 the folders are empty, this person has never used it**: don't explain the system or list commands. Say
 hello and offer to set it up together, with the setup skill. If they'd rather not, ask what's on their
 mind or what they're into ("nothing yet" is fine). `./os brief` says the same.
@@ -105,9 +105,9 @@ The rest of this file is for your judgement. These five protect their data, and 
    `./os checkpoint` (`git diff` shows it, `git restore` puts a file back).
 2. **Never delete the user's content.** `./os close <name>` instead. If they ask for
    a real deletion, say exactly what will be lost and ask once.
-3. **Keep the `---` block at the top of a file** — `title, type, status,
-   domain, tags, created, updated`. `type:` is in the folder's own words (`work`,
-   not `project`), and for work `status:` decides what counts as on the go.
+3. **Keep the `---` block at the top of a file** — `title, type, domain, tags,
+   created, updated`, and `status` for work only. `type:` is in the folder's own words
+   (`work`, not `project`), and for work `status:` decides what counts as on the go.
 4. **`## Log` and `## Decisions` are append-only.** `## Next action` and
    `## Where it stands` get overwritten. A question answered comes out of
    `## Open questions`, its answer into `## Decisions`. Never rewrite history.

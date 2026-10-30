@@ -409,7 +409,7 @@ def unaccent(text: str) -> str:
                    if not unicodedata.combining(c))
 
 
-#: Marks a terminal trips on in a name. `Build a Trading Bot for NQ1!` could
+#: Marks a terminal trips on in a name. `Build a Weather Station for Shed2!` could
 #: not be typed at all: the shell read the ! as "the last command", even
 #: inside quotes, so the folder had to be reached with Work/Build*.
 SHELL_MARKS = re.compile(r"[!$`\"'\\*?\[\]{};&|<>]")
@@ -417,7 +417,7 @@ SHELL_MARKS = re.compile(r"[!$`\"'\\*?\[\]{};&|<>]")
 
 def shell_safe(name: str) -> str:
     """A name with the marks a terminal trips on taken out. Marks that sit in
-    a word go (`NQ1!` is NQ1, `Gran's` is Grans); the rest leave a space."""
+    a word go (`Shed2!` is Shed2, `Gran's` is Grans); the rest leave a space."""
     name = re.sub(r"[!?'`\"]+", "", str(name))
     name = re.sub(r"\s*" + SHELL_MARKS.pattern + r"+\s*", " ", name)
     return re.sub(r"\s+", " ", name).strip()
@@ -1203,6 +1203,22 @@ def days_since(stamp: str) -> int:
         except ValueError:
             continue
     return 9999
+
+
+def taken(path: Path) -> bool:
+    """Whether a name is already used where it would go, capitals aside. A
+    Mac and Windows count `Pizza` and `pizza` as one name; Linux doesn't, so
+    sort put `v2.0 Launch` beside `V2.0 Launch` there, two things a copy to a
+    Mac can't hold (first Linux run of the os download, 2026-10-30). Only for
+    a move into a bucket: it reads the whole folder each time, and unique_path,
+    called once per file when a folder of 20,000 is kept for undo, stalled."""
+    if path.exists() or path.is_symlink():
+        return True
+    want = path.name.casefold()
+    try:
+        return any(c.name.casefold() == want for c in path.parent.iterdir())
+    except OSError:
+        return False
 
 
 def unique_path(target: Path) -> Path:
@@ -4937,7 +4953,7 @@ class Sorter:
                 base = self.home(home, it.domain, it.tags)
                 dest = base / it.path.name
                 n = 2
-                while dest.exists() or ignored(dest):
+                while taken(dest) or ignored(dest):
                     # A folder's whole name: `v2.0 Launch` has no file type to keep apart
                     dest = base / (f"{it.path.stem}-{n}{it.path.suffix}" if it.path.is_file()
                                    else f"{it.path.name}-{n}")
@@ -6125,8 +6141,8 @@ class Doctor:
                       self.os.rel(group[1].path),
                       "  ·  ".join(f"./os show {w}" for w in ways))
         named_twice = {id(g) for group in shared for g in group}
-        # A name with a mark a terminal trips on: `Build a Trading Bot for
-        # NQ1!` could not be typed, even in quotes (see SHELL_MARKS). Only a
+        # A name with a mark a terminal trips on: `Build a Weather Station for
+        # Shed2!` could not be typed, even in quotes (see SHELL_MARKS). Only a
         # new name fixes it, and only they can pick one, so --fix leaves it.
         for it in items:
             if it.kind not in ("project", "note", "asset", "archive") \
@@ -10701,8 +10717,8 @@ def add_next_step(os_: Zenith, item: Item, said: str, text: str, landed: Path,
 #: answers short". Filed like anything else, "Call me Sam" became a piece of
 #: work called Call Me Sam, and the next chat still didn't know their name.
 #: "Call me back about the quote" is a job, not a name, and is filed as one.
-#: "About me: I trade from London" says where it goes outright; it became a
-#: loose note called About Me I Trade From London (snag, 2026-09-29).
+#: "About me: I keep bees in Leeds" says where it goes outright; it became a
+#: loose note called About Me I Keep Bees In Leeds (snag, 2026-09-29).
 ABOUT_THEM_SAID = re.compile(
     r"^\s*(?:(?:please[,\s]+)?(?:call\s+me(?!\s+(?:back|later|when|if|at|on|about|after|before"
     r"|tomorrow|tonight|today|asap)\b)|from\s+now\s+on|i\s+prefer"
@@ -10887,7 +10903,7 @@ def plain_name(text: str) -> str:
 def work_named_in(os_: Zenith, title: str, body: str) -> Item | None:
     """The live work a saved thing is about, when its name says so: the
     work's whole name, marks and capitals aside, in the title or the first
-    lines. A note about Build a Trading Bot for NQ1!'s setups was made a new
+    lines. A note about Build a Weather Station for Shed2!'s wiring was made a new
     piece of work beside it (snag, 2026-09-29).
 
     Only a whole name of two words or more counts, and two pieces of work
@@ -15032,7 +15048,7 @@ def _addons_update(os_: Zenith, source: str, preview: bool) -> int:
     backup = os_.dot / "backups" / f"before-addons-{stamp}"
     aside = os_.dot / "upgrades" / stamp
     record = dict(have)
-    touched = False
+    touched = failed = False
 
     def put(src: Path, dst: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -15047,6 +15063,7 @@ def _addons_update(os_: Zenith, source: str, preview: bool) -> int:
                 info, problem = _addon_info(folder, os_.root)
             if problem:
                 Out.raw(f"  ▲ the {title} addon: {problem}; yours is kept as it is")
+                failed = True
                 continue
             old = had["files"]
             offered = had.get("offered") if isinstance(had.get("offered"), dict) else {}
@@ -15063,6 +15080,12 @@ def _addons_update(os_: Zenith, source: str, preview: bool) -> int:
                             put(dst, backup / rel)
                             put(src, dst)
                         files[rel], done["replaced"] = now, done["replaced"] + 1
+                    elif old.get(rel) == now:
+                        # Changed by them, and the addon's own copy hasn't
+                        # moved: there is nothing new to merge. It was set
+                        # aside anyway, and ./os check asked for a merge of
+                        # the file they started with (double-check, 2026-10-30).
+                        files[rel] = now
                     else:
                         # Changed by them, or theirs from before: kept, and
                         # the new one put beside it once, not every update.
@@ -15109,7 +15132,9 @@ def _addons_update(os_: Zenith, source: str, preview: bool) -> int:
             write_text(os_.dot / ADDONS_FILE, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
             if touched:
                 Indexer(os_).build()
-    return 0
+    # An addon that couldn't be updated was followed by a clean exit, so
+    # ./os update said nothing went wrong (double-check, 2026-10-30).
+    return 1 if failed else 0
 
 
 #: The skills the old me/ notes/ work/ layout shipped. Any other skill in an
@@ -16651,7 +16676,8 @@ DETAIL = {
             "If you already have something by nearly the same name it stops and says so "
             "— add --anyway if you really want both. --dry-run says where it "
             "would go, under what subject, and what it might duplicate, and "
-            "writes nothing.",
+            "writes nothing. --domain picks the subject instead of guessing it, "
+            "and --tags a,b sets its tags.",
             ['os new work "Fix the boiler"',
              'os new ongoing "Keep the garden weeded"',
              'os new note "Gran\'s lemon cake"',
@@ -16782,6 +16808,7 @@ DETAIL = {
              "left out unless you ask for them with --kind skill. --notes looks "
              "only in Notes and what was put away from Notes, and never shows "
              "a word from Work: it is for a helper told to keep out of Work. "
+             "--limit 15 shows at most 15 (20 unless you say). "
              "Nothing found ends with exit code 1; with --json it still "
              "prints [] first.",
              ["os find boiler", "os find garden --kind work",
@@ -16901,10 +16928,10 @@ DETAIL = {
               "--fix only repairs the mechanical. Anything needing a judgement call "
               "is reported, never guessed. It also names what an older ./os undo "
               "kept in .os/cache/incoming; --fix throws those away and says which."),
-    "tidy": ("os tidy",
+    "tidy": ("os tidy [--json]",
              "What has gone stale, what is finished but still sitting around, "
              "what looks like the same thing twice, and a folder crowded enough "
-             "to split by subject.",
+             "to split by subject. --json gives the same for an AI to read.",
              ["os tidy"], "Ten minutes a week is all this system asks of you."),
     "backup": ("os backup", "A dated zip of everything, into .os/backups/.",
                ["os backup"],
@@ -16934,7 +16961,8 @@ DETAIL = {
               ["os index"], "Happens on its own after a Claude Code session."),
     "learn": ('os learn --list "<channel>"   |   os learn <video> …',
               "Fetch what a source actually says and keep it, so an AI can learn "
-              "from the words rather than guessing from the title.",
+              "from the words rather than guessing from the title. --cached lists "
+              "the videos already kept, and --forget <video> drops one.",
               ['os learn --list "youtube.com/@channel"', "os learn dQw4w9WgXcQ"],
               "The one command that goes out to the internet, and the one that "
               "wants yt-dlp installed. It fetches and cleans; deciding which "
