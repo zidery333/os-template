@@ -27,7 +27,7 @@ In each item's `README.md` that today touched:
 Facts only: no summary of the conversation, no adjectives.
 
 Anything decided that belongs to no one item, and any loose end raised and not
-resolved, goes to `./os save "<the decision>"`, with what it rules out only when
+resolved, goes to `./os save --note "<the decision>"`, with what it rules out only when
 they said it (see Rules). It gets filed as a note under its own name.
 
 If this folder keeps its own end-of-session steps in `wrapup-extra.md`,

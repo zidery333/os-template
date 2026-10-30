@@ -57,9 +57,10 @@ Everything below, in your final message. Nothing on disk but the cache.
 - **The subject's own vocabulary** — eight to fifteen terms this craft uses that
   a general reader wouldn't, so `/learn` can `./os words` them into the folder.
 
-- **The draft**, in exactly these headings. They are the ones in
+- **The draft**, in exactly these headings. They come from
   `.os/templates/learning.md`, so `/learn` files what you hand back rather than
-  reshaping it. Read that file if anything below is unclear; don't add headings
+  reshaping it. That file also has `## Who to trust` and `## Related`. Leave
+  those two out. Read it if anything below is unclear; don't add headings
   of your own, and leave out `## Why I'm learning this` — that answer is theirs,
   not yours. `/learn` writes it only from what they said, or leaves it empty.
 

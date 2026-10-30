@@ -73,7 +73,7 @@ import engine  # noqa: E402  — the template's own, for names spelled its way
 MACHINERY = [
     "os",
     ".os/engine.py", ".os/learn.py", ".os/upgrade.py",
-    ".os/templates", ".os/tests",
+    ".os/tests",
     # The change note: what each release changed, in plain words. Theirs to
     # read, not to edit, so the newest always replaces it.
     ".os/CHANGES.md",
@@ -82,6 +82,11 @@ MACHINERY = [
 #: the copy on disk still matches a version the template once released —
 #: see `.os/shipped.json`. An edited one is kept and the new version set aside.
 GUARDED = ["AGENTS.md"]
+#: The shape of each new note and piece of work. They were machinery, replaced
+#: whole: a section someone added to pushing.md, and a shape of their own,
+#: went without a word (update sweep, 2026-10-29). Now each file is guarded,
+#: and one of their own beside them is never touched.
+TEMPLATES = ".os/templates"
 #: Fingerprinted the same way, but one they changed is merged, not set aside.
 SETTINGS = ".claude/settings.json"
 SHIPPED_SKILLS = ("catchup", "commands", "decide", "find", "handoff", "learn",
@@ -108,7 +113,10 @@ TEXT = {".md", ".txt", ".markdown"}
 
 
 def sha1(path: Path) -> str:
-    return hashlib.sha1(path.read_bytes()).hexdigest()
+    """A file's fingerprint, line endings aside: checked out by git on
+    Windows every line ends CR LF, and every shipped file looked edited by
+    hand (a friend's update, 2026-10-29)."""
+    return hashlib.sha1(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def folder_name_in(path: Path) -> str:
@@ -185,7 +193,7 @@ def _record_lists(data: dict, blocks, lists: tuple, prefix: str = "") -> int:
 
 def read_shipped(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -210,7 +218,7 @@ def record() -> int:
     """Template maintainers: remember the current shipped files as released."""
     path = HERE / "shipped.json"
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {"files": {}}
     files = data.setdefault("files", {})
@@ -220,7 +228,9 @@ def record() -> int:
     skill_files = sorted(str(f.relative_to(TEMPLATE)) for s in SHIPPED_SKILLS
                          for f in (TEMPLATE / ".claude" / "skills" / s).rglob("*")
                          if f.is_file() and "__pycache__" not in f.parts)
-    for rel in PROGRAM + GUARDED + [SETTINGS, ".gitignore"] + skill_files \
+    shapes = sorted(str(f.relative_to(TEMPLATE)) for f in (TEMPLATE / TEMPLATES).rglob("*")
+                    if f.is_file() and "__pycache__" not in f.parts)
+    for rel in PROGRAM + GUARDED + [SETTINGS, ".gitignore"] + skill_files + shapes \
             + [f".claude/agents/{a}.md" for a in SHIPPED_AGENTS] \
             + [f".claude/hooks/{h}" for h in SHIPPED_HOOKS] \
             + [f".claude/output-styles/{s}" for s in SHIPPED_STYLES]:
@@ -275,7 +285,7 @@ def record() -> int:
     release = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--release=")), "")
     if release:
         data["release"] = release
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    whole(path, json.dumps(data, indent=2) + "\n")
     say(f"  recorded {added} new version(s) into .os/shipped.json")
     return 0
 
@@ -312,6 +322,43 @@ def die(msg: str) -> None:
     sys.exit(2)
 
 
+#: Where this run writes down each file it puts in place, once its backup
+#: is whole, so --undo of one that stopped partway can take out what it added
+#: (eleventh review, 2026-10-29).
+WRITTEN: Path | None = None
+
+
+def wrote(path: Path) -> None:
+    if WRITTEN is None:
+        return
+    try:
+        with WRITTEN.open("a", encoding="utf-8") as fh:
+            for f in ([path] if not path.is_dir() else sorted(p for p in path.rglob("*") if p.is_file())):
+                fh.write(str(f) + "\n")
+    except OSError:
+        pass
+
+
+def whole(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """Write a file whole or not at all: the new words go in beside it and are
+    swapped in. Written in place, a disk that filled up partway left
+    config.json empty, and nothing, not even ./os update --undo, would run
+    (update sweep, 2026-10-29)."""
+    # A settings file that is a shortcut to their own dotfile is written
+    # through, not swapped for a plain copy (eleventh review, 2026-10-29).
+    if path.is_symlink() and path.resolve().is_file():
+        path = path.resolve()
+    new = path.with_name(path.name + ".new")
+    new.write_text(text, encoding=encoding)
+    try:
+        if path.exists():
+            shutil.copymode(path, new)
+    except OSError:
+        pass
+    os.replace(new, path)
+    wrote(path)
+
+
 def copy(src: Path, dst: Path, text: str | None = None) -> None:
     """Copy src (or `text`, in place of src's words) over dst. The new copy
     goes in beside dst and is swapped in whole, so an update that is stopped
@@ -321,13 +368,21 @@ def copy(src: Path, dst: Path, text: str | None = None) -> None:
         for leftover in (new, old):
             if leftover.exists():
                 shutil.rmtree(leftover)
-        shutil.copytree(src, new, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        # Shortcuts copied as shortcuts: one to a skill folder that had
+        # moved stopped every update for good (update sweep, 2026-10-29).
+        shutil.copytree(src, new, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         if dst.exists():
             dst.rename(old)
         new.rename(dst)
         if old.exists():
             shutil.rmtree(old)
+        wrote(dst)
         return
+    # A file of theirs kept as a shortcut is written through, as whole()
+    # does: one not edited came in this way and lost its shortcut (twelfth
+    # round live test, 2026-10-29).
+    if dst.is_symlink() and dst.resolve().is_file():
+        dst = dst.resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
     new = dst.with_name(dst.name + ".new")
     if text is None:
@@ -336,6 +391,7 @@ def copy(src: Path, dst: Path, text: str | None = None) -> None:
         new.write_text(text, encoding="utf-8")
         shutil.copymode(src, new)
     os.replace(new, dst)
+    wrote(dst)
 
 
 def read_theirs(target: Path) -> dict | None:
@@ -356,7 +412,7 @@ def merge_json(target: Path, source: Path, skip: tuple = ()) -> list[str] | None
     theirs = read_theirs(target)
     if theirs is None:
         return None
-    ours = json.loads(source.read_text())
+    ours = json.loads(source.read_text(encoding="utf-8"))
     added: list[str] = []
 
     def walk(a: dict, b: dict, path: str) -> None:
@@ -371,7 +427,7 @@ def merge_json(target: Path, source: Path, skip: tuple = ()) -> list[str] | None
 
     if isinstance(ours, dict):
         walk(theirs, ours, "")
-        target.write_text(json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
+        whole(target, json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
     return added
 
 
@@ -426,7 +482,7 @@ def renew_keywords(target: Path, source: Path, known: dict,
     renewed += [f"intent:{name}" for name in _renew_lists(
         (theirs or {}).get("intent"), (ours or {}).get("intent"), intent or {})]
     if renewed:
-        target.write_text(json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
+        whole(target, json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
     return renewed
 
 
@@ -444,7 +500,7 @@ def link_again(root: Path, name: str) -> str:
         return f"  kept      {name} — it's a link to AGENTS.md, and now to the new one"
     except OSError:
         # Can't link again: the pointer does the same job.
-        pointer_md.write_text("@AGENTS.md\n", encoding="utf-8")
+        whole(pointer_md, "@AGENTS.md\n", encoding="utf-8")
         return f"  fixed     {name} now points at AGENTS.md (it was a link to the old one)"
 
 
@@ -470,7 +526,7 @@ def merge_settings(target: Path, source: Path, given: dict | None = None,
     to it). A group of hooks still exactly as a release wrote it
     (`released_groups`: event → fingerprints) takes the new one. None, and
     nothing written, when theirs can't be read."""
-    ours = json.loads(source.read_text())
+    ours = json.loads(source.read_text(encoding="utf-8"))
     theirs = read_theirs(target)
     if theirs is None or not isinstance(theirs.get("hooks", {}), dict):
         return None
@@ -537,7 +593,7 @@ def merge_settings(target: Path, source: Path, given: dict | None = None,
         if k != "hooks" and k not in theirs and k not in (keys_given or set()):
             theirs[k] = v
             added.append(k)
-    target.write_text(json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
+    whole(target, json.dumps(theirs, indent=2, ensure_ascii=False) + "\n")
     return added
 
 
@@ -555,8 +611,26 @@ def _title_of(folder: Path) -> str:
     return ""
 
 
+#: An old tag as an `id:` gave it, alone: `W.04`, `N.03`.
+OLD_ID = re.compile(r"^id:[ \t]*['\"]?(?:[A-Za-z]\.\d{2,4}|\d{1,2}\.\d{2,4})['\"]?[ \t]*$", re.M)
+
+
 def strip_ids(root: Path, buckets: list[str], dry: bool) -> int:
-    """Take `id:` out of every header, and the tag off the front of every name."""
+    """Take an old tag's `id:` out of every header, and the tag off the front
+    of every name, in a folder that has them. One with no such header is not
+    from before releases, whatever its record says: its `1.10 meeting.md`
+    and `id: zotero-ABC` are theirs (seventeenth review, round 22)."""
+    def header(path: Path) -> str:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+        return text[4:].partition("\n---")[0] if text.startswith("---\n") else ""
+    if not any(OLD_ID.search(header(path))
+               for bucket in buckets if (root / bucket).is_dir()
+               for path in (root / bucket).rglob("*")
+               if path.suffix.lower() in TEXT and path.is_file() and not path.is_symlink()):
+        return 0
     changed = 0
     for bucket in buckets:
         base = root / bucket
@@ -571,11 +645,11 @@ def strip_ids(root: Path, buckets: list[str], dry: bool) -> int:
                     text = path.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
                     continue
-                if text.startswith("---\n") and re.search(r"^id:\s*\S", text, re.M):
-                    head, _, rest = text[4:].partition("\n---")
-                    head = re.sub(r"^id:.*\n?", "", head, flags=re.M)
+                head, _, rest = text[4:].partition("\n---")
+                if text.startswith("---\n") and OLD_ID.search(head):
+                    head = re.sub(OLD_ID.pattern + r"\n?", "", head, flags=re.M)
                     if not dry:
-                        path.write_text("---\n" + head + "\n---" + rest, encoding="utf-8")
+                        whole(path, "---\n" + head + "\n---" + rest, encoding="utf-8")
                     changed += 1
             hit = TAG.match(path.name)
             if hit:
@@ -666,10 +740,11 @@ def main(argv: list[str]) -> int:
     if not (root / ".os" / "config.json").exists():
         die(f"{root} is not a Zenith folder (no .os/config.json)")
     try:
-        old_cfg = json.loads((root / ".os" / "config.json").read_text())
-        new_cfg = json.loads((TEMPLATE / ".os" / "config.json").read_text())
+        old_cfg = json.loads((root / ".os" / "config.json").read_text(encoding="utf-8"))
+        new_cfg = json.loads((TEMPLATE / ".os" / "config.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        die(f"could not read a config.json: {exc}")
+        die("couldn't read .os/config.json here or in the new version, so nothing was changed. "
+            "If you keep checkpoints:  git restore .os/config.json")
     buckets = list((old_cfg.get("buckets") or new_cfg.get("buckets") or {}).keys())
 
     # What this folder was given before, read before anything here changes:
@@ -723,16 +798,77 @@ def main(argv: list[str]) -> int:
         n += 1
         stamp = f"{base}-{n}"
     backup = root / ".os" / "backups" / f"before-upgrade-{stamp}"
-    to_back = MACHINERY + GUARDED + [".os/shipped.json", ".claude/skills", ".claude/agents", ".claude/hooks",
+    # An update that stopped partway left its copy of the originals marked
+    # unfinished. Run again, it is that copy undo must go back to, not one of
+    # the half-updated folder: --undo said "back to" the old version and left
+    # the new program in place (update sweep, 2026-10-29).
+    earlier = sorted(p for p in (root / ".os" / "backups").glob("before-upgrade-*") if p.is_dir()) \
+        if (root / ".os" / "backups").is_dir() else []
+    unfinished = False
+    if earlier:
+        try:
+            mark = json.loads((earlier[-1] / "undo.json").read_text(encoding="utf-8"))
+            # Not one undone since, nor one from another version: a stopped
+            # update that was undone was "finished" from its old copy, and
+            # --undo then put edits made since back without a word (eleventh
+            # review, 2026-10-29).
+            unfinished = bool(mark.get("partial")) and not mark.get("nothing_changed") \
+                and not mark.get("undone") \
+                and str(mark.get("release_before") or "") == str(before.get("release") or "")
+        except (OSError, ValueError, AttributeError):
+            unfinished = False
+        if unfinished:
+            backup = earlier[-1]
+    to_back = MACHINERY + GUARDED + [TEMPLATES, ".os/shipped.json", ".claude/skills", ".claude/agents", ".claude/hooks",
                                      ".claude/output-styles",
                                      SETTINGS, ".os/config.json", ".os/words.json", "CLAUDE.md", "GEMINI.md",
                                      ".gitignore"]
-    if not dry:
-        for rel in to_back:
-            src = root / rel
-            if src.exists():
-                copy(src, backup / rel)
+    if not dry and not unfinished:
+        try:
+            for rel in to_back:
+                src = root / rel
+                if src.exists():
+                    copy(src, backup / rel)
+        except BaseException:
+            # Ctrl-C too: stopped here, nothing was changed yet (fourteenth
+            # review, 2026-10-29).
+            # Stopped while still copying: nothing here was changed yet, and
+            # --undo said the update was "made by an older version" (round
+            # 16 live test, 2026-10-29). This copy is half made: never one to
+            # go back to, nor to finish from.
+            try:
+                whole(backup / "undo.json", json.dumps({
+                    "release_before": str(before.get("release") or ""), "release_after": "",
+                    "partial": True, "nothing_changed": True}, indent=2) + "\n")
+            except OSError:
+                pass
+            raise
+        # A shortcut to a file is kept as what it says, not as the shortcut:
+        # one written relative to its old place leads nowhere from in here,
+        # so --undo took their own hook out as "added", and one leading
+        # outside was never put back (thirteenth review, 2026-10-29).
+        for f in sorted(backup.rglob("*")):
+            if not f.is_symlink():
+                continue
+            there = root / f.relative_to(backup)
+            try:
+                if there.is_symlink() and there.resolve().is_file():
+                    f.unlink()
+                    shutil.copy2(there.resolve(), f)
+            except (OSError, RuntimeError):
+                pass
+        # Written now, finished at the end: one that stops partway can still
+        # be undone from this copy.
+        whole(backup / "undo.json", json.dumps({
+            "release_before": str(before.get("release") or ""), "release_after": "",
+            "partial": True, "touched": to_back, "after": {}}, indent=2) + "\n")
         say(f"  ✓ backed up what gets touched → {backup.relative_to(root)}")
+    elif not dry:
+        say(f"  ✓ finishing the update that stopped partway; what was here before it is in "
+            f"{backup.relative_to(root)}")
+    if not dry:
+        global WRITTEN
+        WRITTEN = backup / "written.txt"
 
     # 1. machinery
     for rel in MACHINERY:
@@ -809,6 +945,9 @@ def main(argv: list[str]) -> int:
 
     for rel in GUARDED:
         guarded(rel)
+    for f in sorted((TEMPLATE / TEMPLATES).rglob("*")):
+        if f.is_file() and "__pycache__" not in f.parts:
+            guarded(str(f.relative_to(TEMPLATE)), False)
     for name in SHIPPED_SKILLS:
         folder = TEMPLATE / ".claude" / "skills" / name
         spine = f".claude/skills/{name}/SKILL.md"
@@ -826,8 +965,9 @@ def main(argv: list[str]) -> int:
     for name in SHIPPED_STYLES:
         guarded(f".claude/output-styles/{name}")
     say(f"  {'would replace' if dry else 'replaced'}  {len(fresh)} shipped file(s) still as released "
-        f"(the {len(SHIPPED_SKILLS)} skills, {len(SHIPPED_AGENTS)} helpers, {len(SHIPPED_HOOKS)} hooks, "
-        "the reply style, AGENTS.md); "
+        # Which kinds, not how many of each: "the 11 skills" under a count of
+        # 14 read as all 11 replaced, with some kept as theirs (audit, 2026-10-29).
+        "(skills, helpers, hooks, the reply style, AGENTS.md); "
         "anything of your own is untouched")
     # A hook script is taken out by taking it out of settings.json. One still
     # run from there was deleted by accident, and is put back after step 3.
@@ -874,7 +1014,7 @@ def main(argv: list[str]) -> int:
     if not dry:
         added = merge_json(root / ".os" / "config.json", TEMPLATE / ".os" / "config.json",
                            skip=("owner", "review"))
-        cfg = json.loads((root / ".os" / "config.json").read_text())
+        cfg = json.loads((root / ".os" / "config.json").read_text(encoding="utf-8"))
         # The line under the name in ./os help, still as a release wrote it,
         # takes the new one, as a keyword list does. "Any AI can use it" read
         # as if the ChatGPT app would do, and theirs always won, so no update
@@ -884,7 +1024,7 @@ def main(argv: list[str]) -> int:
             and line != cfg.get("tagline")
         if renewed:
             cfg["tagline"] = line
-        (root / ".os" / "config.json").write_text(json.dumps(
+        whole((root / ".os" / "config.json"), json.dumps(
             {**cfg, "version": new_cfg.get("version", old_cfg.get("version"))},
             indent=2, ensure_ascii=False) + "\n")
         say("  merged    .os/config.json" + (f" — added {', '.join(added)}" if added else "")
@@ -950,7 +1090,7 @@ def main(argv: list[str]) -> int:
                          if ln.strip() and not ln.startswith("#") and ln not in have]
             if new_lines:
                 text = theirs_ignore.read_text(encoding="utf-8", errors="replace")
-                theirs_ignore.write_text(text + ("" if text.endswith("\n") or not text else "\n")
+                whole(theirs_ignore, text + ("" if text.endswith("\n") or not text else "\n")
                                          + "\n# Added by ./os update\n" + "\n".join(new_lines) + "\n",
                                          encoding="utf-8")
                 say(f"  merged    .gitignore — added {', '.join(new_lines[:4])}"
@@ -984,11 +1124,11 @@ def main(argv: list[str]) -> int:
                 if name == "CLAUDE.md" and (TEMPLATE / name).is_file():
                     copy(TEMPLATE / name, pointer_md)
                 else:
-                    pointer_md.write_text("@AGENTS.md\n", encoding="utf-8")
+                    whole(pointer_md, "@AGENTS.md\n", encoding="utf-8")
             say(f"  {'would add ' if dry else 'added    '} {name}{why}")
         elif "AGENTS.md" not in pointer_md.read_text(encoding="utf-8", errors="replace")[:400]:
             if not dry:
-                pointer_md.write_text("@AGENTS.md\n\n" + pointer_md.read_text(encoding="utf-8", errors="replace"),
+                whole(pointer_md, "@AGENTS.md\n\n" + pointer_md.read_text(encoding="utf-8", errors="replace"),
                                       encoding="utf-8")
             say(f"  would point {name} at AGENTS.md; your rules below it would be kept" if dry else
                 f"  fixed     {name} now points at AGENTS.md; your rules below it are kept")
@@ -998,20 +1138,45 @@ def main(argv: list[str]) -> int:
     # 4. numbers out — only a folder from before releases can still have them.
     #    Anywhere else, a name like `1.10 meeting with Sam.md` is theirs.
     n = 0
-    if not before.get("release"):
+    try:
+        damaged = not isinstance(json.loads((root / ".os" / "shipped.json").read_text(encoding="utf-8")), dict)
+    except FileNotFoundError:
+        damaged = False
+    except (OSError, ValueError):
+        damaged = True
+    if not before.get("release") and damaged:
+        # There, but unreadable: never read as a folder from before releases,
+        # which have a list with no stamp (seventeenth review, round 22).
+        say("  kept      every name as it is — .os/shipped.json couldn't be read, "
+            "so this isn't taken for a folder from before releases")
+    elif not before.get("release"):
         n = strip_ids(root, buckets, dry)
         say(f"  {'would take' if dry else 'took'} the W.xx / N.xx tags out of {n} name(s) and header(s)")
 
     # 5. the new engine names what step 4 renamed, and rebuilds the list.
     #    Anything else they dropped in by hand waits until they say so.
     if not dry:
+        # Run as Python runs it, not through the launcher: on Windows the
+        # launcher is a bash script Python can't start, this threw, and the
+        # new version was never written down, every time (a friend's
+        # update, 2026-10-29). Nothing here stops step 6: the list is
+        # rebuilt by the next ./os anyway.
+        listed = True
         for cmd in ([["sort"]] if n else []) + [["index", "--quiet"]]:
-            proc = subprocess.run([str(root / "os"), *cmd], cwd=str(root),
-                                  capture_output=True, text=True)
+            try:
+                proc = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), *cmd], cwd=str(root),
+                                      capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                      env=dict(os.environ, ZENITH_HOME=str(root)))
+            except OSError as exc:
+                listed = False
+                say(f"  ▲ couldn't run ./os {' '.join(cmd)} ({exc.strerror or exc}) — the next ./os does it")
+                continue
             if proc.returncode not in (0, 1):
+                listed = False
                 say(f"  ▲ ./os {' '.join(cmd)} exited {proc.returncode}: {proc.stderr.strip()[:200]}")
-        say("  ✓ ./os sort gave every renamed folder its plain name; INDEX.md rebuilt" if n
-            else "  ✓ INDEX.md rebuilt")
+        if listed:
+            say("  ✓ ./os sort gave every renamed folder its plain name; INDEX.md rebuilt" if n
+                else "  ✓ INDEX.md rebuilt")
         waiting = loose_in(root)
         if waiting:
             say(f"  {waiting} thing you dropped in by hand is waiting — ./os sort files it" if waiting == 1 else
@@ -1026,7 +1191,7 @@ def main(argv: list[str]) -> int:
         if theirs:
             data["theirs"] = theirs
         new = root / ".os" / "shipped.json.new"
-        new.write_text(json.dumps(data, indent=2) + "\n")
+        new.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         os.replace(new, root / ".os" / "shipped.json")
     # 7. what every file it touched looks like now, so `./os update --undo`
     #    can tell an edit made since from what this update wrote, and take
@@ -1038,7 +1203,7 @@ def main(argv: list[str]) -> int:
             for f in ([top] if top.is_file() else sorted(top.rglob("*")) if top.is_dir() else []):
                 if f.is_file() and "__pycache__" not in f.parts:
                     after[f.relative_to(root).as_posix()] = sha1(f)
-        (backup / "undo.json").write_text(json.dumps({
+        whole((backup / "undo.json"), json.dumps({
             "release_before": str(before.get("release") or ""),
             "release_after": str(read_shipped(root / ".os" / "shipped.json").get("release") or ""),
             "touched": to_back, "after": after}, indent=2) + "\n")
@@ -1059,13 +1224,34 @@ def main(argv: list[str]) -> int:
     # as many as keep_backups says, the way ./os backup keeps its zips.
     if not dry:
         try:
-            keep = max(1, int(json.loads((root / ".os" / "config.json").read_text())
+            keep = max(1, int(json.loads((root / ".os" / "config.json").read_text(encoding="utf-8"))
                               .get("behaviour", {}).get("keep_backups", 3)))
         except (OSError, ValueError, TypeError, AttributeError):
             keep = 3
         olds = sorted(p for p in (root / ".os" / "backups").glob("before-upgrade-*") if p.is_dir())
         for old in olds[:-keep]:
-            shutil.rmtree(old, ignore_errors=True)
+            # A copy of a folder that was read-only is read-only too, and
+            # was left behind without a word, every time (round 17 live
+            # test, 2026-10-29). It is ours, so it is made writable first.
+            def writable(func, path, _exc):
+                # Only the copy's own folders: a shortcut in it is never
+                # followed, or a folder outside had its mode changed
+                # (pre-merge review, 2026-10-29). Taking a name out of a
+                # folder needs only that folder writable. A folder that
+                # couldn't even be opened is gone through again once it is
+                # (second pre-merge review): retrying the open itself threw.
+                try:
+                    os.chmod(os.path.dirname(path), 0o755)
+                    if os.path.isdir(path) and not os.path.islink(path):
+                        os.chmod(path, 0o755)
+                        shutil.rmtree(path, ignore_errors=True)
+                    elif func in (os.unlink, os.remove, os.rmdir):
+                        func(path)
+                except Exception:
+                    pass
+            shutil.rmtree(old, onerror=writable)
+            if old.exists():
+                say(f"  ▲ couldn't clear the old copy {old.relative_to(root)} — it can go by hand")
     say("  next:  cd " + str(root) + "   ·   ./os check   ·   ./os")
     say("         the copy from before is in " + str(backup.relative_to(root))
         + " — the newest few are kept, older ones cleared" if not dry else
@@ -1074,5 +1260,81 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+class Survives:
+    """A stream that carries on when what it writes to is gone. A terminal
+    closed partway made the next line fail, and the update stopped there as
+    if the disk had said no (second pre-merge review, 2026-10-29). The update
+    matters more than its words, so it finishes without them."""
+
+    def __init__(self, stream):
+        self.stream, self.gone = stream, False
+
+    def write(self, text):
+        if not self.gone:
+            try:
+                return self.stream.write(text)
+            except (OSError, ValueError):
+                self.gone = True
+        return len(text)
+
+    def flush(self):
+        if not self.gone:
+            try:
+                self.stream.flush()
+            except (OSError, ValueError):
+                self.gone = True
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def run(argv: list[str]) -> int:
+    """main(), with a disk that says no said in plain words. A full disk
+    partway through ended in a traceback (update sweep, 2026-10-29). Every
+    file is swapped in whole, so what is there is either the old or the new."""
+    # A console that can't show a ✓ shows a ? instead: on Windows the first
+    # tick crashed the update (a friend's update, 2026-10-29), and later it
+    # silenced everything after it.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+    sys.stdout, sys.stderr = Survives(sys.stdout), Survives(sys.stderr)
+    # A kill, or a chat's time limit, stops it the way Ctrl-C does, with the
+    # same word on how to go on (fourteenth review, 2026-10-29).
+    try:
+        import signal
+
+        def stopped(_signum, _frame):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM, stopped)
+    except (ImportError, AttributeError, ValueError, OSError):
+        pass
+    try:
+        return main(argv)
+    except KeyboardInterrupt:
+        # Stopped with Ctrl-C: said in words, not a traceback, and the way on
+        # (round 19 live test, 2026-10-29).
+        sys.stdout.flush()
+        print("\n  ✖ the update was stopped partway. Run  ./os update  again to finish it,\n"
+              "     or  ./os update --undo  to go back.", file=sys.stderr)
+        return STOPPED_PARTWAY
+    except OSError as exc:
+        sys.stdout.flush()
+        where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+        why = exc.strerror or exc
+        # A folder copy's error is a list of every file it couldn't copy,
+        # printed raw as Python's tuples (round 16 live test, 2026-10-29).
+        if isinstance(exc, shutil.Error) and exc.args and isinstance(exc.args[0], list) and exc.args[0]:
+            first = exc.args[0][0]
+            why = str(first[2]).split(":")[0] if len(first) > 2 else "a file couldn't be copied"
+            where = f" ({first[0]})" if first else ""
+        print(f"  ✖ the disk wouldn't let the update finish: {why}{where}.\n"
+              "     It stopped partway. Free some space, then run  ./os update  again to finish,\n"
+              "     or  ./os update --undo  to go back.", file=sys.stderr)
+        return STOPPED_PARTWAY
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(run(sys.argv[1:]))

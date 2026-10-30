@@ -16,8 +16,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || exit 0
 LIST="$HERE/plain-words.tsv"
 [ -f "$LIST" ] || exit 0
 
-# Hooks run with few places to look for programs, so add the usual ones.
-PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${HOME:-/}/.local/bin:$PATH"
+# Hooks run with few places to look for programs, so add the usual ones —
+# after theirs: put first, /usr/bin's python3 beat a pyenv or uv one, and on a
+# Mac without the developer tools the check then never ran (audit, 2026-10-29).
+PATH="${PATH:+$PATH:}/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${HOME:-/}/.local/bin"
 [ -z "${OS_PRETEND_NO_PYTHON:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 # On a Mac without Apple's developer tools, /usr/bin/python3 is only a

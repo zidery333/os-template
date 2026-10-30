@@ -35,7 +35,7 @@ the old one, still linked to this page, and the two get mixed up. Instead:
    where yours is.
 
 It copies everything across, filed the new way. Your old folder isn't changed
-at all, and one `./os undo` takes the whole lot back out.
+at all, and straight after it, one `./os undo` takes the whole lot back out.
 
 ## What it looks like
 
@@ -288,7 +288,7 @@ to **zidery333** on Discord.
 
 ## What's been tested
 
-The program passes all 391 of its own checks. Type `./os test` to run them yourself.
+The program passes all 700 of its own checks. Type `./os test` to run them yourself.
 They show that `./os` files, finds and undoes things the way it says. They
 can't show that your AI files things well, or that any of this helps you.
 

@@ -17,7 +17,7 @@ is still there a year later, under the item's own name.
 With nothing said or on the table that it rules out: `./os decide <name> "<the decision>"`.
 
 The decision goes in the item's `## Decisions`, append-only, dated. If it belongs
-to no item, `./os save "<the decision, and what it rules out>"` files it as a note.
+to no item, `./os save --note "<the decision, and what it rules out>"` files it as a note.
 
 ## What a good decision line looks like
 
@@ -33,7 +33,8 @@ to no item, `./os save "<the decision, and what it rules out>"` files it as a no
   If two fit, ask once which; never write it into one they didn't name.
 - Never rewrite an earlier decision. A reversal is a new line saying what it
   replaces.
-- Reply with the paragraph only: what was written and where.
+- Reply in the usual shape. Often the paragraph is all of it: what was
+  written and where.
 
 ## Done when
 

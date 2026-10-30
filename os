@@ -24,7 +24,11 @@ if [ ! -s "$ENGINE" ]; then
   from=""
   spare="$HERE/.os/engine.py.restoring"
   rm -f "$spare"
+  # Not Apple's stand-in git either: like its python3, it only offers to
+  # install itself, and this runs at every start (audit, 2026-10-29).
   if command -v git >/dev/null 2>&1 \
+     && ! { [ "$(command -v git)" = /usr/bin/git ] && [ "$(uname -s)" = Darwin ] \
+            && ! xcode-select -p >/dev/null 2>&1; } \
      && git -C "$HERE" show HEAD:.os/engine.py > "$spare" 2>/dev/null && [ -s "$spare" ]; then
     from="the last checkpoint"
   else
@@ -43,12 +47,13 @@ if [ ! -s "$ENGINE" ]; then
     rm -f "$spare"
     printf '\033[38;5;167m  ✖ something is missing or empty: %s\033[0m\n' "$ENGINE" >&2
     printf '   There is no copy to put back, in git or in .os/backups/.\n' >&2
-    printf '   This file has to sit in the top of a Zenith folder to work.\n' >&2
+    printf '   Download the template again and copy .os/engine.py from it into this folder.\n' >&2
     exit 1
   fi
 fi
 
 PY="${ZENITH_PYTHON:-}"
+old=""
 if [ -z "$PY" ]; then
   for candidate in python3 python3.13 python3.12 python3.11 /usr/bin/python3; do
     found="$(command -v "$candidate" 2>/dev/null)" || continue
@@ -59,8 +64,18 @@ if [ -z "$PY" ]; then
        && ! xcode-select -p >/dev/null 2>&1; then
       continue
     fi
+    # Too old for the engine, which needs 3.9: it failed partway with a
+    # Python error instead of saying so (audit, 2026-10-29).
+    if ! "$found" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
+      old="$found"; continue
+    fi
     PY="$found"; break
   done
+fi
+if [ -z "$PY" ] && [ -n "${old:-}" ]; then
+  printf '\033[38;5;167m  ✖ This Python is too old: %s\033[0m\n' "$("$old" --version 2>&1)" >&2
+  printf '   Zenith needs Python 3.9 or newer — get it from python.org\n' >&2
+  exit 1
 fi
 if [ -z "$PY" ]; then
   printf '\033[38;5;167m  ✖ Python is not installed\033[0m\n' >&2

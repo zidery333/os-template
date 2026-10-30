@@ -28,7 +28,7 @@ reads the note as true. Five things in one message is five saves, not one.
 
 ## A file
 
-`./os save <path>` puts a PDF or a photo in `Notes/` with a `<name>.card.md`
+`./os save <path>` puts a PDF or a photo in `Notes/` with a `<file>.card.md`
 beside it, and search reads the card, not the file. So open the file, then write
 one sentence of what it is and 3–5 tags into its card, like
 `tags: [lease, flat, landlord]`. If a camera or scanner named it (`scan-0012`,
@@ -49,7 +49,7 @@ else about them, put "About me:" in front:
 ```
 
 "Always…" and "stop doing…" about how they want things done go straight into
-About me the same way, in their words, with no question first. A rule for one piece of work ("from
+About me with "About me:" in front, in their words, with no question first. A rule for one piece of work ("from
 now on we invoice on Fridays") is not about them: it is a decision for that
 work, with `./os decide <name> "<their words>"`.
 
@@ -61,7 +61,8 @@ question to ask, not a line to write.
 - Never ask a clarifying question first. A rough save beats a lost thought.
 - Keep their exact words for anything quoted. Only paraphrase the context you add.
 - Don't announce a plan to create a project — the save already did it.
-- Reply with the paragraph only: what you wrote down and where it went. Say "I
+- Reply in the usual shape; the paragraph is often all of it: what you
+  wrote down and where it went. Say "I
   wrote that down — it's in Notes as how-to-run-a-retro", not "captured" and not
   the folder mechanics.
 

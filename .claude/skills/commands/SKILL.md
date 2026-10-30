@@ -23,7 +23,9 @@ each skill's `description:`, never the file names.
 
 - **Say it and it happens.** Write this down · what should I work on · find X ·
   we decided X · hand this off · start the week · wrap up · where does X live.
-  One line per skill in the catalog.
+  One line per skill in the catalog, plus the everyday ones the folder runs on
+  itself: put X on hold · X is back on · X is done, put it away · call X
+  something else · undo that.
 - **Big jobs that go off on their own.** One line per helper: what you'd say
   to get it, and what comes back.
 - **Anything else,** in one line: whatever they say gets written down and filed,

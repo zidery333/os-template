@@ -39,7 +39,7 @@ They did not sign up to learn a filing system.
 
 The person never picks one — `./os save` decides and files it immediately.
 **There is no inbox**: if you saved it, it is filed. A PDF or an image lands in `Notes/` with a
-`<name>.card.md`, and search reads the card, not the file: after `./os save <file>`, write one
+`<file>.card.md`, and search reads the card, not the file: after `./os save <file>`, write one
 sentence of what it is and 3–5 tags into the card, and `./os rename` it if a camera or scanner named
 it. **Never bring a file in from elsewhere without asking.** A video, or anything over 100 MB, stays
 put: `./os save <it>` writes a note in Notes saying where it lives, to fill in the same way; a copy
@@ -79,7 +79,7 @@ stops generating false guilt. Only offer `./os close` when they say it is genuin
 ./os show <name>         one item: state, next action, decisions, recent log
 ./os last                what happened the last time anyone worked here
 ./os open <name>         where something lives on disk · ./os edit <name>  to change it
-./os close <name>        no longer live — into Archive/ · --part <folder> puts one folder in it away
+./os close <name>        no longer live — into Archive/ · --part <folder> one folder of it · ./os back <name>  out again
 ./os decide <name> "<text>"  write a settled thing into its ## Decisions
 ./os claim <name>        tell the other chats you're on it · ./os release <name>  let go again
 ./os rename <name> "..."  call it something else, everywhere at once

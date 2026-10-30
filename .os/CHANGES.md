@@ -3,6 +3,183 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-29.2
+
+- A notes folder with a file called `skill.md` in it stays in Notes, as it
+  is. Only a folder with a real `SKILL.md`, already written as a skill, is
+  filed as one.
+- A note with Windows line endings keeps them when `./os sort` adds its
+  header.
+- A file of yours called `index.md` (or `INDEX.md` without ./os's own first
+  line) is never written over by the list. `./os check` says the list isn't
+  kept while it's there.
+- A note with `name:` and `description:` at the top, like one about your
+  dentist, is no longer taken for an AI helper and moved out of Notes.
+- `./os snag --export` pages stay at the top and are never filed into Notes.
+- `./os check --fix` only clears a leftover temporary file that is surely
+  ./os's own and an hour old, with nothing still writing it. A file of yours
+  that only looks like one is listed and left alone.
+- Two things with the same name in different groups no longer get each
+  other's parts back from `./os back --part`, or take them along on
+  `./os close`.
+- Renaming a folder no longer changes paths to another folder whose name
+  starts the same, like `Kitchen Tiles` when you rename `Kitchen`.
+- `./os setup --bring` stopped partway or out of room never leaves a half
+  copy for `./os sort` to file, and no longer says everything was copied when
+  something couldn't be. The same goes for addons, for a file undo puts back,
+  for a note saved on a drive with no hard links, and for transcripts
+  `./os learn` keeps.
+- A file or folder save stopped partway (Ctrl-C, a closed window) leaves
+  nothing that `./os sort` would file as if it were whole. If a stop leaves
+  a half copy behind, `./os check` says so.
+- When the disk refuses part of an undo (full, or a file that can't be
+  written), what it couldn't put back is kept as it was, with a note of
+  which file each copy is, and undo says where. Before, those copies were
+  thrown away. A folder undone beside a new one of the same name no longer
+  has its old words written into the new one.
+- `./os update` takes `W.04`-style tags off names only in a folder that
+  really has them. A name like `1.10 meeting with Sam.md` and an `id:` of
+  your own stay as they are.
+- An INDEX.md or CATALOG.md you made into a shortcut to a note of yours is
+  left alone, instead of the note being written over.
+- A folder made with `git clone` can start a history of its own:
+  `./os setup --unlink --fresh`, which `/setup` offers while nothing of
+  yours is saved in it. The template's old history is kept in .os/backups/.
+- An option with nothing after it now stops and changes nothing. Before,
+  `./os close <name> --part` put the whole thing away, and `--into`,
+  `--bring` or `--move-to` with no value did nothing without a word.
+- `./os decide` keeps a decision on one line, and won't write the same
+  one twice.
+- `./os hold` gives work a "Where it stands" section to keep up to date.
+- A skill or helper with a colon in its name now gets a header Claude can read.
+- `./os new` keeps quotes inside a name, like `Read "Dune"`, and takes
+  what comes after `--` as the name.
+- A note you turned into work and back is one file again, not a folder
+  around one.
+- `./os setup --bring` says which of your own helpers, taught words and
+  same-named skills it left behind, in the trial run too. Undo after it
+  names the bring, and its count matches the list.
+- `./os update --check` in a brand-new folder no longer opens with a
+  welcome line.
+- `./os` says plainly when your Python is older than 3.9, instead of
+  failing partway.
+- `./os help` lists `./os note`, helpers, `./os setup` and `./os words`.
+- `/decide` and `/wrapup` save a decision that belongs to no piece of work
+  as a note, first time, instead of being refused.
+- Two saves in the same second no longer lose one of them.
+- With two chats in one folder, `./os undo` no longer takes back the other
+  chat's save if it lands at the same moment. It stops and says so.
+- Starting the same piece of work twice at once makes one, not two.
+- A name with an exact title wins: `./os close "C# notes"` no longer puts
+  "C++ notes" away.
+- Undo of a saved picture or PDF works after a later `./os sort`, and
+  `./os demo --keep` then undo leaves nothing behind.
+- A damaged `.os/state.json` no longer locks you out. It's kept aside and
+  started again, and your notes and work are untouched.
+- When the disk says no, `./os` says what to check, and no longer promises
+  nothing moved when something did.
+- `./os close` and `./os back` say when another chat is working on it.
+  `./os back` says when the name was taken and it came back as `-2`.
+- Closing a linked note no longer asks you to fix by hand a link it
+  already put right.
+- A word you taught with `./os words` files its plural too.
+- `./os check` no longer calls two empty folders the same thing twice.
+- After an update, `./os undo` says the update stays, and that
+  `./os update --undo` takes that back.
+- `./os check` now says what the first screen says: anything dropped in
+  but not filed, an empty folder, a shortcut to something gone, and a
+  typo in `.claude/settings.json` with its line.
+- Titles with a backslash keep their row whole in INDEX.md.
+- `./os back` leaves no empty folders behind in Archive.
+- Long videos' timestamps show hours past the first hour.
+- More messages say what to do next, in plain words.
+- Undoing a saved folder now asks first, and keeps a copy, when anything
+  came into it since, whatever the files' dates say.
+- Filing a helper's folder, or a group, never takes away anything else that
+  was in it, like a card whose file was moved away.
+- `./os check --fix` leaves Work/Content and code projects alone.
+- On a drive that can't hold ./os's lock, ./os says so once: keep to one
+  chat at a time there.
+- `./os name` can be taken back with one `./os undo`, About me line and all.
+- `./os show` says when work on the go has no next action yet.
+- Undo after a sort puts back a note's header word for word, and undo
+  works on a very big note and on a note that's a shortcut. On a shortcut,
+  undo no longer warns about words nobody wrote, and it asks first when
+  someone did.
+- Undo never writes outside this folder, or into a different note, when a
+  shortcut or a folder has been pointed somewhere else since. It puts a
+  shortcut back as a shortcut, and says plainly what it couldn't put back.
+- Nothing is ever written through a shortcut into `.git/`, `.os/` or
+  `.claude/`, and a shortcut naming this folder in other letter case counts
+  as inside it.
+- A shortcut that is closed or moved still leads to the same note.
+- `decide`, `hold`, `push` and `note` on a shortcut say it's a shortcut,
+  instead of sending you to `./os check --fix`.
+- When something moves, links in backticks are left as examples, and a
+  project's own Notes folder, or a copy of another folder kept inside, keeps
+  its own links and paths.
+- When something moves, dated lines under `## Log` and `## Decisions` are
+  never changed, links included. Links in indented code are left as
+  examples, a link with code in its words still follows, and a work item
+  with a git history of its own still has its page's links kept working.
+- A dated Log or Decisions entry that runs onto a second line is kept whole,
+  code in it no longer upsets the rest of the page, and `./os check` no
+  longer warns about links in those entries.
+- `./os update` keeps your changes to the shapes of new notes and work
+  (`.os/templates`), and any shape of your own, instead of replacing them.
+- An update that stops partway, from a full disk or a folder it can't
+  write, never leaves the settings empty, says so in plain words, and
+  `./os update --undo` goes back to before the first try. A shortcut among
+  your skills that leads nowhere no longer blocks every update.
+- An update that stops before it has changed anything says so. One stopped
+  partway, by a full disk, Ctrl-C or anything else, says how to finish it,
+  and `./os update --undo` takes out the files it had added but never your
+  own notes. An edited shape no longer makes the same update run again.
+- A settings file, hook or skill you keep as a shortcut stays a shortcut
+  through an update and its undo, and one kept outside this folder is put
+  back by the undo too. Old copies from before an update are cleared even
+  when they were read-only.
+- Closing the window no longer cuts an update short; Ctrl-C or a kill still
+  stops it, saying how to go on. While an update runs, another `./os` waits
+  for it and says so.
+- Links in indented code straight after a heading, deep inside a list item,
+  or indented with a tab are left as examples when something moves.
+- `./os check --fix` only throws away junk your computer makes (`.DS_Store`,
+  the Mac's own `._` files, folders of Python's compiled files), never
+  anything in a `sources/` folder, and `./os undo` can't bring those back.
+  It never puts a card into a `sources/` folder, and leaves the cards of a
+  copy kept inside alone. The words of a save that stopped partway are kept
+  for `./os sort` to file.
+- `./os` never makes a file outside this folder runnable through a shortcut.
+- A note saved with a byte-order mark is read as filed, and hold and push
+  keep one header on it. Teaching a word to a subject written as a plain list
+  keeps its words.
+- The checks that run before Claude changes a file no longer stall on long
+  commands or big files.
+- `./os undo` straight after `./os learn` says that learn isn't undone, and
+  names the older step it would take back, before it does.
+- `./os setup --move-to` never moves the folder into itself through a
+  shortcut, a move to another disk that stops leaves one whole folder, and
+  a save from another chat during the move is never lost.
+- A move to another disk that stops partway says where its copy is, and
+  which one is your folder.
+- A bring stopped by a closed window can be undone. Bringing the same folder
+  in again leaves what is already here, the trial run says where something
+  will land beside one of the same name, and hidden files and shortcuts it
+  leaves in the old folder are named.
+- A note about something wrong with this folder (`./os snag`) is no longer
+  kept in its checkpoints.
+- On Windows, `./os update` finishes: it no longer stops at its last step
+  because the `os` launcher can't be run from Python, files whose lines end
+  the Windows way are no longer called edited by hand, and a console that
+  can't show a ✓ no longer stops it. `./os update --undo` works straight
+  after such an update, and addons are brought up to date there too.
+- Shortcuts that led into the folder still lead into it after
+  `./os setup --move-to`.
+- In a folder whose git history is kept somewhere else (a git worktree, or
+  a .git linked from another folder), `./os` and `./os setup --unlink`
+  leave that history alone.
+
 ## 2026-10-29.1
 
 - `./os find --json` now ends with exit code 1 when nothing is found, the

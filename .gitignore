@@ -44,6 +44,8 @@ venv/
 .os/transcripts/
 .os/backups/
 .os/.lock
+.os/.lock.*
 .os/.dirty
+.os/snags.json
 INDEX.md
 __pycache__/

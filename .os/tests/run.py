@@ -17,12 +17,17 @@ Nothing here touches the folder it is run from.
 from __future__ import annotations
 
 import ast
+import hashlib
+import errno
+import contextlib
+import io
 import json
 import multiprocessing
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -61,10 +66,76 @@ class Failure(AssertionError):
     pass
 
 
+#: Whether the test running now has said a crash is what it expects.
+CRASH_OK = False
+#: Whether it has said a command of its may exit non-zero (expect=None).
+ANY_EXIT = False
+_subprocess_run = subprocess.run
+
+
+def _run_and_look(*args, **kwargs):
+    """subprocess.run, failing the test when what ran crashed. A crashed undo
+    leaves every file untouched, so a test that only looked at the files
+    passed on it (round 13, 2026-10-29). Any test that means to see a crash
+    says so with t.crash_ok()."""
+    proc = _subprocess_run(*args, **kwargs)
+    if not CRASH_OK:
+        said = ""
+        for part in (proc.stdout, proc.stderr):
+            if isinstance(part, bytes):
+                part = part.decode("utf-8", "replace")
+            if isinstance(part, str):
+                said += part
+        if "Traceback (most recent call last)" in said:
+            cmd = args[0] if args else kwargs.get("args")
+            words = " ".join(str(a) for a in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+            at = said.find("Traceback (most recent call last)")
+            raise Failure(f"`{words[-200:]}` crashed:\n{said[at:][-2500:]}")
+    return proc
+
+
+subprocess.run = _run_and_look
+
+
+class _LookedAtPopen(subprocess.Popen):
+    """Popen, its output looked at the same way when read with communicate()."""
+
+    def communicate(self, *args, **kwargs):
+        out, err = super().communicate(*args, **kwargs)
+        if not CRASH_OK:
+            said = ""
+            for part in (out, err):
+                if isinstance(part, bytes):
+                    part = part.decode("utf-8", "replace")
+                if isinstance(part, str):
+                    said += part
+            if "Traceback (most recent call last)" in said:
+                at = said.find("Traceback (most recent call last)")
+                words = " ".join(str(a) for a in self.args) if isinstance(self.args, (list, tuple)) else str(self.args)
+                raise Failure(f"`{words[-200:]}` crashed:\n{said[at:][-2500:]}")
+        return out, err
+
+
+subprocess.Popen = _LookedAtPopen
+
+
 class Case:
     def __init__(self, box: "Sandbox"):
+        global CRASH_OK, ANY_EXIT
+        CRASH_OK = ANY_EXIT = False
         self.box = box
         self.checks = 0
+
+    def any_exit(self) -> None:
+        """This test looks at refusals: a run with expect=None may exit
+        non-zero. Without it, expect=None still has to exit 0."""
+        global ANY_EXIT
+        ANY_EXIT = True
+
+    def crash_ok(self) -> None:
+        """This test means to see a crash: don't fail it for one."""
+        global CRASH_OK
+        CRASH_OK = True
 
     def ok(self, condition, message: str) -> None:
         self.checks += 1
@@ -150,6 +221,15 @@ class Sandbox:
                 f"`os {' '.join(args)}` exited {proc.returncode}, expected {expect}\n"
                 f"--- stdout ---\n{proc.stdout[-2500:]}\n--- stderr ---\n{proc.stderr[-2500:]}"
             )
+        # expect=None is "it may refuse", but a command that should have
+        # worked and exited 1 with a polite message passed every such test.
+        # Only a test that says it looks at refusals takes any exit
+        # (round 15, 2026-10-29).
+        if expect is None and proc.returncode != 0 and not ANY_EXIT:
+            raise Failure(
+                f"`os {' '.join(args)}` exited {proc.returncode}; this test doesn't say it expects "
+                f"a refusal (t.any_exit())\n--- stdout ---\n{proc.stdout[-2500:]}\n"
+                f"--- stderr ---\n{proc.stderr[-2500:]}")
         return proc
 
     def json(self, *args: str, expect: int | None = 0) -> object:
@@ -332,6 +412,14 @@ def in_their_words(doc: Path, box: "Sandbox") -> bool:
     rel = doc.relative_to(box.root).as_posix()
     released = upgrade.sha1(SOURCE / ".os" / "engine.py") in known.get(".os/engine.py", [])
     return released and upgrade.sha1_unnamed(SOURCE / rel) not in known.get(rel, [])
+
+
+def any_in_their_words(box: "Sandbox", *rels: str) -> bool:
+    """Has the person rewritten any of these shipped files? A check reading
+    their wording is then about nothing the update did: in a folder updated
+    from 10-05 or 10-28 with a skill of theirs kept, four failed (audit,
+    2026-10-29)."""
+    return any(in_their_words(box.root / r, box) for r in rels)
 
 
 @test
@@ -841,6 +929,7 @@ def test_nothing_written_down_goes_unnoticed(t: Case) -> None:
     area is a run that died in between. It used to be invisible — `os` said
     "nothing started yet", `check` said "all good" — and then deleted on a
     seven-day timer, which is the one thing this folder promises never to do."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     stage = t.box.root / ".os" / "cache" / engine.STAGING
     stage.mkdir(parents=True, exist_ok=True)
     orphan = stage / "20200101-000000-ring-the-accountant.md"
@@ -931,6 +1020,10 @@ def test_undoing_a_save_puts_the_folder_back_as_it_was(t: Case) -> None:
     kept = [p for p in (root / ".os" / "cache" / "undo-kept").rglob("*.md")
             if "Two tins" in p.read_text()]
     t.ok(kept and "undo-kept" in said, f"and the words written since are kept aside, as it says\n{said}")
+    # Under where the note was, not the staging name it had for a moment
+    # (audit, 2026-10-29).
+    t.ok(f"/{root.joinpath(note).relative_to(root).as_posix()}" in said and "cache/incoming" not in said,
+         f"named after where it was\n{said}")
 
     # a file at the top of the folder was moved in, so it goes back there
     top = root / "quote.md"
@@ -946,7 +1039,7 @@ def test_undoing_a_save_puts_the_folder_back_as_it_was(t: Case) -> None:
     filed = mine()
     top.write_text("# A different quote\n\nSomeone else's.\n")
     stopped = t.box.run("undo", expect=1)
-    t.ok("quote.md" in stopped.stdout and "nothing has changed" in stopped.stdout,
+    t.ok("quote.md" in stopped.stdout and "left everything as it is" in stopped.stdout,
          f"it says the spot is taken, and that nothing changed\n{stopped.stdout}")
     t.eq(mine(), filed, "the saved file stays filed")
     t.ok("Someone else's" in top.read_text(), "and what is there now is left alone")
@@ -1018,6 +1111,7 @@ def test_the_folder_records_what_is_wrong_with_itself(t: Case) -> None:
     in one command, and the repeats are counted: the same snag six times is a
     different job from one seen once, and that count is the one piece of
     evidence whoever maintains the template cannot get any other way."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     t.eq(t.box.json("snag")["snags"], [], "the suite starts with none of the folder's own")
     quiet = t.box.run("snag", "sort filed a photo as a project, not a note")
     t.ok("noted" in quiet.stdout, "it says one short line and gets out of the way")
@@ -1197,7 +1291,7 @@ def test_no_option_is_silently_ignored(t: Case) -> None:
             if not isinstance(call, ast.Call):
                 continue
             which = getattr(call.func, "id", "")
-            if which not in ("_flag", "_opt", "_count"):
+            if which not in ("_flag", "_opt", "_opt_given", "_count"):
                 continue
             for arg in (call.args[1:] if which == "_flag" else call.args[1:2]):
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
@@ -2399,14 +2493,14 @@ def test_one_chat_s_undo_never_takes_back_another_chat_s_note(t: Case) -> None:
 
         as_chat("chat-one")
         mine = t.box.run("undo")
-        t.ok(f"took back: saved {note['path']}" in mine.stdout,
+        t.ok(f"undid: saved {note['path']}" in mine.stdout,
              f"the chat that made it can undo it, and is told what went:\n{mine.stdout}")
         t.ok(not (root / note["path"]).exists(), "and it goes")
 
         t.box.run("new", "work", "Paint the fence")
         as_chat("chat-two")
         forced = t.box.run("undo", "--other-chat")
-        t.ok("took back: made Work/Paint the Fence" in forced.stdout,
+        t.ok("undid: made Work/Paint the Fence" in forced.stdout,
              f"--other-chat takes it back all the same:\n{forced.stdout}")
 
         # A step written before chats were told apart, and one made where no
@@ -2417,11 +2511,11 @@ def test_one_chat_s_undo_never_takes_back_another_chat_s_note(t: Case) -> None:
         state["undo"][-1].pop("chat", None)
         (root / ".os" / "state.json").write_text(json.dumps(state))
         as_chat("chat-two")
-        t.ok("took back" in t.box.run("undo").stdout, "an old step with no chat on it still undoes")
+        t.ok("undid:" in t.box.run("undo").stdout, "an old step with no chat on it still undoes")
         as_chat("chat-one")
         t.box.run("new", "work", "Clear the gutters")
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-        t.ok("took back" in t.box.run("undo").stdout,
+        t.ok("undid:" in t.box.run("undo").stdout,
              "and so does a run that can't tell which chat it is")
     finally:
         for var, value in was.items():
@@ -3151,6 +3245,7 @@ def test_an_odd_textedit_file_never_stops_search(t: Case) -> None:
     traceback, whatever was searched for, and every ./os sort on Linux. A
     bare `\\u`, or `\\'00`, put an invisible NUL character onto the card,
     which then counted as a binary file."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     b = "\\"
     for odd in ("u99999999 here", "u-99999 here", "u here", "u0 here", "'00 here",
                 "'07 here", "u7 here"):
@@ -3431,6 +3526,7 @@ def test_the_examples_are_from_home_everywhere(t: Case) -> None:
     set"`; the demo showed the person's own boiler note after "find one
     again"; its last line said any AI would do; and check named an RTF
     taken back with undo by its first line of code."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     job = re.compile(r"okr|ad set|learning phase|marketing", re.I)
     for command in ("hold", "show", "open", "edit", "rename", "close", "words"):
         said = t.box.run("help", command).stdout
@@ -3742,6 +3838,7 @@ def test_the_vocabulary_is_a_command_like_any_other(t: Case) -> None:
     `python3 .os/learn.py` is not a thing anybody should have to type, and every
     other capability here is a plain `os` verb. The classifier is only as good
     as the words it has, so this is the one that compounds."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     listed = t.box.json("words")
     t.ok(listed["ok"], "with no arguments it lists the domains")
     t.ok(any(d["domain"] == "marketing" for d in listed["domains"]), "by name")
@@ -4556,6 +4653,7 @@ def test_a_command_that_only_looks_changes_nothing_git_keeps(t: Case) -> None:
     .os/config.json, so a catch-up that only looked left a change behind in
     git (report, 2026-10-22). Nothing that only reports may write a file git
     keeps. A cache under .os/cache/, which git leaves out, is fine."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     if engine.History.no_git():
         return          # the check is about git; a computer without it isn't broken
     root = t.box.root
@@ -5054,6 +5152,11 @@ def test_shipped_instructions_never_have_the_ai_speak_for_them(t: Case) -> None:
     matters to them, setup's choices filled in "keep answers normal", and
     save sent "from now on" about a piece of work into About me (audit,
     2026-10-28)."""
+    if any_in_their_words(t.box, ".claude/skills/handoff/SKILL.md", ".os/templates/note.md",
+                          ".os/templates/pushing.md", ".claude/skills/setup/SKILL.md",
+                          ".claude/skills/save/SKILL.md", "AGENTS.md", ".claude/agents/researcher.md",
+                          ".claude/skills/wrapup/SKILL.md"):
+        return
     read = lambda *p: (SOURCE.joinpath(*p)).read_text()
     handoff = read(".claude", "skills", "handoff", "SKILL.md")
     t.ok("theirs to write, never yours" in handoff, "handoff asks them for what good looks like")
@@ -5086,6 +5189,8 @@ def test_handoff_and_save_write_only_what_was_said(t: Case) -> None:
     been sent yet" into Where it stands, and a save added "Action from a
     meeting" to a work item. Nobody had said either, and every later chat
     reads them as true."""
+    if any_in_their_words(t.box, ".claude/skills/handoff/SKILL.md", ".claude/skills/save/SKILL.md"):
+        return
     read = lambda *p: " ".join((SOURCE.joinpath(*p)).read_text().split())
     handoff = read(".claude", "skills", "handoff", "SKILL.md")
     t.ok("something they said or the files show" in handoff, "handoff's Where it stands is only what was said or shown")
@@ -5114,6 +5219,9 @@ def test_no_two_skills_answer_to_the_same_words(t: Case) -> None:
     "save my progress" (wrapup and save), "from now on" about a piece of
     work (save and decide), "what did we decide" (find and decide) and
     "learn something new" (learn and the researcher) (audit, 2026-10-28)."""
+    if any_in_their_words(t.box, *(f".claude/skills/{n}/SKILL.md" for n in ("tidy", "handoff", "save", "decide")),
+                          ".claude/agents/researcher.md"):
+        return
     def said(path):
         return str(engine.parse_frontmatter(path.read_text())[0].get("description", ""))
     skill = lambda n: said(SOURCE / ".claude" / "skills" / n / "SKILL.md")
@@ -5136,7 +5244,7 @@ def test_shipped_words_say_what_is_there(t: Case) -> None:
     t.ok("THE FIVE" not in shown and "Zenith did" not in shown, "help counts nothing wrong, and says ./os")
     for word in ("learning", "./os learn", "./os snag"):
         t.ok(word in shown, f"help lists {word}")
-    read = lambda *p: (SOURCE.joinpath(*p)).read_text()
+    read = lambda *p: "" if any_in_their_words(t.box, "/".join(p)) else (SOURCE.joinpath(*p)).read_text()
     t.ok("--quiet" not in read(".claude", "skills", "commands", "SKILL.md"), "/commands uses no flag that isn't there")
     t.ok("new agent" not in read(".claude", "skills", "make-skill", "SKILL.md"), "make-skill says new helper")
     t.ok("You are {{TITLE}}" not in read(".os", "templates", "agent.md"), "the helper form reads right filled in")
@@ -5474,6 +5582,7 @@ def test_a_dropped_in_skill_keeps_its_name(t: Case) -> None:
 @test
 def test_search_returns_your_work_not_the_scaffolding(t: Case) -> None:
     """Two ways search used to hand back things nobody was looking for."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     t.box.run("save", "Redesign the pricing page before the launch on the 14th")
     t.box.run("new", "project", "Ship the mobile app")
 
@@ -6388,6 +6497,7 @@ def test_a_scanned_file_is_found_by_what_it_is(t: Case) -> None:
     agreement, was never found by "tenancy". Search reads the card, so the
     save skill and AGENTS.md have the AI write what the file is into it, and
     rename a camera's or scanner's name."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     for doc in (t.box.root / "AGENTS.md", t.box.root / ".claude" / "skills" / "save" / "SKILL.md"):
         if not doc.is_file() or in_their_words(doc, t.box):
             continue
@@ -6426,6 +6536,7 @@ def test_every_file_in_a_folder_is_found_by_its_name(t: Case) -> None:
     PDFs, Notes/Taxes, or of Word files, Notes/School, was one thing whose
     files no search found, the ones added later too, while sort said nothing
     was waiting and check said all good (review, 2026-09-30)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     notes = t.box.root / "Notes"
     taxes, school = notes / "Taxes", notes / "School"
     for folder, names in ((taxes, ("Self assessment 2024.pdf", "P60 2024.pdf")),
@@ -7385,6 +7496,7 @@ def test_a_card_left_behind_goes_back_beside_its_file(t: Case) -> None:
     """A saved PDF dragged into a folder in Finder leaves its card behind,
     and the card holds the only words search reads for it: `worcester`
     found nothing, while check said all good (review, 2026-09-30)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     outside = t.box.tmp / "scan0042.pdf"
     outside.write_bytes(b"%PDF-1.4\n\x00\x01\n")
     t.box.run("save", str(outside))
@@ -7526,6 +7638,7 @@ def test_text_in_an_older_encoding_keeps_its_accents(t: Case) -> None:
 @test
 def test_search_forgives_how_people_type(t: Case) -> None:
     """"I know I wrote it down somewhere" is exactly when you misspell it."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     for text in (
         "The billing token refresh dies every Friday night, before the release on the 14th",
         "Notes on Postgres index types: btree is the default, gin is for arrays",
@@ -7570,6 +7683,7 @@ def test_search_never_swaps_a_real_word_for_another(t: Case) -> None:
     and valve valet, and winner showed the winter note with no word about it
     (review, 2026-09-30). Now it says nothing matched and offers the near
     word as a command to type. Plurals and endings are still forgiven."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     for text in (
         "Notes on Gran's lemon cake recipe: 200g butter, 200g sugar, four eggs",
         "The boiler keeps cutting out at night, worth knowing the reset button",
@@ -8988,7 +9102,7 @@ def test_the_first_run_starts_a_history_hand_edits_can_go_back_to(t: Case) -> No
     ./os help said every change could be undone (stranger test, 2026-09-30)."""
     said = t.box.run("help").stdout
     t.ok("every change can be undone" not in said, "help no longer promises too much")
-    t.ok("every move ./os makes can be undone" in said, "it promises what's true")
+    t.ok("every filing ./os does can be undone" in said, "it promises what's true")
     wrapup = t.box.root / ".claude" / "skills" / "wrapup" / "SKILL.md"
     if not in_their_words(wrapup, t.box):
         text = wrapup.read_text()
@@ -9815,6 +9929,7 @@ def test_what_could_not_be_filed_is_said_out_loud(t: Case) -> None:
 
     One item the sorter cannot move must not stop the other forty-nine — and
     must not be quietly counted as filed either."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     # Dropped into Work, but they are a file and a note, so the sorter has to
     # move them to Notes — which is exactly the folder it cannot write to.
     work = t.box.root / "Work"
@@ -10289,6 +10404,7 @@ def test_a_hand_edited_settings_file_never_crashes(t: Case) -> None:
     """`.os/config.json` and `.os/words.json` are files people are invited to
     edit. A line deleted out of one of them has to produce a sentence, not a
     Python traceback — the folder is somebody's filing cabinet, not a dev tool."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     config = t.box.root / ".os" / "config.json"
     words = t.box.root / ".os" / "words.json"
     state = t.box.root / ".os" / "state.json"
@@ -10405,6 +10521,7 @@ def test_check_names_the_part_of_the_vocabulary_it_could_not_read(t: Case) -> No
 @test
 def test_a_number_option_wants_a_number(t: Case) -> None:
     """`--limit all` is a guess at the spelling, not a reason to show a stack."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     proc = t.box.run("find", "anything", "--limit", "all", expect=1)
     t.ok("Traceback" not in proc.stderr, "no traceback")
     t.ok("--limit" in proc.stderr, "it names the option")
@@ -11897,6 +12014,2799 @@ def _addon(where: Path, name: str, files: dict, **info) -> Path:
 
 
 @test
+def test_r15_update_keeps_their_edits_to_the_shapes(t: Case) -> None:
+    """The shapes of new notes and work were replaced whole by an update: a
+    section added to pushing.md, and a shape of their own, went without a word
+    (update sweep, 2026-10-29)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    def newer(o: Path) -> None:
+        for name in ("holding.md", "pushing.md"):
+            (o / ".os" / "templates" / name).write_text(
+                (o / ".os" / "templates" / name).read_text() + "\n<!-- newer -->\n")
+    published = _publish(t, "2026-02-01.1", newer)
+    shape = root / ".os" / "templates" / "pushing.md"
+    shape.write_text(shape.read_text() + "\n## Budget\n")
+    mine = root / ".os" / "templates" / "recipe.md"
+    mine.write_text("# {title}\n\n## Ingredients\n")
+    done = t.box.run("update", "--from", str(published))
+    t.ok("## Budget" in shape.read_text(), f"their edit survives\n{done.stdout}")
+    t.ok("pushing.md" in done.stdout, f"and they're told the new one is set aside\n{done.stdout}")
+    t.ok(mine.is_file(), "a shape of their own stays")
+    t.ok("<!-- newer -->" in (root / ".os" / "templates" / "holding.md").read_text(),
+         "one they never changed is brought up to date")
+
+
+@test
+def test_r15_a_disk_that_fills_up_mid_update_never_empties_the_settings(t: Case) -> None:
+    """Merged files were written in place: a disk that filled up partway left
+    config.json empty, and nothing would run again, not even update --undo
+    (update sweep, 2026-10-29)."""
+    t.any_exit()      # the update is meant to stop
+    t.crash_ok()      # looked at below, after the settings
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda o: _edit_json(
+        o / ".os" / "config.json", lambda d: d.setdefault("behaviour", {}).update({"new_setting": 1})))
+    _edit_json(root / ".os" / "config.json", lambda d: d.setdefault("behaviour", {}).update({"mine": 2}))
+    shim = t.box.tmp / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, pathlib\n"
+        "real = pathlib.Path.write_text\n"
+        "def write_text(self, *a, **k):\n"
+        "    if self.name.startswith('config.json') and 'upgrade' not in str(self):\n"
+        "        open(self, 'w').close()\n"
+        "        raise OSError(errno.ENOSPC, 'No space left on device')\n"
+        "    return real(self, *a, **k)\n"
+        "pathlib.Path.write_text = write_text\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    said = subprocess.run([str(root / "os"), "update", "--from", str(published)], cwd=str(root), env=env,
+                          capture_output=True, text=True, timeout=180)
+    data = json.loads((root / ".os" / "config.json").read_text() or "null")
+    t.ok(isinstance(data, dict) and data.get("behaviour", {}).get("mine") == 2,
+         f"their settings are whole: {str(data)[:200]}")
+    t.ok("Traceback" not in said.stderr, f"and it says so in words\n{said.stderr[-1500:]}")
+    t.box.run()
+
+
+@test
+def test_r15_a_broken_shortcut_among_the_skills_never_blocks_an_update(t: Case) -> None:
+    """The backup copied .claude/skills following shortcuts, and one to a
+    skill that had moved stopped every update for good (update sweep,
+    2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    (root / ".claude" / "skills" / "shared").symlink_to(t.box.tmp / "gone")
+    t.box.run("update", "--from", str(published))
+    t.ok("2026-02-01.1" in (root / ".os" / "engine.py").read_text(), "the update went in")
+    t.ok((root / ".claude" / "skills" / "shared").is_symlink(), "and their shortcut is still there")
+
+
+@test
+def test_r15_an_update_finished_on_a_second_try_undoes_to_before_the_first(t: Case) -> None:
+    """An update stopped partway, then run again to finish: --undo said it
+    was back to the old version, and left the new program in place (update
+    sweep, 2026-10-29)."""
+    t.any_exit()      # the first try is meant to stop
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1",
+                         lambda o: (o / ".claude" / "skills" / "save" / "extra.md").write_text("x\n"))
+    was = (root / ".os" / "engine.py").read_text()
+    save = root / ".claude" / "skills" / "save"
+    save.chmod(0o555)
+    try:
+        t.box.run("update", "--from", str(published), expect=None)
+    finally:
+        save.chmod(0o755)
+    t.box.run("update", "--from", str(published))
+    t.box.run("update", "--undo")
+    t.eq((root / ".os" / "engine.py").read_text(), was, "undo goes back to before the first try")
+
+
+@test
+def test_r15_an_update_that_stopped_partway_can_be_undone(t: Case) -> None:
+    """undo.json was written only at the very end, so an update that stopped
+    partway couldn't be undone: "made by an older version" (update sweep,
+    2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1",
+                         lambda o: (o / ".claude" / "skills" / "save" / "extra.md").write_text("x\n"))
+    was = (root / ".os" / "engine.py").read_text()
+    save = root / ".claude" / "skills" / "save"
+    save.chmod(0o555)
+    try:
+        t.box.run("update", "--from", str(published), expect=None)
+    finally:
+        save.chmod(0o755)
+    t.box.run("update", "--undo", "--anyway")
+    t.eq((root / ".os" / "engine.py").read_text(), was, "the program from before is back")
+
+
+@test
+def test_r16_an_update_that_stops_while_backing_up_says_nothing_changed(t: Case) -> None:
+    """A disk that filled up while the update was still copying the folder
+    aside: --undo said the update was "made by an older version", and the
+    half-made copy could have been gone back to (round 16 live test,
+    2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, shutil\n"
+        "real = shutil.copy2\n"
+        "def copy2(src, dst, *a, **k):\n"
+        "    if 'before-upgrade' in str(dst) and 'engine' in str(dst):\n"
+        "        raise OSError(errno.ENOSPC, 'No space left on device')\n"
+        "    return real(src, dst, *a, **k)\n"
+        "shutil.copy2 = copy2\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    was = (root / ".os" / "engine.py").read_text()
+    subprocess.run([str(root / "os"), "update", "--from", str(published)], cwd=str(root), env=env,
+                   capture_output=True, text=True, timeout=180)
+    t.eq((root / ".os" / "engine.py").read_text(), was, "nothing was changed")
+    said = t.box.run("update", "--undo").stdout
+    t.ok("nothing to undo" in said, f"and undo says so\n{said}")
+    t.box.run("update", "--from", str(published))
+    t.box.run("update", "--undo")
+    t.eq((root / ".os" / "engine.py").read_text(), was, "a second try is undone from its own whole copy")
+
+
+@test
+def test_r16_a_folder_that_cant_be_copied_is_said_in_words(t: Case) -> None:
+    """A full disk while the update copied a folder aside printed Python's
+    list of tuples (round 16 live test, 2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, shutil\n"
+        "real = shutil.copyfile\n"
+        "def copyfile(src, dst, *a, **k):\n"
+        "    if 'tests.new' in str(dst):\n"
+        "        raise OSError(errno.ENOSPC, 'No space left on device')\n"
+        "    return real(src, dst, *a, **k)\n"
+        "shutil.copyfile = copyfile\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    said = subprocess.run([str(root / "os"), "update", "--from", str(published)], cwd=str(root), env=env,
+                          capture_output=True, text=True, timeout=180)
+    t.ok("[(" not in said.stderr and "No space left on device" in said.stderr, said.stderr[-800:])
+
+
+@test
+def test_r16_what_is_newer_names_a_shape_once(t: Case) -> None:
+    """"newer:" named a changed shape, then the whole shapes folder again
+    (update sweep, 2026-10-29)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda o: (o / ".os" / "templates" / "holding.md").write_text(
+        (o / ".os" / "templates" / "holding.md").read_text() + "\n<!-- newer -->\n"))
+    said = t.box.run("update", "--from", str(published), "--dry-run").stdout
+    line = next((l for l in said.splitlines() if "newer:" in l), "")
+    t.ok(".os/templates/holding.md" in line and not re.search(r"\.os/templates(,|$)", line.strip()), line)
+
+
+@test
+def test_r16_an_edited_shape_never_makes_the_same_update_run_again(t: Case) -> None:
+    """With a shape of theirs edited, every ./os update counted it as newer,
+    ran again, took another backup and trimmed away the only copy from
+    before the real update (eleventh review, 2026-10-29)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shape = root / ".os" / "templates" / "pushing.md"
+    shape.write_text(shape.read_text() + "\n## Budget\n")
+    t.box.run("update", "--from", str(published))
+    again = t.box.run("update", "--from", str(published)).stdout
+    t.ok("newest" in again, f"the second time it has nothing to do\n{again}")
+    t.eq(len(list((root / ".os" / "backups").glob("before-upgrade-*"))), 1, "and takes no second backup")
+
+
+@test
+def test_r16_undo_of_a_stopped_update_takes_out_what_it_added(t: Case) -> None:
+    """--undo of an update that stopped partway said it was back to the old
+    version, and left the files the update had added (eleventh review,
+    2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+
+    def newer(o: Path) -> None:
+        (o / ".claude" / "skills" / "find" / "extra.md").write_text("x\n")
+        (o / ".claude" / "skills" / "save" / "extra.md").write_text("x\n")
+    published = _publish(t, "2026-02-01.1", newer)
+    save = root / ".claude" / "skills" / "save"
+    save.chmod(0o555)
+    try:
+        t.box.run("update", "--from", str(published), expect=None)
+    finally:
+        save.chmod(0o755)
+    t.ok((root / ".claude" / "skills" / "find" / "extra.md").exists(), "the stopped update had added a file")
+    said = t.box.run("update", "--undo", "--anyway").stdout
+    t.ok(not (root / ".claude" / "skills" / "find" / "extra.md").exists(), f"undo takes it out\n{said}")
+    t.ok("unstamped" not in said, f"and says which update it undid\n{said}")
+
+
+@test
+def test_r16_a_stopped_update_undone_is_never_finished_from_its_old_copy(t: Case) -> None:
+    """A stopped update, undone, then edits, then ./os update: it "finished"
+    the old one from its old copy, and the next --undo put the edits back
+    without a word (eleventh review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1",
+                         lambda o: (o / ".claude" / "skills" / "save" / "extra.md").write_text("x\n"))
+    save = root / ".claude" / "skills" / "save"
+    save.chmod(0o555)
+    try:
+        t.box.run("update", "--from", str(published), expect=None)
+    finally:
+        save.chmod(0o755)
+    t.box.run("update", "--undo", "--anyway")
+    again = t.box.run("update", "--from", str(published)).stdout
+    t.ok("finishing the update that stopped partway" not in again, f"a fresh update, with its own copy\n{again}")
+    t.eq(len(list((root / ".os" / "backups").glob("before-upgrade-*"))), 2, "two copies from before")
+
+
+@test
+def test_r16_a_settings_file_that_is_a_shortcut_is_written_through(t: Case) -> None:
+    """An update swapped a .claude/settings.json that was a shortcut to their
+    own file for a plain copy, and their file never got the new settings
+    (eleventh review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda o: _edit_json(
+        o / ".claude" / "settings.json", lambda d: d.update({"newTemplateKey": True})))
+    theirs = t.box.tmp / "dotfiles-settings.json"
+    shutil.copy(root / ".claude" / "settings.json", theirs)
+    _edit_json(theirs, lambda d: d.update({"mine": 1}))
+    (root / ".claude" / "settings.json").unlink()
+    (root / ".claude" / "settings.json").symlink_to(theirs)
+    t.box.run("update", "--from", str(published))
+    t.ok((root / ".claude" / "settings.json").is_symlink(), "still a shortcut")
+    data = json.loads(theirs.read_text())
+    t.ok(data.get("mine") == 1 and data.get("newTemplateKey") is True, f"their file got the new key: {sorted(data)}")
+
+
+def _record_hook(t: Case, command: str, cwd: Path, cpu: bool = False) -> tuple:
+    """The hook's answer, and how long it took. `cpu`: the time it spent
+    working, not waiting: a busy computer stretches the clock, not that, so
+    a test of how much work it does can't fail for a slow moment (round 20)."""
+    hook = t.box.root / ".claude" / "hooks" / "keep-the-record.sh"
+    call = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+    started = time.time()
+    if cpu:
+        import resource  # not on Windows, where cpu isn't asked for
+    used = resource.getrusage(resource.RUSAGE_CHILDREN) if cpu else None
+    proc = subprocess.run([str(hook)], input=json.dumps(call), capture_output=True, text=True,
+                          env=dict(os.environ, CLAUDE_PROJECT_DIR=str(t.box.root)), timeout=30)
+    # Quick and quiet is also what a hook that can't even start looks like.
+    t.eq(proc.stderr.strip(), "", "the hook itself runs cleanly")
+    if used is not None:
+        now = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return proc, (now.ru_utime - used.ru_utime) + (now.ru_stime - used.ru_stime)
+    return proc, time.time() - started
+
+
+@test
+def test_r16_moving_big_footage_or_a_pipe_never_stalls_the_record_hook(t: Case) -> None:
+    """keep-the-record read the whole of every file a cp or mv named, before
+    looking at where it went: a 1.5 GB video took over a second and 3 GB of
+    memory, and a pipe hung the call until the hook was killed (hooks sweep,
+    2026-10-29)."""
+    if os.name == "nt":
+        return
+    content = t.box.root / "Work" / "Content"
+    content.mkdir(parents=True)
+    with (content / "footage.mov").open("wb") as fh:
+        fh.truncate(300 * 1024 * 1024)
+    os.mkfifo(content / "pipe")
+    for command in ("mv footage.mov f2.mov", "cp pipe /tmp/zenith-pipe-copy"):
+        proc, took = _record_hook(t, command, content)
+        t.ok(took < 2, f"`{command}` is quick: {took:.1f}s")
+        t.eq(proc.stdout.strip(), "", f"and says nothing for `{command}`")
+
+
+@test
+def test_r16_a_long_quoted_command_is_read_quickly(t: Case) -> None:
+    """A long quoted string with spaces was read a letter at a time: 800 KB
+    took seven seconds, and above about 1 MB the hook timed out (hooks sweep,
+    2026-10-29)."""
+    words = " ".join(["some words here"] * 55_000)
+    proc, took = _record_hook(t, f'echo "{words}" > out.txt', t.box.root)
+    t.ok(took < 2, f"took {took:.1f}s")
+
+
+_HOOK_CALLS = [
+    {"tool_name": "Write", "tool_input": {"file_path": "Notes/x.md", "content": "hi"}},
+    {"tool_name": "Edit", "tool_input": {"file_path": "Notes/x.md", "old_string": "a", "new_string": "b"}},
+    {"tool_name": "Bash", "tool_input": {"command": "cp sources/a.md decisions.md > out.txt"}},
+    {"hook_event_name": "Stop", "stop_hook_active": False},
+    {"hook_event_name": "SessionStart", "source": "startup"},
+]
+
+
+@test
+def test_r17_every_hook_runs_cleanly_on_every_kind_of_call(t: Case) -> None:
+    """A quote put wrong inside a hook broke it for every call, and nothing in
+    the suite noticed: each hook is read by bash, then run on each kind of
+    call it can get, and must finish cleanly (round 16, 2026-10-29)."""
+    root = t.box.root
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+    hooks = sorted(p for p in (root / ".claude" / "hooks").glob("*.sh") if not p.name.endswith("-test.sh"))
+    t.ok(len(hooks) >= 5, f"the hooks are there: {[h.name for h in hooks]}")
+    for hook in hooks:
+        syntax = subprocess.run(["bash", "-n", str(hook)], capture_output=True, text=True)
+        t.eq(syntax.returncode, 0, f"{hook.name} reads as bash\n{syntax.stderr}")
+        for call in _HOOK_CALLS + [{}]:
+            call = dict(call, cwd=str(root), session_id="test",
+                        transcript_path=str(t.box.tmp / "none.jsonl"))
+            proc = subprocess.run(["bash", str(hook)], input=json.dumps(call), capture_output=True,
+                                  text=True, env=env, cwd=str(root), timeout=60)
+            t.eq(proc.returncode, 0, f"{hook.name} on {call.get('tool_name') or call.get('hook_event_name')}")
+            bad = [w for w in ("syntax error", "command not found", "Traceback", "unexpected") if w in proc.stderr]
+            t.eq(bad, [], f"{hook.name} runs cleanly\n{proc.stderr[-800:]}")
+
+
+@test
+def test_r17_a_python_that_says_something_else_is_never_taken_as_an_answer(t: Case) -> None:
+    """A python3 on the path that printed anything had it passed on as the
+    guard hooks' answer (hooks sweep, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    fake = t.box.tmp / "fakebin"
+    fake.mkdir()
+    (fake / "python3").write_text("#!/bin/sh\ncat >/dev/null\necho 'Welcome to Python! junk here'\n")
+    (fake / "python3").chmod(0o755)
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root), PATH=f"{fake}:{os.environ.get('PATH', '')}")
+    call = json.dumps({"tool_name": "Bash", "tool_input": {"command": "cp a.md sources/decisions.md"},
+                       "cwd": str(root)})
+    for name in ("keep-the-record.sh", "keep-sources.sh"):
+        hook = root / ".claude" / "hooks" / name
+        if not hook.exists():
+            continue      # keep-sources is this workshop's own, never shipped
+        proc = subprocess.run(["bash", str(hook)], input=call, capture_output=True, text=True, env=env, timeout=30)
+        t.eq(proc.stdout.strip(), "", f"{name} passes nothing on")
+
+
+@test
+def test_r17_keep_sources_reads_a_long_command_quickly(t: Case) -> None:
+    """keep-sources read a long command a letter at a time: 340 KB took two
+    seconds (hooks sweep, 2026-10-29)."""
+    hook = t.box.root / ".claude" / "hooks" / "keep-sources.sh"
+    if not hook.exists():
+        return        # this workshop's own, never shipped
+    words = " ".join(["sources and decisions"] * 40_000)
+    call = json.dumps({"tool_name": "Bash", "tool_input": {"command": f'echo "{words}" > out.txt'},
+                       "cwd": str(t.box.root)})
+    started = time.time()
+    proc = subprocess.run(["bash", str(hook)], input=call, capture_output=True, text=True,
+                          env=dict(os.environ, CLAUDE_PROJECT_DIR=str(t.box.root)), timeout=60)
+    t.ok(time.time() - started < 1.5, f"took {time.time() - started:.1f}s")
+    t.eq(proc.stderr.strip(), "", "and runs cleanly")
+
+
+@test
+def test_r17_a_redirect_between_two_quoted_strings_still_asks(t: Case) -> None:
+    """Long quoted text was cut with a pattern that paired one string's
+    closing quote with the next one's opening, and hid the > between them:
+    a command that empties a README with dated lines went through without
+    asking (twelfth review, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Garden Plan")
+    t.box.run("decide", "garden-plan", "Raised beds")
+    for q in ('"', "\x27"):
+        command = f"echo {q}hi{q} > 'Work/Garden Plan/README.md'; echo " + "w " * 600 + f"{q}end{q}"
+        proc, _ = _record_hook(t, command, root)
+        t.ok('"ask"' in proc.stdout, f"still asks, quoted with {q}\n{proc.stdout}")
+
+
+@test
+def test_r17_a_long_quoted_string_with_escapes_is_read_quickly(t: Case) -> None:
+    """A 1 MB quoted string with one backslash escape in it was still read a
+    letter at a time: eight seconds (twelfth review, 2026-10-29)."""
+    words = " ".join(["some words here"] * 60_000)
+    if os.name == "nt":
+        return
+    proc, took = _record_hook(t, f'echo "{words}\\n{words}" > out.txt', t.box.root, cpu=True)
+    t.ok(took < 2, f"took {took:.1f}s of work")
+
+
+def _failing_shim(t: Case, test: str) -> dict:
+    """An environment where os.replace fails with a full disk when `test`,
+    given the destination as `dst`, is true."""
+    shim = t.box.tmp / f"shim-{abs(hash(test))}"
+    shim.mkdir(exist_ok=True)
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os\n"
+        "real = os.replace\n"
+        "def replace(src, dst, *a, **k):\n"
+        f"    dst = str(dst)\n"
+        f"    if {test}:\n"
+        "        raise OSError(errno.ENOSPC, 'No space left on device')\n"
+        "    return real(src, dst, *a, **k)\n"
+        "os.replace = replace\n", encoding="utf-8")
+    return dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1", PYTHONPATH=str(shim))
+
+
+@test
+def test_r17_undo_of_a_stopped_update_never_takes_out_their_notes(t: Case) -> None:
+    """In a folder from before tags were taken out, the update rewrote their
+    notes, wrote those down as files it had put in place, and --undo of one
+    that stopped partway deleted them (twelfth review, 2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    published = _publish(t, "2026-02-01.1")
+    _edit_json(root / ".os" / "shipped.json", lambda d: d.pop("release", None))
+    page = root / "Work" / "My Plan" / "README.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("---\nid: W.01\ntitle: My Plan\ntype: work\nstatus: pushing\n---\n\n# My Plan\n\nMine.\n")
+    env = _failing_shim(t, "dst.endswith('/Zenith/.os/shipped.json')")
+    said = subprocess.run([str(root / "os"), "update", "--from", str(published), "--anyway"], cwd=str(root), env=env,
+                   capture_output=True, text=True, timeout=180)
+    t.ok("took the W.xx" in said.stdout, f"the update took the tag out\n{said.stdout[-1500:]}")
+    t.box.run("update", "--undo", "--anyway", expect=None)
+    t.ok(page.exists() and "Mine." in page.read_text(), "their note stays")
+
+
+@test
+def test_r17_undo_leaves_nothing_of_the_backups_own_in_the_folder(t: Case) -> None:
+    """--undo copied the backup's written.txt to the top of their folder
+    (twelfth review, 2026-10-29)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    t.box.run("update", "--from", str(_publish(t, "2026-02-01.1")))
+    t.box.run("update", "--undo")
+    t.ok(not (root / "written.txt").exists(), "no written.txt beside AGENTS.md")
+
+
+@test
+def test_r17_undo_puts_a_shortcut_settings_file_back_through_it(t: Case) -> None:
+    """--undo swapped a settings.json shortcut the update had written through
+    for a plain file, and their own file kept the update's words (twelfth
+    review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda o: _edit_json(
+        o / ".claude" / "settings.json", lambda d: d.update({"newTemplateKey": True})))
+    theirs = t.box.tmp / "dotfiles-settings.json"
+    shutil.copy(root / ".claude" / "settings.json", theirs)
+    (root / ".claude" / "settings.json").unlink()
+    (root / ".claude" / "settings.json").symlink_to(theirs)
+    t.box.run("update", "--from", str(published))
+    t.ok((root / ".claude" / "settings.json").is_symlink() and "newTemplateKey" in theirs.read_text(),
+         "one never edited is updated through its shortcut too")
+    t.box.run("update", "--undo")
+    t.ok((root / ".claude" / "settings.json").is_symlink(), "still a shortcut")
+    t.ok("newTemplateKey" not in theirs.read_text(), "and their own file is back as it was")
+
+
+@test
+def test_r17_an_update_that_changed_nothing_never_hides_the_last_real_one(t: Case) -> None:
+    """An update that stopped before changing anything made --undo say
+    "nothing to undo" for good, with a real update before it (twelfth
+    review, 2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    was = (root / ".os" / "engine.py").read_text()
+    t.box.run("update", "--from", str(_publish(t, "2026-02-01.1")))
+    third = _publish(t, "2026-03-01.1", base=root)
+    shim = t.box.tmp / "copyshim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, shutil\n"
+        "real = shutil.copy2\n"
+        "def copy2(src, dst, *a, **k):\n"
+        "    if 'before-upgrade' in str(dst) and 'engine' in str(dst):\n"
+        "        raise OSError(errno.ENOSPC, 'No space left on device')\n"
+        "    return real(src, dst, *a, **k)\n"
+        "shutil.copy2 = copy2\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    subprocess.run([str(root / "os"), "update", "--from", str(third)], cwd=str(root), env=env,
+                   capture_output=True, text=True, timeout=180)
+    t.box.run("update", "--undo")
+    t.eq((root / ".os" / "engine.py").read_text(), was, "the real update before it is undone")
+
+
+@test
+def test_r17_check_fix_never_deletes_a_file_for_its_name_alone(t: Case) -> None:
+    """check --fix deleted any file named ._something or ending .tmp~, words
+    and all, in sources/ too, and undo couldn't bring it back (check and learn
+    sweep, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Boiler")
+    words = root / "Work" / "Boiler" / "sources" / "._interview.txt"
+    words.parent.mkdir(parents=True)
+    words.write_text("source words\n")
+    mine = root / "Notes" / "draft.tmp~"
+    mine.write_text("my draft\n")
+    junk = root / "Notes" / "._photo.jpg"
+    junk.write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 60)
+    t.box.run("check", "--fix", expect=None)
+    t.ok(words.exists(), "a file with words in it, in sources/, is never junk")
+    t.ok(mine.exists(), "nor one they named .tmp~")
+    t.ok(not junk.exists(), "the Mac's own ._ file still goes")
+
+
+@test
+def test_r17_a_header_after_a_byte_order_mark_is_read(t: Case) -> None:
+    """A note saved with a byte-order mark was called unfiled, and sort put a
+    second header on top of its own (check and learn sweep, 2026-10-29)."""
+    p = t.box.root / "Notes" / "bom.md"
+    p.write_bytes(b"\xef\xbb\xbf---\ntitle: Bom\ntype: note\nstatus: active\ndomain: personal\ntags: []\n"
+                  b"created: 2026-10-01\nupdated: 2026-10-01\n---\n\nhi\n")
+    said = t.box.run("check", expect=None).stdout
+    t.ok("bom" not in said.lower() or "isn't filed" not in said, f"it counts as filed\n{said}")
+    t.box.run("sort")
+    t.eq(p.read_bytes().count(b"title:"), 1, "and sort leaves one header")
+
+
+@test
+def test_r17_teaching_a_word_keeps_a_subject_written_as_a_list(t: Case) -> None:
+    """A subject written as a plain list of words lost all of them when a word
+    was taught to it (check and learn sweep, 2026-10-29)."""
+    path = t.box.root / ".os" / "words.json"
+    _edit_json(path, lambda d: d.setdefault("domains", {}).update({"baking": ["sourdough", "levain", "crumb"]}))
+    t.box.run("words", "baking", "proofing")
+    spec = json.loads(path.read_text())["domains"]["baking"]
+    t.eq(spec.get("keywords"), ["sourdough", "levain", "crumb"], "their words survive")
+    t.ok("proofing" in spec.get("learned", []), "and the new one is learned")
+
+
+@test
+def test_r17_check_fix_never_puts_a_card_into_sources(t: Case) -> None:
+    """--fix moved a card left in Notes into a sources/ folder beside the file
+    it describes, though nothing in sources/ is ever changed (check and learn
+    sweep, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    src = root / "Work" / "Fix the Boiler" / "sources"
+    src.mkdir()
+    (src / "manual.pdf").write_bytes(b"%PDF-1.4 manual")
+    card = root / "Notes" / "manual.pdf.card.md"
+    card.write_text("---\ntitle: Manual\ntype: note\n---\n\nThe boiler manual.\n")
+    t.box.run("check", "--fix", expect=None)
+    t.ok(card.exists(), "the card stays in Notes")
+    t.ok(not (src / "manual.pdf.card.md").exists(), "and nothing goes into sources/")
+
+
+@test
+def test_r17_check_fix_leaves_the_cards_of_a_kept_copy_alone(t: Case) -> None:
+    """A card inside a copy of another folder like this one, kept in Work,
+    was moved out into this folder's Notes (check and learn sweep,
+    2026-10-29)."""
+    root = t.box.root
+    copy = root / "Work" / "Old Copy" / "Backup"
+    (copy / ".os").mkdir(parents=True)
+    shutil.copy(root / ".os" / "config.json", copy / ".os" / "config.json")
+    (copy / "Notes").mkdir()
+    card = copy / "Notes" / "scan.pdf.card.md"
+    card.write_text("---\ntitle: Scan\ntype: note\n---\n\nA scan.\n")
+    (root / "Notes" / "scan.pdf").write_bytes(b"%PDF-1.4 scan")
+    t.box.run("check", "--fix", expect=None)
+    t.ok(card.exists(), "the copy keeps its card")
+
+
+@test
+def test_r17_check_fix_never_changes_a_file_outside_through_a_shortcut(t: Case) -> None:
+    """A hook that was a shortcut to a file outside the folder had that file
+    made runnable by --fix (check and learn sweep, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    outside = t.box.tmp / "ext.sh"
+    outside.write_text("#!/bin/sh\n")
+    outside.chmod(0o644)
+    (t.box.root / ".claude" / "hooks" / "ext.sh").symlink_to(outside)
+    t.box.run("check", "--fix", expect=None)
+    t.eq(outside.stat().st_mode & 0o777, 0o644, "the file outside is as it was")
+
+
+@test
+def test_r18_undo_after_learn_says_so_before_taking_back_an_older_step(t: Case) -> None:
+    """./os undo straight after ./os learn reached past it and took back an
+    older, unrelated step without a word (check and learn sweep,
+    2026-10-29)."""
+    t.any_exit()      # the first undo stops to say so
+    root = t.box.root
+    t.box.run("new", "note", "Tomatoes")
+    note = root / "Notes" / "tomatoes.md"
+    cache = learn.cache_dir(root) / "wt4p2oalmRY.txt"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("words\n")
+    t.box.run("learn", "--forget", "wt4p2oalmRY")
+    first = t.box.run("undo", expect=None)
+    t.ok(note.exists(), "the note is not taken back yet")
+    t.ok("learn" in first.stdout and "new note" in first.stdout.lower(),
+         f"it says what was last and which step it would undo\n{first.stdout}")
+    t.box.run("undo")
+    t.ok(not note.exists(), "asked again, it goes ahead")
+
+
+@test
+def test_r18_an_old_copy_of_a_read_only_folder_is_still_cleared(t: Case) -> None:
+    """A backup of a folder that was read-only kept that mode, and clearing
+    the oldest copies quietly left it, so they piled up (round 17 live test,
+    2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    backups = root / ".os" / "backups"
+    shared = t.box.tmp / "Shared"
+    shared.mkdir()
+    shared.chmod(0o700)
+    secret = t.box.tmp / "id_secret"
+    secret.write_text("key\n")
+    secret.chmod(0o600)
+    for n in range(1, 5):
+        locked = backups / f"before-upgrade-2025-01-0{n}-120000" / ".claude" / "skills" / "save"
+        locked.mkdir(parents=True)
+        (locked / "SKILL.md").write_text("x\n")
+        (locked / "a-key").symlink_to(secret)
+        (locked / "b-shared").symlink_to(shared)
+        locked.chmod(0o555)
+    _release(root, "2026-01-01.1")
+    try:
+        t.box.run("update", "--from", str(_publish(t, "2026-02-01.1")))
+        left = sorted(p.name for p in backups.glob("before-upgrade-*"))
+        t.eq(len(left), 3, f"three are kept\n{left}")
+        t.eq(oct(shared.stat().st_mode & 0o777), "0o700", "a folder outside is untouched")
+        t.eq(oct(secret.stat().st_mode & 0o777), "0o600", "and so is a file outside")
+    finally:
+        for p in backups.rglob("*"):
+            if p.is_dir():
+                p.chmod(0o755)
+
+
+@test
+def test_r18_nothing_outside_is_made_runnable_through_a_hooks_shortcut(t: Case) -> None:
+    """With .claude/hooks a shortcut to a shared folder, every ./os made each
+    script there runnable (round 18, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    shared = t.box.tmp / "shared-hooks"
+    shutil.copytree(root / ".claude" / "hooks", shared)
+    extra = shared / "theirs.sh"
+    extra.write_text("#!/bin/sh\n")
+    extra.chmod(0o644)
+    shutil.rmtree(root / ".claude" / "hooks")
+    (root / ".claude" / "hooks").symlink_to(shared)
+    t.box.run(expect=None)
+    t.box.run("check", "--fix", expect=None)
+    t.eq(extra.stat().st_mode & 0o777, 0o644, "the shared folder's script is as it was")
+
+
+@test
+def test_r18_moving_the_folder_into_itself_through_a_shortcut_is_refused(t: Case) -> None:
+    """A path into the folder through a shortcut passed the "inside itself"
+    check, and on Python 3.9 the move copied the folder into itself and then
+    deleted it all (bring sweep, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    (t.box.tmp / "alias").symlink_to(t.box.root)
+    said = t.box.run("setup", "--move-to", str(t.box.tmp / "alias" / "In"), expect=None)
+    t.ok((t.box.root / "os").is_file(), "the folder is still there")
+    t.ok("inside it" in said.stdout + said.stderr, f"and it says why\n{said.stderr}")
+
+
+@test
+def test_r18_a_move_to_another_disk_that_stops_leaves_one_whole_folder(t: Case) -> None:
+    """A move to another disk that stopped partway said "nothing was moved"
+    over thousands of files left at the new place (bring sweep,
+    2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "note", "Tomatoes")
+    shim = t.box.tmp / "xdev"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os, shutil\n"
+        "def rename(a, b, *x, **k):\n"
+        "    raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "os.rename = rename\n"
+        "real = shutil.copyfile\n"
+        "def copyfile(src, dst, *a, **k):\n"
+        "    if 'tomatoes' in str(src):\n"
+        "        raise OSError(errno.ENOSPC, 'No space left on device')\n"
+        "    return real(src, dst, *a, **k)\n"
+        "shutil.copyfile = copyfile\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    target = t.box.tmp / "Elsewhere"
+    said = subprocess.run([str(root / "os"), "setup", "--move-to", str(target)], cwd=str(root), env=env,
+                          capture_output=True, text=True, timeout=180)
+    t.ok((root / "Notes" / "tomatoes.md").is_file(), f"everything is still here\n{said.stdout}{said.stderr}{sorted(p.name for p in root.iterdir()) if root.exists() else 'gone'}")
+    t.ok(not target.exists(), f"and no half copy is left there\n{said.stderr}")
+
+
+@test
+def test_r18_undo_of_an_update_keeps_their_own_hook_kept_as_a_shortcut(t: Case) -> None:
+    """A hook of their own kept as a shortcut was in the backup as a shortcut
+    leading nowhere, so --undo took it out as one the update had added
+    (thirteenth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    (root / "Notes" / "H").mkdir(parents=True)
+    (root / "Notes" / "H" / "mine.sh").write_text("#!/bin/sh\n")
+    (root / ".claude" / "hooks" / "mine.sh").symlink_to("../../Notes/H/mine.sh")
+    _release(root, "2026-01-01.1")
+    t.box.run("update", "--from", str(_publish(t, "2026-02-01.1")))
+    t.box.run("update", "--undo")
+    t.ok((root / ".claude" / "hooks" / "mine.sh").is_symlink(), "their shortcut is still there")
+
+
+@test
+def test_r18_undo_of_an_update_puts_back_a_hook_kept_outside(t: Case) -> None:
+    """A shipped hook kept as a shortcut to a file outside: the update wrote
+    the new version there, and --undo said it was back but never touched it
+    (thirteenth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda o: (o / ".claude" / "hooks" / "settle.sh").write_text(
+        (o / ".claude" / "hooks" / "settle.sh").read_text() + "\n# v2 hook\n"))
+    outside = t.box.tmp / "dot-settle.sh"
+    shutil.copy2(root / ".claude" / "hooks" / "settle.sh", outside)
+    (root / ".claude" / "hooks" / "settle.sh").unlink()
+    (root / ".claude" / "hooks" / "settle.sh").symlink_to(outside)
+    t.box.run("update", "--from", str(published))
+    t.box.run("update", "--undo", "--anyway")
+    t.ok("# v2 hook" not in outside.read_text(), "their file is back as it was")
+
+
+@test
+def test_r18_hold_on_work_with_a_byte_order_mark_keeps_one_header(t: Case) -> None:
+    """Reading past a byte-order mark made the page count as work, and hold
+    then put a second header on top of it (thirteenth review, 2026-10-29)."""
+    t.box.run("new", "work", "Fix the Shed")
+    page = t.box.root / "Work" / "Fix the Shed" / "README.md"
+    page.write_bytes(b"\xef\xbb\xbf" + page.read_bytes())
+    t.box.run("hold", "fix-the-shed")
+    text = page.read_text(encoding="utf-8")
+    t.eq(text.count("status:"), 1, f"one header\n{text[:300]}")
+    t.ok("status: holding" in text, "and it is held")
+
+
+@test
+def test_r18_a_backslash_at_the_cut_never_hides_a_redirect(t: Case) -> None:
+    """A backslash on the thousandth letter of a quoted string was kept and
+    its partner dropped, the quote never closed, and a rewrite of a page with
+    dated lines went through without asking (thirteenth review,
+    2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Garden Plan")
+    t.box.run("decide", "garden-plan", "Raised beds")
+    for n in (998, 999, 1000):
+        command = 'printf "' + "a" * n + '\\n more" > \'Work/Garden Plan/README.md\'; ls'
+        proc, _ = _record_hook(t, command, root)
+        t.ok('"ask"' in proc.stdout, f"still asks with {n} letters before the backslash")
+    proc, _ = _record_hook(t, 'echo "a \\" b" > \'Work/Garden Plan/README.md\'', root)
+    t.ok('"ask"' in proc.stdout, "and with an escaped quote inside")
+
+
+@test
+def test_r18_a_bring_stopped_by_a_closed_window_can_be_undone(t: Case) -> None:
+    """A bring stopped any way but Ctrl-C (a window closed, a time limit) left
+    what it had filed off the undo list, and bringing it in again doubled it
+    (bring sweep, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    old = t.box.tmp / "old stuff"
+    for n in range(300):
+        folder = old / f"Topic {n:03d}"
+        folder.mkdir(parents=True)
+        for m in range(20):
+            (folder / f"note {m:02d}.md").write_text(f"# Note {n} {m}\n\nwords about topic {n}\n")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    run = subprocess.Popen([str(root / "os"), "setup", "--bring", str(old)], cwd=str(root), env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(1.5)
+    run.terminate()
+    run.communicate(timeout=60)
+    t.box.run("undo", expect=None)
+    left = [p for p in (root / "Notes").rglob("*.md") if "topic" in p.read_text(errors="replace")]
+    t.eq(left, [], "what it had brought in is all taken back")
+
+
+@test
+def test_r18_bringing_the_same_folder_twice_brings_nothing_twice(t: Case) -> None:
+    """A second bring of the same folder brought everything in again as -2,
+    without a word (bring sweep, 2026-10-29)."""
+    old = t.box.tmp / "old stuff"
+    (old / "Garden").mkdir(parents=True)
+    (old / "Garden" / "roses.md").write_text("# Roses\n\nprune in winter\n")
+    (old / "recipes.md").write_text("# Recipes\n\nbread\n")
+    t.box.json("setup", "--bring", str(old))
+    got = t.box.json("setup", "--bring", str(old))
+    t.ok(all(s["how"] == "left" and "already" in s.get("why", "") for s in got["steps"]),
+         f"a second bring brings nothing twice: {got['steps']}")
+    twice = [p.name for b in ("Work", "Notes", "Archive") for p in (t.box.root / b).rglob("*")
+             if re.search(r"-2(\.\w+)?$", p.name)]
+    t.eq(twice, [], "and no -2 copies")
+
+
+@test
+def test_r18_a_bring_undone_can_be_brought_again(t: Case) -> None:
+    """What a bring that was undone took in is brought in again next time."""
+    old = t.box.tmp / "old stuff"
+    old.mkdir()
+    (old / "recipes.md").write_text("# Recipes\n\nbread\n")
+    t.box.json("setup", "--bring", str(old))
+    t.box.run("undo")
+    got = t.box.json("setup", "--bring", str(old))
+    t.ok(any(s["how"] != "left" for s in got["steps"]), f"it comes in again: {got['steps']}")
+
+
+@test
+def test_r18_a_second_bring_that_brings_nothing_never_points_at_undo(t: Case) -> None:
+    """A second bring that brought nothing still said ./os undo would take
+    it back out, and that undo took back the first bring (pre-merge review,
+    2026-10-29)."""
+    old = t.box.tmp / "old stuff"
+    old.mkdir()
+    (old / "recipes.md").write_text("# Recipes\n\nbread\n")
+    t.box.run("setup", "--bring", str(old))
+    said = t.box.run("setup", "--bring", str(old)).stdout
+    t.ok("./os undo  takes" not in said and "nothing new" in said, said)
+
+
+@test
+def test_r18_a_backslash_in_a_quoted_name_is_still_that_name(t: Case) -> None:
+    """Inside double quotes every backslash was swapped for a letter, so
+    "N/a\\b.md" named another file and a rewrite of it went through without
+    asking (pre-merge review, 2026-10-29)."""
+    root = t.box.root
+    page = root / "Notes" / "a\\b.md"
+    page.write_text("# A\n\n## Log\n- 2026-10-01 · wrote it\n")
+    proc, _ = _record_hook(t, 'echo hi > "Notes/a\\b.md"', root)
+    t.ok('"ask"' in proc.stdout, f"it asks\n{proc.stdout}")
+
+
+@test
+def test_r18_a_move_to_another_disk_stopped_partway_leaves_no_half_copy(t: Case) -> None:
+    """A move to another disk stopped partway, by Ctrl-C or a closed window,
+    left a half copy there and said nothing was left half-moved (pre-merge
+    review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "note", "Tomatoes")
+    shim = t.box.tmp / "xdev-stop"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os, shutil\n"
+        "def rename(a, b, *x, **k):\n"
+        "    raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "os.rename = rename\n"
+        "real = shutil.copyfile\n"
+        "count = [0]\n"
+        "def copyfile(src, dst, *a, **k):\n"
+        "    count[0] += 1\n"
+        "    if count[0] == 20:\n"
+        "        raise KeyboardInterrupt\n"
+        "    return real(src, dst, *a, **k)\n"
+        "shutil.copyfile = copyfile\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    target = t.box.tmp / "Elsewhere"
+    subprocess.run([str(root / "os"), "setup", "--move-to", str(target)], cwd=str(root), env=env,
+                   capture_output=True, text=True, timeout=180)
+    t.ok((root / "Notes" / "tomatoes.md").is_file(), "everything is still here")
+    t.ok(not target.exists(), "and no half copy is left there")
+
+
+@test
+def test_r18_a_closed_window_never_kills_an_update_partway(t: Case) -> None:
+    """Stops by a closed window became Ctrl-C, and Ctrl-C inside the update
+    killed the update itself outright partway (pre-merge review,
+    2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    run = subprocess.Popen([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                           env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1"),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    deadline = time.time() + 20
+    while time.time() < deadline and not list((root / ".os" / "backups").glob("before-upgrade-*")):
+        time.sleep(0.02)
+    # The way a closed window does it: a hang-up, to every process of the run.
+    os.killpg(run.pid, signal.SIGHUP)
+    run.communicate(timeout=120)
+    time.sleep(1)
+    t.eq(_release_of(root), "2026-02-01.1", "the update finished")
+
+
+@test
+def test_r18_an_update_finishes_when_its_terminal_closes(t: Case) -> None:
+    """With the terminal closed partway, the next line the update said
+    failed, and it stopped as if the disk had said no (second pre-merge
+    review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    import pty
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    master, slave = pty.openpty()
+    run = subprocess.Popen([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                           env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1"),
+                           stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    os.close(slave)
+    deadline = time.time() + 20
+    while time.time() < deadline and not list((root / ".os" / "backups").glob("before-upgrade-*")):
+        time.sleep(0.01)
+    os.close(master)
+    run.wait(timeout=120)
+    t.eq(_release_of(root), "2026-02-01.1", "the update finished")
+
+
+@test
+def test_r18_an_old_copy_that_cant_be_opened_never_stops_an_update(t: Case) -> None:
+    """Clearing an old copy holding a folder that couldn't be opened threw,
+    and the finished update ended in a traceback, saying it had stopped
+    partway (second pre-merge review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    backups = root / ".os" / "backups"
+    for n in range(1, 5):
+        locked = backups / f"before-upgrade-2025-01-0{n}-120000" / ".claude" / "skills" / "save"
+        locked.mkdir(parents=True)
+        (locked / "SKILL.md").write_text("x\n")
+        locked.chmod(0o000)
+    _release(root, "2026-01-01.1")
+    try:
+        said = t.box.run("update", "--from", str(_publish(t, "2026-02-01.1")))
+        t.ok("✖" not in said.stderr, said.stderr[-900:])
+        t.eq(len(list(backups.glob("before-upgrade-*"))), 3, "three are kept")
+    finally:
+        for p in backups.rglob("*"):
+            if p.is_dir():
+                p.chmod(0o755)
+
+
+def _crlf(path: Path) -> None:
+    """A file as git on Windows checks it out: every line ending CR LF."""
+    data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    path.write_bytes(data)
+
+
+@test
+def test_win_an_update_finishes_when_the_os_launcher_cant_be_run(t: Case) -> None:
+    """On Windows Python can't run the bash launcher, so step 5 (sort and the
+    list) threw, step 6 never wrote down the new version, and every run
+    stopped "at its very last step" (a friend's update, 2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "win-launch"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, subprocess, sys\n"
+        "if sys.argv and sys.argv[0].endswith('upgrade.py'):\n"
+        "    real = subprocess.run\n"
+        "    def run(args, *a, **k):\n"
+        "        if isinstance(args, (list, tuple)) and str(args[0]).endswith('/os'):\n"
+        "            raise OSError(errno.ENOEXEC, '%1 is not a valid Win32 application')\n"
+        "        return real(args, *a, **k)\n"
+        "    subprocess.run = run\n", encoding="utf-8")
+    said = subprocess.run([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                          env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                          capture_output=True, text=True, timeout=180)
+    t.eq(_release_of(root), "2026-02-01.1", f"the new version is written down\n{said.stdout[-600:]}{said.stderr[-600:]}")
+    t.ok("Traceback" not in said.stderr, said.stderr[-600:])
+
+
+@test
+def test_win_undo_right_after_a_crlf_update_calls_nothing_changed(t: Case) -> None:
+    """The update wrote its fingerprints with line endings left aside, and
+    undo read them with: straight after an update on Windows, undo said the
+    files it had just written were changed since, and refused (pre-merge
+    review of the Windows fix)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+
+    def change(o: Path) -> None:
+        p = o / ".claude" / "skills" / "save" / "SKILL.md"
+        p.write_text(p.read_text() + "\nnewer\n")
+        for rel in (".claude/skills/save/SKILL.md", ".os/engine.py", ".os/learn.py", ".os/upgrade.py"):
+            _crlf(o / rel)
+    published = _publish(t, "2026-02-01.1", change)
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    up = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), "update", "--from", str(published)],
+                        cwd=str(root), env=env, capture_output=True, text=True, timeout=180)
+    t.eq(_release_of(root), "2026-02-01.1", up.stdout[-800:] + up.stderr[-800:])
+    undo = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), "update", "--undo"],
+                          cwd=str(root), env=env, capture_output=True, text=True, timeout=180)
+    out = undo.stdout + undo.stderr
+    t.ok("changed after the update" not in out and undo.returncode == 0, f"undo goes ahead\n{out[-1500:]}")
+    t.eq(_release_of(root), "2026-01-01.1", "and the old version is back")
+    t.ok(b"\r\n" not in (root / ".os" / "learn.py").read_bytes(),
+         "byte for byte: one that differed only in line endings is put back too")
+
+
+@test
+def test_win_an_update_brings_addons_up_to_date_without_the_launcher(t: Case) -> None:
+    """After an update, its addons were brought up to date through the bash
+    launcher, which Windows can't run: every update ended "not a valid Win32
+    application" (pre-merge review of the Windows fix)."""
+    t.any_exit()
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    v1 = _addon(t.box.tmp / "v1", "pottery",
+                {".claude/skills/glazes/SKILL.md": "---\nname: glazes\ndescription: x\n---\nv1\n"})
+    t.box.run("addon", "pottery", "--from", str(v1))
+    shim = t.box.tmp / "win-launch"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, subprocess\n"
+        "real = subprocess.run\n"
+        "def run(args, *a, **k):\n"
+        "    if isinstance(args, (list, tuple)) and str(args[0]).endswith('/os'):\n"
+        "        raise OSError(errno.ENOEXEC, '%1 is not a valid Win32 application')\n"
+        "    return real(args, *a, **k)\n"
+        "subprocess.run = run\n", encoding="utf-8")
+    said = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), "update", "--from", str(published)],
+                          cwd=str(root), env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1",
+                                                  PYTHONPATH=str(shim)),
+                          capture_output=True, text=True, timeout=180)
+    out = said.stdout + said.stderr
+    t.ok("Win32" not in out and said.returncode == 0, f"the addons are seen to without the launcher\n{out[-900:]}")
+
+
+@test
+def test_win_an_addon_file_recorded_before_crlf_blind_fingerprints_is_not_called_edited(t: Case) -> None:
+    """An addon file recorded by its bytes, CR LF and all, before
+    fingerprints left line endings aside, read as edited by hand once they
+    did, and its new version was put aside (pre-merge review of the Windows
+    fix)."""
+    root = t.box.root
+    rel = ".claude/skills/glazes/SKILL.md"
+    v1 = _addon(t.box.tmp / "v1", "pottery", {rel: "---\nname: glazes\ndescription: x\n---\nv1\n"})
+    t.box.run("addon", "pottery", "--from", str(v1))
+    _crlf(root / rel)
+    record = root / ".os" / "addons.json"
+    data = json.loads(record.read_text())
+    data["pottery"]["files"][rel] = hashlib.sha1((root / rel).read_bytes()).hexdigest()
+    record.write_text(json.dumps(data))
+    v2 = _addon(t.box.tmp / "v2", "pottery", {rel: "---\nname: glazes\ndescription: x\n---\nv2\n"})
+    said = t.box.run("addon", "--update", "--from", str(v2))
+    t.ok("v2" in (root / rel).read_text(), f"the new version is put in\n{said.stdout}")
+    t.ok("you edited it" not in said.stdout, said.stdout)
+
+
+@test
+def test_win_files_with_windows_line_endings_are_not_called_edited(t: Case) -> None:
+    """Checked out by git on Windows, every file ends its lines CR LF, so
+    every shipped file looked edited by hand: the program was "changed here
+    and never published", and 17 skills and helpers were kept as theirs
+    with the new ones set aside (a friend's update, 2026-10-29)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1", lambda o: (o / ".claude" / "skills" / "save" / "SKILL.md").write_text(
+        (o / ".claude" / "skills" / "save" / "SKILL.md").read_text() + "\nnewer\n"))
+    for rel in ("os", ".os/engine.py", ".os/learn.py", ".os/upgrade.py", ".claude/skills/save/SKILL.md",
+                ".claude/agents/builder.md", ".claude/hooks/settle.sh", "AGENTS.md"):
+        _crlf(root / rel)
+    # Started with Python, as a chat on Windows does: a launcher with CR LF
+    # endings can't be started by bash at all.
+    said = subprocess.run([sys.executable, str(root / ".os" / "engine.py"), "update", "--from", str(published)],
+                          cwd=str(root), env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=180)
+    out = said.stdout + said.stderr
+    t.ok("this folder's own" not in out, f"the program isn't called changed\n{out[-1200:]}")
+    t.ok("kept      .claude/skills/save" not in out, f"nor the skill\n{out[-1200:]}")
+    t.ok("newer" in (root / ".claude" / "skills" / "save" / "SKILL.md").read_text(), "which is brought up to date")
+
+
+@test
+def test_win_an_update_never_crashes_on_a_narrow_console(t: Case) -> None:
+    """A Windows console that can only show cp1252 made the update crash on
+    its first tick (a friend's update, 2026-10-29)."""
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    said = subprocess.run([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                          env=dict(os.environ, ZENITH_HOME=str(root), PYTHONIOENCODING="cp1252"),
+                          capture_output=True, timeout=180)
+    t.ok(b"Traceback" not in said.stderr, said.stderr[-800:].decode("cp1252", "replace"))
+    t.ok(b"INDEX.md rebuilt" in said.stdout, f"and says all it did\n{said.stdout[-600:]!r}")
+    t.eq(_release_of(root), "2026-02-01.1", "and it finishes")
+
+
+@test
+def test_win_the_updater_names_utf8_whenever_it_reads_or_writes_text(t: Case) -> None:
+    """On Windows a file read without naming its encoding is read as cp1252,
+    and a ✓ in it breaks the update: every read and write of text in the
+    updater names UTF-8 (a friend's update, 2026-10-29)."""
+    import ast as _ast
+    tree = _ast.parse((t.box.root / ".os" / "upgrade.py").read_text(encoding="utf-8"))
+    bare = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute) \
+                and node.func.attr in ("read_text", "write_text", "open") \
+                and not any(k.arg == "encoding" for k in node.keywords):
+            mode = node.args[0] if node.func.attr == "open" and node.args else None
+            if isinstance(mode, _ast.Constant) and "b" in str(mode.value):
+                continue
+            bare.append(node.lineno)
+    t.eq(bare, [], "lines that read or write text without saying UTF-8")
+
+
+@test
+def test_r19_a_hung_update_stops_on_ctrl_c_and_says_how_to_go_on(t: Case) -> None:
+    """A hung update stopped with Ctrl-C ended in a traceback, then "nothing
+    was left half-moved" over an update stopped partway (round 19 live test,
+    2026-10-29)."""
+    t.any_exit()
+    t.crash_ok()      # looked at below
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "slow"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import sys, time\n"
+        "if sys.argv and sys.argv[0].endswith('upgrade.py'):\n"
+        "    import shutil\n"
+        "    real = shutil.copy2\n"
+        "    def slow(*a, **k):\n"
+        "        time.sleep(30)\n"
+        "        return real(*a, **k)\n"
+        "    shutil.copy2 = slow\n", encoding="utf-8")
+    run = subprocess.Popen([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                           env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    time.sleep(2.5)
+    os.killpg(run.pid, signal.SIGINT)
+    said, _ = run.communicate(timeout=60)
+    t.ok("Traceback" not in said and "stopped partway" in said and "half-moved" not in said, said[-800:])
+    t.box.run("update", "--from", str(published))
+    t.eq(_release_of(root), "2026-02-01.1", "and running it again finishes it")
+
+
+@test
+def test_r20_an_update_that_cant_pass_ctrl_c_on_keeps_its_lock(t: Case) -> None:
+    """On Windows there is no SIGINT to pass on to the update: sending one
+    crashed the run waiting for it, and its lock was let go of while the
+    update went on (review of the fifteenth's fixes)."""
+    t.any_exit()
+    t.crash_ok()      # looked at below
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "no-sigint"
+    shim.mkdir()
+    sign, tried = t.box.tmp / "copying", t.box.tmp / "tried"
+    (shim / "sitecustomize.py").write_text(
+        "import signal, subprocess, sys, time\n"
+        "if sys.argv and sys.argv[0].endswith('upgrade.py'):\n"
+        "    signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "    import shutil\n"
+        "    real = shutil.copy2\n"
+        "    def slow(*a, **k):\n"
+        f"        open({str(sign)!r}, 'w').close()\n"
+        "        time.sleep(30)\n"
+        "        return real(*a, **k)\n"
+        "    shutil.copy2 = slow\n"
+        "else:\n"
+        "    def send_signal(self, sig):\n"
+        f"        open({str(tried)!r}, 'w').close()\n"
+        "        raise ValueError('Unsupported signal: 2')\n"
+        "    subprocess.Popen.send_signal = send_signal\n", encoding="utf-8")
+    run = subprocess.Popen([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                           env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        end = time.time() + 60
+        while not sign.exists() and time.time() < end:
+            time.sleep(0.05)
+        t.ok(sign.exists(), "the update is under way")
+        os.kill(run.pid, signal.SIGINT)          # to the waiting run alone
+        end = time.time() + 60                   # it waits 2 s, then tries to pass it on
+        while not tried.exists() and time.time() < end:
+            time.sleep(0.05)
+        t.ok(tried.exists(), "it tried to pass the stop on")
+        time.sleep(0.5)
+        held = json.loads((root / ".os" / ".lock").read_text()) if (root / ".os" / ".lock").exists() else {}
+        t.ok(run.poll() is None, "the waiting run doesn't crash")
+        t.eq(held.get("pid"), run.pid, "and still holds the lock while the update goes on")
+    finally:
+        os.killpg(run.pid, signal.SIGKILL)
+        out, _ = run.communicate(timeout=60)
+    t.ok("Traceback" not in out, out[-800:])
+
+
+@test
+def test_r21_a_stop_while_an_update_says_it_holds_its_lock_keeps_the_lock(t: Case) -> None:
+    """A Ctrl-C landing while the waiting run said again that it held the
+    lock left the wait, and the lock was let go of while the update went on
+    (review of round 20's lock timer)."""
+    t.any_exit()
+    t.crash_ok()      # looked at below
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "stop-in-refresh"
+    shim.mkdir()
+    sign, tripped = t.box.tmp / "copying", t.box.tmp / "tripped"
+    (shim / "sitecustomize.py").write_text(
+        "import os, subprocess, sys, time\n"
+        "if sys.argv and sys.argv[0].endswith('upgrade.py'):\n"
+        "    import shutil\n"
+        "    real = shutil.copy2\n"
+        "    def slow(*a, **k):\n"
+        f"        open({str(sign)!r}, 'w').close()\n"
+        "        time.sleep(30)\n"
+        "        return real(*a, **k)\n"
+        "    shutil.copy2 = slow\n"
+        "else:\n"
+        "    import pathlib\n"
+        "    real_wait = subprocess.Popen.wait\n"
+        "    def wait(self, timeout=None):\n"
+        "        if timeout == 60:\n"
+        "            time.sleep(0.2)\n"
+        "            raise subprocess.TimeoutExpired(self.args, timeout)\n"
+        "        return real_wait(self, timeout)\n"
+        "    subprocess.Popen.wait = wait\n"
+        "    real_read = pathlib.Path.read_text\n"
+        "    def read_text(self, *a, **k):\n"
+        f"        if self.name == '.lock' and os.path.exists({str(sign)!r}) \\\n"
+        f"                and not os.path.exists({str(tripped)!r}):\n"
+        f"            open({str(tripped)!r}, 'w').close()\n"
+        "            raise KeyboardInterrupt\n"
+        "        return real_read(self, *a, **k)\n"
+        "    pathlib.Path.read_text = read_text\n", encoding="utf-8")
+    run = subprocess.Popen([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                           env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        end = time.time() + 60
+        while not tripped.exists() and time.time() < end:
+            time.sleep(0.05)
+        t.ok(tripped.exists(), "the stop landed while it said it held the lock")
+        time.sleep(1)
+        held = json.loads((root / ".os" / ".lock").read_text()) if (root / ".os" / ".lock").exists() else {}
+        t.ok(run.poll() is None, "the waiting run goes on waiting")
+        t.eq(held.get("pid"), run.pid, "and still holds the lock while the update goes on")
+    finally:
+        os.killpg(run.pid, signal.SIGKILL)
+        out, _ = run.communicate(timeout=60)
+    t.ok("Traceback" not in out, out[-800:])
+
+
+@test
+def test_r19_a_bring_says_what_it_passes_over_and_keeps_shortcuts_working(t: Case) -> None:
+    """A hidden file or a shortcut at the top of an old folder was skipped
+    without a word, and a shortcut inside a folder written relative to the
+    old folder arrived leading nowhere (bring sweep, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    old = t.box.tmp / "old stuff"
+    (old / "Links").mkdir(parents=True)
+    (old / "Readme top.md").write_text("# Top\n\nthe top words\n")
+    (old / "Links" / "own.md").write_text("# Own\n\nown words\n")
+    (old / "Links" / "up.md").symlink_to("../Readme top.md")
+    (old / ".secret.md").write_text("# Mine\n")
+    (old / "toplink.md").symlink_to("Readme top.md")
+    got = t.box.json("setup", "--bring", str(old))
+    left = {s["from"]: s.get("why", "") for s in got["steps"] if s["how"] == "left"}
+    t.ok(".secret.md" in left and "toplink.md" in left, f"both are said: {left}")
+    up = next(t.box.root.rglob("up.md"), None)
+    t.ok(up is not None and up.exists() and "top words" in up.read_text(),
+         f"the shortcut inside still leads to the words: {up}")
+
+
+@test
+def test_r19_a_bring_preview_says_when_a_name_is_already_here(t: Case) -> None:
+    """Bringing in an older ./os folder, the trial run said "same place" for
+    work whose name was already here, and the real run made a second one
+    beside it (bring sweep, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Boiler")
+    older = t.box.tmp / "older"
+    (older / ".os").mkdir(parents=True)
+    (older / "os").write_text("#!/bin/sh\n")
+    (older / "Work" / "Boiler").mkdir(parents=True)
+    (older / "Work" / "Boiler" / "README.md").write_text(
+        "---\ntitle: Boiler\ntype: work\nstatus: pushing\ndomain: home\ntags: []\n"
+        "created: 2026-01-01\nupdated: 2026-01-02\n---\n\n# Boiler\n\nThe old one.\n")
+    said = t.box.run("setup", "--bring", str(older), "--dry-run").stdout
+    line = next((l for l in said.splitlines() if "Work/Boiler" in l), "")
+    t.ok("beside" in line and "Boiler-2" in line, f"the trial run says where it lands\n{said}")
+    got = t.box.json("setup", "--bring", str(older))
+    t.ok(any(s.get("to") == "Work/Boiler-2" for s in got["steps"]), f"and that's where it does: {got['steps']}")
+
+
+@test
+def test_r19_a_shortcut_hook_that_cant_run_says_what_to_do(t: Case) -> None:
+    """A shortcut hook that couldn't run was sent to ./os check --fix, which
+    leaves it alone, again and again (thirteenth review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    outside = t.box.tmp / "ext.sh"
+    outside.write_text("#!/bin/sh\n")
+    outside.chmod(0o644)
+    (t.box.root / ".claude" / "hooks" / "ext.sh").symlink_to(outside)
+    said = t.box.run("check", expect=None).stdout
+    line = next((l for l in said.splitlines() if "ext.sh" in l), "")
+    t.ok("chmod +x" in said and "check --fix" not in line, said[-1200:])
+
+
+@test
+def test_r19_litter_is_cleared_in_a_folder_kept_under_a_sources_folder(t: Case) -> None:
+    """The folder itself kept somewhere under a folder called Sources never
+    had its litter cleared: "sources" was looked for in the whole path
+    (thirteenth review, 2026-10-29)."""
+    t.any_exit()
+    home = t.box.tmp / "Sources" / "Zenith"
+    home.parent.mkdir()
+    shutil.copytree(t.box.root, home, symlinks=True)
+    (home / "Notes" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    subprocess.run([str(home / "os"), "check", "--fix"], cwd=str(home), capture_output=True, text=True,
+                   env=dict(os.environ, ZENITH_HOME=str(home), NO_COLOR="1"), timeout=120)
+    t.ok(not (home / "Notes" / ".DS_Store").exists(), "the litter is cleared")
+
+
+@test
+def test_r19_a_move_stopped_while_clearing_the_old_place_says_one_thing(t: Case) -> None:
+    """A move to another disk stopped while taking the old place away said
+    it was all at the new place, then "nothing was left half-moved"
+    (second pre-merge review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "note", "Tomatoes")
+    shim = t.box.tmp / "xdev-clear"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os\n"
+        "real_rename = os.rename\n"
+        "def rename(a, b, *x, **k):\n"
+        "    if 'moved-' in str(b) or 'moving' in str(b) or 'moved-' in str(a):\n"
+        "        return real_rename(a, b, *x, **k)\n"
+        "    raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "os.rename = rename\n"
+        "real = os.unlink\n"
+        # An object, not a function: Python 3.9's pathlib keeps os.unlink on
+        # a class, and a function put there is handed the class as well
+        # (round 20).
+        "class Unlink:\n"
+        "    count = 0\n"
+        "    def __call__(self, path, *a, **k):\n"
+        "        Unlink.count += 1\n"
+        "        if Unlink.count == 30 and 'Elsewhere' not in str(path):\n"
+        "            raise KeyboardInterrupt\n"
+        "        return real(path, *a, **k)\n"
+        "os.unlink = Unlink()\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim))
+    target = t.box.tmp / "Elsewhere"
+    said = subprocess.run([str(root / "os"), "setup", "--move-to", str(target)], cwd=str(root), env=env,
+                          capture_output=True, text=True, timeout=180)
+    out = said.stdout + said.stderr
+    t.ok((target / "Notes" / "tomatoes.md").is_file(), "it is all at the new place")
+    t.ok("all at" in out and "half-moved" not in out, out[-800:])
+
+
+@test
+def test_r19_check_fix_never_takes_a_pycache_folder_with_their_words_in_it(t: Case) -> None:
+    """check --fix took away any folder called __pycache__ whole, a note in
+    it too, and undo couldn't bring it back (words sweep, 2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    mine = root / "Notes" / "__pycache__" / "draft.txt"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("my words\n")
+    real = root / "Notes" / "Old" / "__pycache__"
+    real.mkdir(parents=True)
+    (real / "x.cpython-312.pyc").write_bytes(b"\x00\x01")
+    t.box.run("check", "--fix", expect=None)
+    t.ok(mine.exists(), "their words stay")
+    t.ok(not real.exists(), "Python's own compiled files still go")
+
+
+@test
+def test_r19_a_save_during_a_move_to_another_disk_is_never_lost(t: Case) -> None:
+    """A move to another disk let go of the folder's lock before copying, so
+    a note another chat saved during the copy said SAVED and went with the
+    old place (fourteenth review, 2026-10-29).
+
+    Each step waits for the one before, never for a guessed time: a
+    second's sleep let the save land before or after the move on a busy
+    computer, and the test failed for it (round 20)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    signs = t.box.tmp / "signs"
+    signs.mkdir()
+    # The move copies everything, says so, and holds on, lock and all, until
+    # told to go on.
+    mover = t.box.tmp / "xdev-hold"
+    mover.mkdir()
+    (mover / "sitecustomize.py").write_text(
+        "import errno, os, shutil, sys, time\n"
+        f"signs = {str(signs)!r}\n"
+        "if 'move-to' in ' '.join(sys.argv):\n"
+        "    real_rename = os.rename\n"
+        "    def rename(a, b, *x, **k):\n"
+        "        if 'moved-' in str(b) or 'moving' in str(b) or 'moved-' in str(a):\n"
+        "            return real_rename(a, b, *x, **k)\n"   # on the same disk, as it is
+        "        raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "    os.rename = rename\n"
+        "    real = shutil.copytree\n"
+        "    def copytree(*a, **k):\n"
+        "        got = real(*a, **k)\n"
+        "        open(os.path.join(signs, 'copied'), 'w').close()\n"
+        "        end = time.time() + 60\n"
+        "        while not os.path.exists(os.path.join(signs, 'go')) and time.time() < end:\n"
+        "            time.sleep(0.02)\n"
+        "        return got\n"
+        "    shutil.copytree = copytree\n", encoding="utf-8")
+    # The save says when it first finds the folder busy.
+    waiter = t.box.tmp / "busy-sign"
+    waiter.mkdir()
+    (waiter / "sitecustomize.py").write_text(
+        "import os, time\n"
+        f"sign = os.path.join({str(signs)!r}, 'waiting')\n"
+        "real = time.sleep\n"
+        "def sleep(s):\n"
+        "    if s >= 0.1:\n"
+        "        open(sign, 'w').close()\n"
+        "    return real(s)\n"
+        "time.sleep = sleep\n", encoding="utf-8")
+
+    def until(name: str) -> bool:
+        end = time.time() + 60
+        while not (signs / name).exists() and time.time() < end:
+            time.sleep(0.02)
+        return (signs / name).exists()
+
+    target = t.box.tmp / "Elsewhere"
+    move = subprocess.Popen([str(root / "os"), "setup", "--move-to", str(target)], cwd=str(root),
+                            env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1",
+                                     PYTHONPATH=str(mover)),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    t.ok(until("copied"), "the move copied everything and is holding on")
+    save = subprocess.Popen([str(root / "os"), "save", "Pasta night: buy basil and good olive oil"],
+                            cwd=str(root), env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1",
+                                                    PYTHONPATH=str(waiter)),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    t.ok(until("waiting"), "the save found the folder busy and is waiting")
+    (signs / "go").touch()
+    move.communicate(timeout=120)
+    out, err = save.communicate(timeout=120)
+    saved = subprocess.CompletedProcess(save.args, save.returncode, out, err)
+    there = [p for p in target.rglob("*.md") if "basil" in p.read_text(errors="replace")] if target.exists() else []
+    t.ok(there or (saved.returncode != 0 and "moved" in saved.stdout + saved.stderr),
+         f"the note is at the new place, or the save said it failed\n{saved.stdout}{saved.stderr}")
+    t.ok(not root.exists(), "and nothing was made again at the old place")
+    t.ok(not list((target / ".os").glob(".lock*")), "and no lock is left at the new place")
+
+
+@test
+def test_r19_a_hung_update_can_be_stopped_and_nothing_runs_beside_it(t: Case) -> None:
+    """A hung update ignored a kill, so only Ctrl-C stopped it, and it held
+    no lock: another ./os, or the same update tried again, ran beside it
+    (fourteenth review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "slow-update"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import sys, time\n"
+        "if sys.argv and sys.argv[0].endswith('upgrade.py'):\n"
+        "    import shutil\n"
+        "    real = shutil.copy2\n"
+        "    def slow(*a, **k):\n"
+        "        time.sleep(30)\n"
+        "        return real(*a, **k)\n"
+        "    shutil.copy2 = slow\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    run = subprocess.Popen([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                           env=dict(env, PYTHONPATH=str(shim)), stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    time.sleep(2.5)
+    beside = subprocess.run([str(root / "os"), "new", "note", "Pond depth"], cwd=str(root),
+                            env=dict(env, ZENITH_LOCK_WAIT="1"), capture_output=True, text=True, timeout=60)
+    t.ok(beside.returncode != 0 and "update" in beside.stdout + beside.stderr,
+         f"another ./os waits its turn and says why\n{beside.stdout}{beside.stderr}")
+    os.killpg(run.pid, signal.SIGTERM)
+    said, _ = run.communicate(timeout=60)
+    t.ok("stopped partway" in said and "Traceback" not in said, f"a kill stops it, in words\n{said[-600:]}")
+    t.box.run("update", "--from", str(published))
+    t.eq(_release_of(root), "2026-02-01.1", "and running it again finishes it")
+
+
+@test
+def test_r19_what_a_bring_brought_is_known_after_a_rename_a_close_or_a_stop(t: Case) -> None:
+    """The record of what a bring had brought was written only at its end,
+    and named where each thing first landed: after a rename or a close it
+    came in again, and after a stopped bring everything did (fourteenth
+    review, 2026-10-29)."""
+    old = t.box.tmp / "old stuff"
+    old.mkdir()
+    for n in range(1, 5):
+        (old / f"recipe {n}.md").write_text(f"# Recipe {n}\n\nbake it {n}\n")
+    t.box.run("setup", "--bring", str(old))
+    t.box.run("rename", "Notes/recipe-3", "Lemon Cake")
+    t.box.run("close", "Notes/recipe-4")
+    got = t.box.json("setup", "--bring", str(old))
+    again = [s["from"] for s in got["steps"] if s["how"] != "left"]
+    t.eq(again, [], f"nothing comes in twice: {got['steps']}")
+
+
+@test
+def test_r19_ctrl_c_while_an_update_backs_up_leaves_nothing_to_undo(t: Case) -> None:
+    """Ctrl-C while the update was still copying the folder aside left a
+    half copy that --undo called an update "made by an older version"
+    (fourteenth review, 2026-10-29)."""
+    t.any_exit()
+    root = t.box.root
+    _release(root, "2026-01-01.1")
+    published = _publish(t, "2026-02-01.1")
+    shim = t.box.tmp / "stop-backup"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import shutil\n"
+        "real = shutil.copy2\n"
+        "def copy2(src, dst, *a, **k):\n"
+        "    if 'before-upgrade' in str(dst) and 'engine' in str(dst):\n"
+        "        raise KeyboardInterrupt\n"
+        "    return real(src, dst, *a, **k)\n"
+        "shutil.copy2 = copy2\n", encoding="utf-8")
+    subprocess.run([str(root / "os"), "update", "--from", str(published)], cwd=str(root),
+                   env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                   capture_output=True, text=True, timeout=120)
+    said = t.box.run("update", "--undo", expect=None).stdout
+    t.ok("nothing to undo" in said, said)
+
+
+@test
+def test_r19_a_run_told_to_let_a_hangup_pass_keeps_going(t: Case) -> None:
+    """Each ./os turned a hang-up into a stop even when started with it let
+    pass, as an update starts its own ./os sort, so a closed window cut
+    that short (fourteenth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    old = t.box.tmp / "old stuff"
+    for n in range(120):
+        (old / f"Topic {n:03d}").mkdir(parents=True)
+        for m in range(10):
+            (old / f"Topic {n:03d}" / f"note {m}.md").write_text(f"# N {n} {m}\n\nwords\n")
+    run = subprocess.Popen([str(t.box.root / "os"), "setup", "--bring", str(old)], cwd=str(t.box.root),
+                           env=dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1"),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                           preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN))
+    time.sleep(1)
+    run.send_signal(signal.SIGHUP)
+    run.communicate(timeout=120)
+    t.eq(run.returncode, 0, "it finished")
+
+
+@test
+def test_r19_a_move_to_another_disk_keeps_their_own_lock_files(t: Case) -> None:
+    """The move left out every file named .lock or .lock.* anywhere in the
+    folder, not only ./os's own, and then took the old place away with them
+    (pre-merge review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    site = root / "Work" / "Site Code"
+    site.mkdir(parents=True)
+    (site / ".lock").write_text("theirs\n")
+    (site / ".lock.json").write_text("{}\n")
+    shim = t.box.tmp / "xdev-locks"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os\n"
+        "real = os.rename\n"
+        "def rename(a, b, *x, **k):\n"
+        "    if 'moved-' in str(b):\n"
+        "        return real(a, b, *x, **k)\n"
+        "    raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "os.rename = rename\n", encoding="utf-8")
+    target = t.box.tmp / "Elsewhere"
+    subprocess.run([str(root / "os"), "setup", "--move-to", str(target)], cwd=str(root),
+                   env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                   capture_output=True, text=True, timeout=180)
+    t.ok((target / "Work" / "Site Code" / ".lock").is_file(), "their .lock came along")
+    t.ok((target / "Work" / "Site Code" / ".lock.json").is_file(), "and their .lock.json")
+    t.ok(not (target / ".os" / ".lock").exists(), "./os's own lock didn't")
+
+
+@test
+def test_r19_a_bring_never_copies_in_what_a_shortcut_leads_to_outside(t: Case) -> None:
+    """A shortcut inside a brought folder that led outside the old folder had
+    what it led to copied in whole, and the trial run never said (pre-merge
+    review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    elsewhere = t.box.tmp / "elsewhere" / "Private"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "tax-2025.txt").write_text("private\n")
+    old = t.box.tmp / "old stuff"
+    (old / "Recipes").mkdir(parents=True)
+    (old / "Recipes" / "bread.md").write_text("# Bread\n\nflour\n")
+    (old / "Recipes" / "private").symlink_to(elsewhere)
+    preview = t.box.json("setup", "--bring", str(old), "--dry-run")
+    t.ok(any(s["how"] == "left" and "private" in s["from"] for s in preview["steps"]),
+         f"the trial run names it: {preview['steps']}")
+    t.box.json("setup", "--bring", str(old))
+    t.eq([p for p in t.box.root.rglob("tax-2025.txt") if not p.is_symlink() and t.box.root in p.parents
+          and not any(q.is_symlink() for q in p.parents)], [], "nothing from outside was copied in")
+
+
+@test
+def test_r19_a_lock_taken_over_is_never_let_go_by_its_old_holder(t: Case) -> None:
+    """Letting go of the lock removed the file whoever held it by then, so a
+    third run could join a second (pre-merge review, 2026-10-29)."""
+    script = (
+        "import json, os, sys; sys.path.insert(0, '.os'); import engine\n"
+        "z = engine.Zenith(engine.find_root())\n"
+        "lock = engine.Lock(z, 'test'); lock.__enter__()\n"
+        "lock.path.write_text(json.dumps({'pid': 1, 'at': 0, 'label': 'other'}))\n"
+        "lock.keep_fresh()\n"
+        "print(json.loads(lock.path.read_text())['label'])\n"
+        "lock.__exit__(None, None, None)\n"
+        "print('still there' if lock.path.exists() else 'gone')\n")
+    got = subprocess.run([sys.executable, "-c", script], cwd=str(t.box.root), capture_output=True, text=True,
+                         env=dict(os.environ, ZENITH_HOME=str(t.box.root)), timeout=60)
+    t.eq(got.stdout.split(), ["other", "still", "there"],
+         f"another run's lock is never written over, nor let go of\n{got.stdout}{got.stderr[-400:]}")
+
+
+@test
+def test_r19_a_move_that_cant_clear_the_old_place_names_where_it_is(t: Case) -> None:
+    """A move to another disk that couldn't take the old place away named
+    the old name, which no longer existed, not the hidden name it had been
+    put under (second pre-merge review, 2026-10-29)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    locked = root / "Notes" / "Locked"
+    locked.mkdir(parents=True)
+    (locked / "a.md").write_text("# A\n")
+    shim = t.box.tmp / "xdev-ro"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os\n"
+        "real = os.rename\n"
+        "def rename(a, b, *x, **k):\n"
+        "    if 'moved-' in str(b) or 'old copy' in str(b) or 'moving' in str(b):\n"
+        "        return real(a, b, *x, **k)\n"
+        "    raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "os.rename = rename\n"
+        # Can't be taken away, whatever its permissions (round 21: a
+        # read-only folder no longer stops it).
+        "real_unlink = os.unlink\n"
+        "class Unlink:\n"
+        "    def __call__(self, path, *a, **k):\n"
+        "        if 'Locked' in str(path) and 'moved-' in str(path):\n"
+        "            raise OSError(errno.EBUSY, 'Resource busy')\n"
+        "        return real_unlink(path, *a, **k)\n"
+        "os.unlink = Unlink()\n", encoding="utf-8")
+    locked.chmod(0o555)
+    target = t.box.tmp / "Elsewhere"
+    try:
+        said = subprocess.run([str(root / "os"), "setup", "--move-to", str(target)], cwd=str(root),
+                              env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                              capture_output=True, text=True, timeout=180)
+    finally:
+        for p in t.box.tmp.rglob("Locked"):
+            p.chmod(0o755)
+    out = said.stdout + said.stderr
+    # Under a name that can be seen, not a hidden one (third pre-merge
+    # review of round 19).
+    left = root.with_name(f"{root.name} (old copy)")
+    t.ok(str(left) in out and left.is_dir(), f"it names the place that is left, and it is there\n{out}")
+
+
+@test
+def test_r19_a_brought_shortcut_still_leads_where_it_did(t: Case) -> None:
+    """A shortcut in a brought folder leading into this folder, or to a
+    parent of the old one, was said to lead where it did, and kept relative
+    it led nowhere or somewhere else (second pre-merge review,
+    2026-10-29)."""
+    if os.name == "nt":
+        return
+    old = t.box.tmp / "old stuff"
+    (old / "Recipes").mkdir(parents=True)
+    (old / "Recipes" / "bread.md").write_text("# Bread\n\nflour\n")
+    up = os.path.relpath(t.box.root / "AGENTS.md", old / "Recipes")
+    (old / "Recipes" / "into-home").symlink_to(up)
+    t.box.json("setup", "--bring", str(old))
+    link = next((p for p in t.box.root.rglob("into-home") if p.is_symlink()), None)
+    t.ok(link is not None and link.resolve() == (t.box.root / "AGENTS.md").resolve(),
+         f"it still leads to the same file: {link and os.readlink(link)}")
+
+
+@test
+def test_r20_on_windows_no_one_is_sent_ctrl_c_to_see_if_they_are_running(t: Case) -> None:
+    """os.kill(pid, 0) on Windows sends Ctrl-C to every process on the
+    console instead of looking: every update stopped itself partway
+    (fifteenth review, 2026-10-29)."""
+    sent = []
+    real_kill, was = os.kill, engine.ON_WINDOWS
+    engine.ON_WINDOWS = True
+    os.kill = lambda *a: sent.append(a)
+    try:
+        engine.Lock._alive(os.getpid())
+        engine.claim_gone(f"pid-{os.getpid()}")
+    finally:
+        os.kill, engine.ON_WINDOWS = real_kill, was
+    t.eq(sent, [], "nothing is sent to anyone")
+
+
+def _slow_move(t: Case, during, copied=None) -> tuple:
+    """`./os setup --move-to` to another disk, in this process, its lock the
+    real one, with one file that takes a while to copy, as a big video does.
+    `during(lock_file)` runs in the middle of that one copy. Returns what the
+    lock said before and after it, and how the move ended."""
+    t.any_exit()
+    root = t.box.root
+    t.box.run("new", "note", "Figs")
+    (root / "Notes" / "big.mov").write_bytes(b"x" * 1000)
+    z = engine.Zenith(root)
+    lock_file = root / ".os" / ".lock"
+    seen = {}
+    real_rename, real_copy, every = os.rename, shutil.copyfile, engine.LOCK_REFRESH
+
+    def rename(a, b, *x, **k):
+        if Path(a).name == root.name and "moved-" not in str(b):
+            raise OSError(errno.EXDEV, "Cross-device link")
+        return real_rename(a, b, *x, **k)
+
+    def copyfile(src, dst, *a, **k):
+        if os.fspath(src).endswith("big.mov"):
+            seen["before"] = json.loads(lock_file.read_text()) if lock_file.exists() else {}
+            during(lock_file)
+            time.sleep(0.6)
+            seen["after"] = json.loads(lock_file.read_text()) if lock_file.exists() else {}
+        got = real_copy(src, dst, *a, **k)
+        if copied is not None:
+            copied(Path(os.fspath(src)))
+        return got
+    os.rename, shutil.copyfile, engine.LOCK_REFRESH = rename, copyfile, 0.1
+    cwd = os.getcwd()          # a move steps out of the folder; put back after
+    said = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            ended = engine.cmd_setup(z, ["--move-to", str(t.box.tmp / "Elsewhere")])
+    except SystemExit as exc:
+        ended = exc.code
+    finally:
+        seen["said"] = said.getvalue()
+        os.rename, shutil.copyfile, engine.LOCK_REFRESH = real_rename, real_copy, every
+        os.chdir(cwd)
+    return seen, ended
+
+
+@test
+def test_r20_a_long_move_to_another_disk_keeps_saying_it_holds_the_lock(t: Case) -> None:
+    """Nothing said the lock was still held during a copy to another disk:
+    one longer than STALE_AFTER let another chat take the lock as debris
+    and save into the old place, which was then taken away (fifteenth
+    review, 2026-10-29). Said between files, one big video was still too
+    long (review of its fix)."""
+    seen, ended = _slow_move(t, lambda lock_file: None)
+    t.ok((t.box.tmp / "Elsewhere" / "Notes" / "big.mov").is_file(), f"it moved ({ended})")
+    t.ok(seen.get("after", {}).get("at", 0) > seen.get("before", {}).get("at", 0),
+         f"and said it still held the lock in the middle of one file's copy: {seen}")
+
+
+@test
+def test_r20_a_move_whose_lock_was_taken_over_keeps_the_old_place(t: Case) -> None:
+    """A move went on to take the old place away even when another chat had
+    taken its lock meanwhile and saved there (review of the fifteenth's
+    fixes)."""
+    def taken(lock_file: Path) -> None:
+        lock_file.write_text(json.dumps({"pid": 1, "at": time.time(), "label": "save"}))
+        (t.box.root / "Notes" / "walnuts.md").write_text("# Walnuts\n\nsaved meanwhile\n")
+    seen, ended = _slow_move(t, taken)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok((t.box.root / "Notes" / "walnuts.md").is_file(), "what was saved meanwhile is still there")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy is taken away again")
+
+
+@test
+def test_r20_a_move_whose_lock_went_meanwhile_keeps_the_old_place(t: Case) -> None:
+    """A lock taken over and then let go of by another chat while a move
+    copied was gone, not someone else's, and still counted as held: what
+    that chat saved went with the old place (review of the lock timer)."""
+    def gone(lock_file: Path) -> None:
+        lock_file.unlink()
+        (t.box.root / "Notes" / "walnuts.md").write_text("# Walnuts\n\nsaved meanwhile\n")
+    seen, ended = _slow_move(t, gone)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok((t.box.root / "Notes" / "walnuts.md").is_file(), "what was saved meanwhile is still there")
+
+
+@test
+def test_r20_a_save_a_move_cant_see_in_its_lock_still_keeps_the_old_place(t: Case) -> None:
+    """A lock taken by another chat in the moment it was said again looks
+    like this run's own, and that chat's save went with the old place
+    (review of the lock fixes). What is about to go is looked at first."""
+    def saved(lock_file: Path) -> None:
+        (t.box.root / "Notes" / "walnuts.md").write_text("# Walnuts\n\nsaved meanwhile\n")
+    seen, ended = _slow_move(t, saved)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok((t.box.root / "Notes" / "walnuts.md").is_file(), "what was saved meanwhile is still there")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy is taken away again")
+
+
+@test
+def test_r20_a_move_that_cant_put_the_old_place_back_keeps_the_copy(t: Case) -> None:
+    """Stopped by a change, a move that couldn't put the old place back under
+    its own name took the copy away anyway: the folder looked gone (review of
+    the check before removal)."""
+    def saved(lock_file: Path) -> None:
+        (t.box.root / "Notes" / "walnuts.md").write_text("# Walnuts\n\nsaved meanwhile\n")
+        before = os.rename
+
+        def rename(a, b, *x, **k):
+            if "moved-" in str(a):
+                raise OSError(errno.EACCES, "Permission denied")
+            return before(a, b, *x, **k)
+        os.rename = rename
+    seen, ended = _slow_move(t, saved)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok((t.box.tmp / "Elsewhere" / "Notes" / "big.mov").is_file(), "and the copy is kept")
+    hidden = [p for p in t.box.tmp.iterdir() if ".moved-" in p.name]
+    t.ok(hidden and (hidden[0] / "Notes" / "walnuts.md").is_file(), f"with the old place whole: {hidden}")
+
+
+@test
+def test_r20_a_same_size_edit_right_after_its_copy_keeps_the_old_place(t: Case) -> None:
+    """A note changed to the same size within a second or two of being
+    copied passed a look at the times, and the change went with the old
+    place (review of the check before removal)."""
+    note = t.box.root / "Notes" / "pre.md"
+    note.write_text("# Pre\n\nAAAA\n")
+
+    def copied(src: Path) -> None:
+        if src.name == "pre.md":
+            note.write_text("# Pre\n\nBBBB\n")
+    seen, ended = _slow_move(t, lambda lock_file: None, copied)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok("BBBB" in note.read_text(), "and the change is still there")
+
+
+@test
+def test_r20_finder_looking_at_the_folder_doesnt_stop_a_move(t: Case) -> None:
+    """Finder writes .DS_Store into a folder someone is only looking at, and
+    that stopped the move as a change (review of the check before removal)."""
+    def looked(lock_file: Path) -> None:
+        (t.box.root / "Notes" / ".DS_Store").write_bytes(b"\x00\x01")
+    seen, ended = _slow_move(t, looked)
+    t.ok(ended in (0, None) and (t.box.tmp / "Elsewhere" / "Notes" / "big.mov").is_file(),
+         f"it moved ({ended})")
+
+
+@test
+def test_r21_a_note_swapped_in_with_an_older_time_keeps_the_old_place(t: Case) -> None:
+    """Finder's Replace, a sync app or `cp -p` puts a file in with its old
+    modified time: changed after its copy, it was never compared, and the
+    change went with the old place (round 21)."""
+    note = t.box.root / "Notes" / "pre.md"
+    note.write_text("# Pre\n\nthe first words\n")
+    long_ago = time.time() - 86400
+
+    def copied(src: Path) -> None:
+        if src.name == "pre.md":
+            note.write_text("# Pre\n\nthe newer words, longer\n")
+            os.utime(note, (long_ago, long_ago))
+    seen, ended = _slow_move(t, lambda lock_file: None, copied)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok("newer words" in note.read_text(), "and the newer words are still there")
+
+
+@test
+def test_r21_a_note_taken_away_during_a_move_doesnt_come_back(t: Case) -> None:
+    """A note taken away while the move copied was already in the copy, and
+    came back at the new place (round 21)."""
+    note = t.box.root / "Notes" / "pre.md"
+    note.write_text("# Pre\n\nnot wanted\n")
+
+    def copied(src: Path) -> None:
+        if src.name == "pre.md":
+            note.unlink()
+    seen, ended = _slow_move(t, lambda lock_file: None, copied)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok(not note.exists() and (t.box.root / "Notes").is_dir(), "the old place is kept, without it")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy, with it, is taken away")
+
+
+def _during_check(t: Case, then) -> None:
+    """Run `then(old_place)` while a move looks the old place over, just
+    before it is taken away."""
+    real = engine._not_in_copy
+
+    def check(old, *a, **k):
+        then(Path(old))
+        return real(old, *a, **k)
+    engine._not_in_copy = check
+    t.box.tmp.joinpath("restore").write_text("")
+    return real
+
+
+@test
+def test_r21_a_save_in_the_old_place_while_a_move_finishes_is_refused(t: Case) -> None:
+    """A chat still standing in the old place saved there while the move
+    finished: its words were written, called safe, and went with the old
+    place (round 21 review of the move)."""
+    said = {}
+
+    def save(old: Path) -> None:
+        said["run"] = subprocess.run([str(old / "os"), "save", "Crown on Tuesday at the dentist"],
+                                     cwd=str(old), env=dict(os.environ, NO_COLOR="1"),
+                                     capture_output=True, text=True, timeout=60)
+    real = _during_check(t, save)
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        engine._not_in_copy = real
+    run = said["run"]
+    out = run.stdout + run.stderr
+    t.ok(run.returncode != 0 and "SAVED" not in out and "safe in" not in out,
+         f"the save says it wasn't kept\n{out}")
+    t.ok("being moved" in out, f"and why, in plain words\n{out}")
+    t.ok((t.box.tmp / "Elsewhere" / "Notes").is_dir(), f"and the move went on ({ended})")
+
+
+@test
+def test_r21_a_move_stopped_while_it_looks_the_old_place_over_puts_it_back(t: Case) -> None:
+    """Ctrl-C while the move looked the old place over left it hidden, and a
+    whole copy at the new place (round 21 review of the move)."""
+    def stop(old: Path) -> None:
+        raise KeyboardInterrupt
+    real = _during_check(t, stop)
+    try:
+        try:
+            seen, ended = _slow_move(t, lambda lock_file: None)
+        except KeyboardInterrupt:
+            ended = "stopped"
+    finally:
+        engine._not_in_copy = real
+    t.eq(ended, "stopped", "the stop is passed on")
+    t.ok((t.box.root / ".os" / "config.json").is_file() and (t.box.root / "Notes").is_dir(),
+         "the old place is back under its own name, whole")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy is taken away")
+
+
+@test
+def test_r21_a_move_that_cant_set_the_old_place_aside_leaves_it(t: Case) -> None:
+    """Not set aside, the old place was taken away where other chats still
+    looked, and one waiting for the lock saved into it as it went (round
+    21)."""
+    def no_aside(lock_file: Path) -> None:
+        before = os.rename
+
+        def rename(a, b, *x, **k):
+            if "moved-" in str(b):
+                raise OSError(errno.EACCES, "Permission denied")
+            return before(a, b, *x, **k)
+        os.rename = rename
+    seen, ended = _slow_move(t, no_aside)
+    # Called off: kept, the old place stayed live or could be made live,
+    # and a save landed there and nowhere else (fifth and sixth pre-merge
+    # reviews of round 21).
+    t.ok(ended not in (0, None) and "in use" in seen["said"], f"it says why it stopped\n{seen['said']}")
+    t.ok((t.box.root / "Notes" / "big.mov").is_file() and (t.box.root / ".os" / "config.json").is_file(),
+         "the folder is as it was, the one live place")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy is taken away")
+
+
+@test
+def test_r21_a_shortcut_pointed_elsewhere_during_a_move_keeps_the_old_place(t: Case) -> None:
+    """A shortcut pointed somewhere else while the move copied went back to
+    where it led before (round 21 review of the move)."""
+    link = t.box.root / "Notes" / "where"
+
+    def repoint(lock_file: Path) -> None:
+        link.unlink()
+        link.symlink_to("/usr")
+    t.box.root.joinpath("Notes").mkdir(exist_ok=True)
+    link.symlink_to("/etc")
+    seen, ended = _slow_move(t, repoint)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.eq(os.readlink(link), "/usr", "and the shortcut leads where it was pointed")
+
+
+@test
+def test_r21_a_folder_made_during_a_move_keeps_the_old_place(t: Case) -> None:
+    """A folder made while the move copied was left behind (round 21 review
+    of the move)."""
+    made = t.box.root / "Notes" / "New Plans"     # beside the file being copied
+
+    def make(lock_file: Path) -> None:
+        made.mkdir(parents=True)
+    seen, ended = _slow_move(t, make)
+    t.ok(ended not in (0, None) and made.is_dir(), f"it stops, and the folder is there ({ended})")
+
+
+@test
+def test_r21_a_hook_marking_the_folder_doesnt_stop_a_move(t: Case) -> None:
+    """Any tool call in another chat marks .os/.dirty, and that stopped an
+    otherwise good move (round 21 review of the move)."""
+    def mark(src: Path) -> None:
+        if src.name == "config.json" and src.parent.name == ".os":
+            (t.box.root / ".os" / ".dirty").write_text("")
+    (t.box.root / ".os" / ".dirty").unlink(missing_ok=True)      # made only meanwhile
+    seen, ended = _slow_move(t, lambda lock_file: None, mark)
+    t.ok(ended in (0, None) and (t.box.tmp / "Elsewhere" / "Notes" / "big.mov").is_file(), f"it moved ({ended})")
+
+
+@test
+def test_r21_a_move_to_another_disk_keeps_finder_tags(t: Case) -> None:
+    """On a Mac, Finder tags and comments didn't come with a move to another
+    disk (round 21 review of the move)."""
+    if sys.platform != "darwin" or not Path("/usr/bin/xattr").exists():
+        return
+    note = t.box.root / "Notes" / "tagged.md"
+    t.box.root.joinpath("Notes").mkdir(exist_ok=True)
+    note.write_text("# Tagged\n")
+    subprocess.run(["/usr/bin/xattr", "-w", "com.example.tag", "Red", str(note)], check=True)
+    seen, ended = _slow_move(t, lambda lock_file: None)
+    got = subprocess.run(["/usr/bin/xattr", "-p", "com.example.tag",
+                          str(t.box.tmp / "Elsewhere" / "Notes" / "tagged.md")],
+                         capture_output=True, text=True)
+    t.eq(got.stdout.strip(), "Red", f"the tag came with it ({ended})")
+
+
+@test
+def test_r21_a_file_that_cant_be_read_is_named_and_the_half_copy_goes(t: Case) -> None:
+    """One file that couldn't be read stopped a move with "is there room?",
+    naming nothing, and a read-only folder in the half copy stayed while it
+    was said to be taken away (round 21 review of the move)."""
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    t.box.run("new", "note", "Figs")
+    ro = t.box.root / "Archive" / "Kept"
+    ro.mkdir(parents=True)
+    (ro / "old.md").write_text("# Old\n")
+    ro.chmod(0o555)
+    secret = t.box.root / "Work" / "zz-unreadable.md"
+    secret.parent.mkdir(exist_ok=True)
+    secret.write_text("# Private\n")
+    secret.chmod(0)
+    z = engine.Zenith(t.box.root)
+    real_rename = os.rename
+
+    def rename(a, b, *x, **k):
+        if Path(a).name == t.box.root.name and "moved-" not in str(b):
+            raise OSError(errno.EXDEV, "Cross-device link")
+        return real_rename(a, b, *x, **k)
+    os.rename = rename
+    t.any_exit()
+    cwd = os.getcwd()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(out):
+            try:
+                engine.cmd_setup(z, ["--move-to", str(t.box.tmp / "Elsewhere")])
+                ended = 0
+            except SystemExit as exc:
+                ended = exc.code
+    finally:
+        os.rename = real_rename
+        os.chdir(cwd)
+        secret.chmod(0o644)
+        ro.chmod(0o755)
+    said = out.getvalue()
+    t.ok(ended not in (0, None) and "zz-unreadable.md" in said, f"it names the file\n{said}")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), f"and the half copy is really gone\n{said}")
+
+
+@test
+def test_r21_a_save_after_a_move_never_makes_the_old_folder_again(t: Case) -> None:
+    """A save that found the folder just before it was moved made .os again
+    at the old place, filed its words in that shell and said SAVED (round
+    21 review of the move)."""
+    t.any_exit()
+    z = engine.Zenith(t.box.root)
+    shutil.move(str(t.box.root), str(t.box.tmp / "Moved"))
+    try:
+        engine.Creator(z).capture("Crown on Tuesday")
+        ended = 0
+    except SystemExit as exc:
+        ended = exc.code
+    t.ok(ended not in (0, None), f"it refuses ({ended})")
+    t.ok(not t.box.root.exists(), "and nothing is made at the old place")
+    shutil.move(str(t.box.tmp / "Moved"), str(t.box.root))
+
+
+@test
+def test_r21_a_move_on_the_same_disk_steps_out_of_the_folder_first(t: Case) -> None:
+    """Windows won't rename a folder a running program stands in, so every
+    move on the same disk was refused there (round 21 review of the move)."""
+    t.any_exit()
+    z = engine.Zenith(t.box.root)
+    was = os.getcwd()
+    os.chdir(t.box.root)
+    try:
+        engine.setup_move(z, str(t.box.tmp / "Moved"))
+        now = os.getcwd()
+    finally:
+        os.chdir(was)
+    t.ok(not now.startswith(str((t.box.tmp / "Moved").resolve())), f"it stood outside it: {now}")
+    shutil.move(str(t.box.tmp / "Moved"), str(t.box.root))
+
+
+@test
+def test_r21_a_move_to_a_usb_stick_isnt_stopped_by_the_macs_own_files(t: Case) -> None:
+    """On a FAT or exFAT drive a Mac writes `._name` beside each file, and
+    every move to one was refused as a change (round 21 pre-merge review)."""
+    def stick(lock_file: Path) -> None:
+        (t.box.tmp / "Elsewhere" / "Notes" / "._big.mov").write_bytes(b"\x00\x05\x16\x07")
+    seen, ended = _slow_move(t, stick)
+    t.ok(ended in (0, None) and (t.box.tmp / "Elsewhere" / "Notes" / "big.mov").is_file(), f"it moved ({ended})")
+
+
+@test
+def test_r21_two_names_a_drive_takes_for_one_keep_the_old_place(t: Case) -> None:
+    """plan.md and Plan.md, moved to a drive that ignores capitals: one was
+    copied over the other, and lost with the old place (round 21 pre-merge
+    review). Here a hard link stands in for that drive."""
+    notes = t.box.root / "Notes"
+    notes.mkdir(exist_ok=True)
+    (notes / "a-plan.md").write_text("# Plan\n\nthe lower-case one\n")
+    (notes / "b-plan.md").write_text("# Plan\n\nthe capital one\n")
+    there = t.box.tmp / "Elsewhere" / "Notes"
+
+    def copied(src: Path) -> None:
+        if src.name in ("a-plan.md", "b-plan.md") and (there / "a-plan.md").exists() \
+                and (there / "b-plan.md").exists():          # whichever came second
+            (there / "b-plan.md").unlink()
+            os.link(there / "a-plan.md", there / "b-plan.md")
+    time.sleep(2.5)       # written well before the move, as they would be
+    seen, ended = _slow_move(t, lambda lock_file: None, copied)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok("capital" in (notes / "b-plan.md").read_text(), "and both notes are still there")
+    t.ok("differ only in capitals" in seen["said"], f"said plainly\n{seen['said']}")
+
+
+@test
+def test_r21_a_lock_taken_where_the_folder_was_is_refused(t: Case) -> None:
+    """A save that rebuilt .os where the folder used to be took the lock
+    there and filed its words into nothing (round 21 pre-merge review)."""
+    t.any_exit()
+    z = engine.Zenith(t.box.root)
+    config = t.box.root / ".os" / "config.json"
+    config.rename(config.with_name("config.json.away"))
+    try:
+        with engine.Lock(z, "save"):
+            ended = 0
+    except SystemExit as exc:
+        ended = exc.code
+    finally:
+        config.with_name("config.json.away").rename(config)
+    t.ok(ended not in (0, None), f"it refuses ({ended})")
+    t.ok(not (t.box.root / ".os" / ".lock").exists(), "and leaves no lock behind")
+
+
+@test
+def test_r21_a_capture_never_makes_its_folder_again(t: Case) -> None:
+    """Words were written into a staging folder made again from nothing, at
+    a place the folder had just left (round 21 pre-merge review)."""
+    t.any_exit()
+    z = engine.Zenith(t.box.root)
+    gone = t.box.tmp / "left" / ".os" / "cache" / "incoming"
+    real = engine.Creator.stage
+    engine.Creator.stage = lambda self: gone
+    try:
+        engine.Creator(z).capture("Crown on Tuesday")
+        ended = 0
+    except SystemExit as exc:
+        ended = exc.code
+    finally:
+        engine.Creator.stage = real
+    t.ok(ended not in (0, None) and not (t.box.tmp / "left").exists(), f"it refuses, making nothing ({ended})")
+
+
+@test
+def test_r21_taking_a_half_copy_away_never_changes_anything_outside(t: Case) -> None:
+    """Clearing a read-only folder's shortcut changed the permissions of what
+    it led to, outside the folder (round 21 pre-merge review)."""
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    outside = t.box.tmp / "script.sh"
+    outside.write_text("#!/bin/sh\n")
+    outside.chmod(0o755)
+    half = t.box.tmp / "half"
+    (half / "ro").mkdir(parents=True)
+    (half / "ro" / "link").symlink_to(outside)
+    (half / "ro").chmod(0o555)
+    try:
+        gone = engine._remove_tree(half)
+    finally:
+        if (half / "ro").exists():
+            (half / "ro").chmod(0o755)
+    t.eq(oct(outside.stat().st_mode & 0o777), oct(0o755), "what it led to is as it was")
+    t.ok(gone and outside.exists(), "and the half copy went")
+
+
+@test
+def test_r21_taking_a_tree_away_survives_what_python_39_hands_back(t: Case) -> None:
+    """Python 3.9 hands os.open to the error handler too, and calling it bare
+    crashed the clean-up (round 21 pre-merge review)."""
+    folder = t.box.tmp / "half"
+    folder.mkdir()
+    real = shutil.rmtree
+
+    def rmtree(path, *a, onerror=None, onexc=None, **k):
+        handler = onexc or onerror
+        handler(os.open, str(path), OSError(errno.EACCES, "Permission denied"))
+    shutil.rmtree = rmtree
+    try:
+        engine._remove_tree(folder)
+        crashed = ""
+    except Exception as exc:
+        crashed = repr(exc)
+    finally:
+        shutil.rmtree = real
+    t.eq(crashed, "", "it says what it could, without crashing")
+
+
+@test
+def test_r21_a_move_that_stopped_partway_says_how_to_put_it_back(t: Case) -> None:
+    """Killed after setting the old place aside, a move left a hidden folder
+    every command refused for good, with no way out (round 21 pre-merge
+    review)."""
+    t.any_exit()
+    aside = t.box.tmp / ".Zenith.moved-999999"
+    shutil.copytree(t.box.root, aside, symlinks=True)
+    (aside / ".os" / "config.json").rename(aside / ".os" / "config.json.moving")
+    said = subprocess.run([str(aside / "os"), "check"], cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("stopped partway" in out and "config.json.moving" in out and "mv " in out,
+         f"it says what happened and the way back\n{out}")
+
+
+@test
+def test_r21_a_dot_underscore_file_of_theirs_is_never_written_over(t: Case) -> None:
+    """A file of theirs named `._x` beside x was written over by the Mac's
+    own on a USB stick, and the move went ahead (second pre-merge review of
+    round 21)."""
+    notes = t.box.root / "Notes"
+    notes.mkdir(exist_ok=True)
+    (notes / "pair.txt").write_text("words\n")
+    (notes / "._pair.txt").write_text("their own notes on the pair\n")
+    there = t.box.tmp / "Elsewhere" / "Notes"
+
+    def copied(src: Path) -> None:
+        if src.name == "._pair.txt":
+            (there / "._pair.txt").write_bytes(b"\x00\x05\x16\x07 the Mac's own")
+    time.sleep(2.5)       # written well before the move, as they would be
+    seen, ended = _slow_move(t, lambda lock_file: None, copied)
+    t.ok(ended not in (0, None), f"it stops ({ended})")
+    t.ok("their own" in (notes / "._pair.txt").read_text(), "and theirs is kept")
+
+
+@test
+def test_r21_a_capture_on_a_drive_with_no_hard_links_never_makes_its_folder(t: Case) -> None:
+    """On a drive with no hard links, a capture whose folder went meanwhile
+    crashed, or made the folder again (second pre-merge review of round
+    21)."""
+    t.any_exit()
+    z = engine.Zenith(t.box.root)
+    stage = engine.Creator(z).stage()
+    real_link = os.link
+
+    def link(a, b, *x, **k):
+        shutil.rmtree(stage)                      # the folder goes, just then
+        raise OSError(errno.EPERM, "Operation not permitted")
+    os.link = link
+    try:
+        engine.Creator(z).capture("Crown on Tuesday")
+        ended = 0
+    except SystemExit as exc:
+        ended = exc.code
+    finally:
+        os.link = real_link
+    t.ok(ended not in (0, None) and not stage.exists(), f"it refuses, making nothing ({ended})")
+
+
+@test
+def test_r21_a_move_stopped_while_taking_the_old_place_away_names_the_new_one(t: Case) -> None:
+    """Stopped while the old place was taken away, what was left offered to
+    be put back as the folder, with half its things gone, and never said
+    where the whole one was (second pre-merge review of round 21)."""
+    t.any_exit()
+    whole = t.box.tmp / "Moved"
+    shutil.copytree(t.box.root, whole, symlinks=True)
+    left = t.box.tmp / ".Zenith.moved-999999"
+    (left / ".os").mkdir(parents=True)
+    for f in ("engine.py", "config.json"):
+        shutil.copy2(t.box.root / ".os" / f, left / ".os" / f)
+    (left / ".os" / "config.json").rename(left / ".os" / "config.json.moving")
+    (left / ".os" / "moving-to").write_text(str(whole) + "\n")
+    shutil.copy2(t.box.root / "os", left / "os")
+    said = subprocess.run([str(left / "os"), "check"], cwd=str(left), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok(str(whole) in out and "all of it is there" in out and "mv " not in out, out)
+
+
+@test
+def test_r21_putting_a_stopped_move_back_never_lands_inside_another_folder(t: Case) -> None:
+    """When the folder's own name was taken, the way back moved it inside
+    that folder (second pre-merge review of round 21)."""
+    t.any_exit()
+    aside = t.box.tmp / ".Zenith.moved-999999"
+    shutil.copytree(t.box.root, aside, symlinks=True)
+    (aside / ".os" / "config.json").rename(aside / ".os" / "config.json.moving")
+    said = subprocess.run([str(aside / "os"), "check"], cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("(restored)" in out, f"it offers a free name, as the box's own name is taken\n{out}")
+
+
+@test
+def test_r21_the_old_place_says_where_it_went_only_once_it_was_looked_over(t: Case) -> None:
+    """Where the move went was written before the old place was looked over:
+    killed during the look, it called a change that wasn't copied something
+    that could go (third pre-merge review of round 21)."""
+    said = {}
+    real = _during_check(t, lambda old: said.update(early=(old / ".os" / "moving-to").exists()))
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        engine._not_in_copy = real
+    t.eq(said.get("early"), False, "not written while it is looked over")
+
+
+@test
+def test_r21_a_move_from_a_usb_stick_matches_the_macs_own_files(t: Case) -> None:
+    """On a FAT or exFAT drive, the old place's ._config.json is renamed with
+    config.json, and every move from a USB stick was refused (third
+    pre-merge review of round 21)."""
+    old, copy = t.box.tmp / "old", t.box.tmp / "copy"
+    mac = b"\x00\x05\x16\x07 the Mac's own"
+    for folder in (old, copy):
+        (folder / ".os").mkdir(parents=True)
+    (old / ".os" / "config.json.moving").write_text("{}")
+    (old / ".os" / "._config.json.moving").write_bytes(mac)
+    (old / ".os" / "._moving-to").write_bytes(mac)
+    (copy / ".os" / "config.json").write_text("{}")
+    (copy / ".os" / "._config.json").write_bytes(mac)
+    t.eq(engine._not_in_copy(old, copy, time.time(), config_aside=True), "", "the two agree")
+
+
+@test
+def test_r21_a_dot_underscore_file_of_theirs_taken_away_doesnt_come_back(t: Case) -> None:
+    """Any `._` file only at the new place was passed over as the Mac's own,
+    so one of theirs taken away meanwhile came back (third pre-merge review
+    of round 21)."""
+    old, copy = t.box.tmp / "old", t.box.tmp / "copy"
+    for folder in (old, copy):
+        (folder / "Notes").mkdir(parents=True)
+    (copy / "Notes" / "._scratch").write_text("their own scratch words\n")
+    t.eq(engine._not_in_copy(old, copy, time.time()), os.path.join("Notes", "._scratch"),
+         "it is seen as taken away")
+
+
+@test
+def test_r21_the_way_back_finds_a_free_name_however_many_are_taken(t: Case) -> None:
+    """With the name and "(restored)" both taken, the way back moved the
+    folder inside one of them (third pre-merge review of round 21)."""
+    t.any_exit()
+    aside = t.box.tmp / ".Zenith.moved-999999"
+    shutil.copytree(t.box.root, aside, symlinks=True)
+    (aside / ".os" / "config.json").rename(aside / ".os" / "config.json.moving")
+    (t.box.tmp / "Zenith (restored)").mkdir()
+    said = subprocess.run([str(aside / "os"), "check"], cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("(restored 2)" in out, f"it offers a name that is free\n{out}")
+
+
+@test
+def test_r21_what_says_where_a_move_went_is_the_last_thing_to_go(t: Case) -> None:
+    """Taking the old place away left the order inside .os to chance: killed
+    there, what said where it went could go first (third pre-merge review
+    of round 21)."""
+    left, gone = {}, []
+    real = engine._remove_tree
+    real_unlink = Path.unlink
+
+    def unlink(self, *a, **k):
+        if ".moved-" in str(self) and self.name in ("config.json.moving", "engine.py", "moving-to", "os"):
+            gone.append(self.name)
+        return real_unlink(self, *a, **k)
+    Path.unlink = unlink
+
+    def remove(path):
+        path = Path(path)
+        if ".moved-" in path.name:
+            left["at end"] = sorted(p.relative_to(path).as_posix() for p in path.rglob("*"))
+        return real(path)
+    engine._remove_tree = remove
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        engine._remove_tree = real
+        Path.unlink = real_unlink
+    t.eq(left.get("at end"), [".os"], "what says where it went went one by one before that")
+    t.eq(gone, ["config.json.moving", "engine.py", "moving-to", "os"],
+         "in an order that never leaves the record without what reads it")
+
+
+@test
+def test_r21_a_leftover_whose_new_place_cant_be_reached_says_dont_put_it_back(t: Case) -> None:
+    """Killed while the old place was taken away, with the new place out of
+    reach (a USB stick taken out), the leftover said its things were all
+    there and how to put it back (fourth pre-merge review of round 21)."""
+    t.any_exit()
+    left = t.box.tmp / ".Zenith.moved-999999"
+    (left / ".os").mkdir(parents=True)
+    for f in ("engine.py", "config.json"):
+        shutil.copy2(t.box.root / ".os" / f, left / ".os" / f)
+    (left / ".os" / "config.json").rename(left / ".os" / "config.json.moving")
+    (left / ".os" / "moving-to").write_text("/Volumes/NotPluggedIn/Box\n")
+    shutil.copy2(t.box.root / "os", left / "os")
+    said = subprocess.run([str(left / "os"), "check"], cwd=str(left), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("can't be reached" in out and "Don't put this back" in out and "mv " not in out, out)
+
+
+@test
+def test_r21_a_move_that_cant_mark_the_old_place_leaves_it(t: Case) -> None:
+    """When where the move went couldn't be written in the old place, it was
+    taken away all the same, unmarked (fourth pre-merge review of round
+    21)."""
+    real_write = Path.write_text
+
+    def write_text(self, *a, **k):
+        if self.name == "moving-to":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(self, *a, **k)
+    Path.write_text = write_text
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        Path.write_text = real_write
+    t.ok(ended not in (0, None), f"it is called off ({ended})\n{seen.get('said')}")
+    t.ok("nothing was moved" in seen["said"] and "it is all at" not in seen["said"],
+         f"and says that, and only that\n{seen['said']}")
+    t.ok((t.box.root / "Notes" / "big.mov").is_file() and (t.box.root / ".os" / "config.json").is_file(),
+         "the folder is as it was, the one live place")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy is taken away")
+
+
+@test
+def test_r21_finders_companion_on_a_usb_stick_doesnt_stop_a_move(t: Case) -> None:
+    """Finder's ._.DS_Store, beside .DS_Store on a USB stick, stopped a move
+    the .DS_Store itself didn't (fourth pre-merge review of round 21)."""
+    old, copy = t.box.tmp / "old", t.box.tmp / "copy"
+    for folder in (old, copy):
+        (folder / "Notes").mkdir(parents=True)
+    (copy / "Notes" / "._.DS_Store").write_bytes(b"Finder's own, changed")
+    t.eq(engine._not_in_copy(old, copy, time.time()), "", "the two agree")
+
+
+@test
+def test_r21_a_new_place_whose_name_ends_in_a_space_is_found(t: Case) -> None:
+    """A new place named "Box " was read back as "Box", and the leftover said
+    it couldn't be reached (fifth pre-merge review of round 21)."""
+    t.any_exit()
+    whole = t.box.tmp / "Box "
+    shutil.copytree(t.box.root, whole, symlinks=True)
+    left = t.box.tmp / ".Zenith.moved-999999"
+    (left / ".os").mkdir(parents=True)
+    for f in ("engine.py", "config.json"):
+        shutil.copy2(t.box.root / ".os" / f, left / ".os" / f)
+    (left / ".os" / "config.json").rename(left / ".os" / "config.json.moving")
+    (left / ".os" / "moving-to").write_text(str(whole) + "\n")
+    shutil.copy2(t.box.root / "os", left / "os")
+    said = subprocess.run([str(left / "os"), "check"], cwd=str(left), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("all of it is there" in out, out)
+
+
+@test
+def test_r22_the_way_back_names_only_the_steps_still_to_do(t: Case) -> None:
+    """A move that put config.json back but not the folder's name left a way
+    back whose first step named a config.json.moving no longer there (round
+    22)."""
+    t.any_exit()
+    aside = t.box.tmp / ".Zenith.moved-999999"
+    shutil.copytree(t.box.root, aside, symlinks=True)
+    said = subprocess.run([str(aside / "os"), "check"], cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok(said.returncode != 0 and "stopped partway" in out and "config.json.moving" not in out
+         and "mv " in out, f"it runs in neither, and only the folder's own name is left to put back\n{out}")
+    saved = subprocess.run([str(aside / "os"), "save", "--note", "kept for later"], cwd=str(aside),
+                           env=dict(os.environ, NO_COLOR="1"), capture_output=True, text=True, timeout=60)
+    t.ok(saved.returncode != 0 and not any("kept" in p.name.lower() for p in aside.rglob("*")),
+         f"and nothing is saved there\n{saved.stdout}{saved.stderr}")
+
+
+@test
+def test_r22_a_move_stopped_before_it_says_where_it_went_names_its_copy(t: Case) -> None:
+    """Killed after the copy and before saying where it went, the old place
+    said only how to put it back: the whole, live copy at the new place was
+    never named, and there were two folders (round 22)."""
+    marked = {}
+    real_look = engine._not_in_copy
+
+    def look(old, copy, *a, **k):
+        marked["copied-to"] = engine.read_text(Path(old) / ".os" / "copied-to", 4000).strip()
+        return real_look(old, copy, *a, **k)
+    engine._not_in_copy = look
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        engine._not_in_copy = real_look
+    t.eq(marked.get("copied-to"), str((t.box.tmp / "Elsewhere").resolve()),
+         f"the old place says where the copy is, from when it is set aside ({ended})")
+    t.ok(not (t.box.tmp / "Elsewhere" / ".os" / "copied-to").exists(), "and the copy doesn't")
+    aside = t.box.tmp / ".Zenith.moved-999999"
+    shutil.copytree(t.box.tmp / "Elsewhere", aside, symlinks=True)
+    (aside / ".os" / "config.json").rename(aside / ".os" / "config.json.moving")
+    (aside / ".os" / "copied-to").write_text(str(t.box.tmp / "Elsewhere") + "\n")
+    said = subprocess.run([str(aside / "os"), "check"], cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("mv " in out and str(t.box.tmp / "Elsewhere") in out and "keep it" in out,
+         f"killed there, it names the copy as not the folder\n{out}")
+
+
+@test
+def test_r22_a_move_never_carries_an_old_moves_marks(t: Case) -> None:
+    """A copied-to left by an earlier stopped move went along with the next
+    one, naming a place from that attempt (pre-merge review of round 22)."""
+    (t.box.root / ".os" / "copied-to").write_text("/Volumes/Old/Box\n")
+    (t.box.root / ".os" / "moving-to").write_text("/Volumes/Old/Box\n")
+    seen, ended = _slow_move(t, lambda lock_file: None)
+    there = t.box.tmp / "Elsewhere" / ".os"
+    t.ok(there.is_dir() and not (there / "copied-to").exists() and not (there / "moving-to").exists(),
+         f"the new place starts with neither ({ended})\n{seen.get('said')}")
+
+
+@test
+def test_r22_a_move_not_put_back_still_names_its_copy(t: Case) -> None:
+    """Called off by a change, with config.json put back but not the folder's
+    name, the old place forgot where the copy was (round 22)."""
+    real_rename = os.rename
+
+    def rename(a, b, *x, **k):
+        if ".moved-" in str(a) and Path(b).name == t.box.root.name:
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_rename(a, b, *x, **k)
+
+    def saved(lock_file: Path) -> None:
+        (t.box.root / "Notes" / "walnuts.md").write_text("# Walnuts\n\nsaved meanwhile\n")
+    os.rename = rename
+    try:
+        seen, ended = _slow_move(t, saved)
+    finally:
+        os.rename = real_rename
+    t.ok(ended not in (0, None), f"it is called off ({ended})\n{seen.get('said')}")
+    aside = [p for p in t.box.tmp.iterdir() if ".moved-" in p.name]
+    t.ok(aside and (aside[0] / ".os" / "config.json").is_file()
+         and (aside[0] / ".os" / "copied-to").is_file(), f"the old place still names the copy: {aside}")
+
+
+@test
+def test_r22_a_stop_while_saying_where_a_move_went_calls_it_off(t: Case) -> None:
+    """A Ctrl-C while the old place was being marked was told it was all at
+    the new place, and the whole old place was called a copy that can go
+    (fresh review of round 21's last fix)."""
+    real_write = Path.write_text
+
+    def write_text(self, *a, **k):
+        if self.name == "moving-to":
+            raise KeyboardInterrupt
+        return real_write(self, *a, **k)
+    Path.write_text = write_text
+    stopped = False
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    except KeyboardInterrupt:
+        stopped, seen = True, {"said": ""}
+    finally:
+        Path.write_text = real_write
+    t.ok(stopped, "the stop is passed on")
+    t.ok((t.box.root / ".os" / "config.json").is_file() and (t.box.root / "Notes" / "big.mov").is_file(),
+         "the folder is back as it was")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and the copy is taken away")
+    t.ok(not [p for p in t.box.tmp.iterdir() if "old copy" in p.name or ".moved-" in p.name],
+         "with nothing called an old copy")
+
+
+@test
+def test_r21_a_move_whose_old_place_cant_be_set_aside_at_all_is_called_off(t: Case) -> None:
+    """Neither the folder nor its config.json could be renamed (Windows has
+    them open): the old place stayed live while the move said nothing runs
+    there, and a save landed in it and nowhere else (sixth pre-merge review
+    of round 21)."""
+    def nothing_renames(lock_file: Path) -> None:
+        before = os.rename
+
+        def rename(a, b, *x, **k):
+            if "moved-" in str(b) or "moving" in str(b):
+                raise OSError(errno.EACCES, "in use")
+            return before(a, b, *x, **k)
+        os.rename = rename
+    seen, ended = _slow_move(t, nothing_renames)
+    t.ok(ended not in (0, None) and (t.box.root / ".os" / "config.json").is_file(),
+         f"called off, the folder as it was\n{seen['said']}")
+    t.ok(not (t.box.tmp / "Elsewhere").exists(), "and no second copy is left")
+
+
+@test
+def test_r21_a_place_with_a_line_break_in_its_name_is_refused(t: Case) -> None:
+    """Where a move went is written down one line long (sixth pre-merge
+    review of round 21)."""
+    t.any_exit()
+    said = t.box.run("setup", "--move-to", str(t.box.tmp / "Two\nLines"), expect=None)
+    t.ok(said.returncode != 0 and "line break" in said.stdout + said.stderr, said.stdout + said.stderr)
+    t.ok((t.box.root / ".os" / "config.json").is_file(), "and nothing was moved")
+
+
+@test
+def test_r20_a_move_to_another_disk_works_where_no_lock_can_be_held(t: Case) -> None:
+    """On a drive with no hard links no lock is held, and every move to
+    another disk was refused as taken over (review of the lock timer)."""
+    real_link = os.link
+
+    def link(*a, **k):
+        raise OSError(errno.EPERM, "Operation not permitted")
+    os.link = link
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        os.link = real_link
+    t.ok(ended in (0, None) and (t.box.tmp / "Elsewhere" / "Notes" / "big.mov").is_file(),
+         f"it moved ({ended})")
+
+
+@test
+def test_r20_a_damaged_lock_is_never_taken_for_this_runs_own(t: Case) -> None:
+    """Saying again that the lock was held read a damaged lock file and
+    crashed: `[1]` or nothing at all in it (third pre-merge review of round
+    19)."""
+    z = engine.Zenith(t.box.root)
+    for junk in ("[1]", "", "{"):
+        lock = engine.Lock(z, "test")
+        lock.__enter__()
+        lock.path.write_text(junk)
+        lock.keep_fresh()
+        t.ok(not lock.held, f"with {junk!r} in it, it isn't this run's any more")
+        t.eq(lock.path.read_text(), junk, "and it is left as it was")
+        lock.path.unlink()
+        z.lock_depth = 0
+
+
+@test
+def test_r20_a_brought_shortcut_still_leads_there_after_a_move(t: Case) -> None:
+    """A bring writes a shortcut into this folder by its whole path, and the
+    move it is followed by, last of all, left it leading into the old place,
+    on the same disk or another (third pre-merge review of round 19)."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    old = t.box.tmp / "old stuff"
+    (old / "Recipes").mkdir(parents=True)
+    (old / "Recipes" / "bread.md").write_text("# Bread\n\nflour\n")
+    (old / "Recipes" / "into-home").symlink_to(os.path.relpath(root / "AGENTS.md", old / "Recipes"))
+    t.box.json("setup", "--bring", str(old))
+    shim = t.box.tmp / "xdev"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os, sys\n"
+        "if 'another' in ' '.join(sys.argv):\n"
+        "    real_rename = os.rename\n"
+        "    def rename(a, b, *x, **k):\n"
+        "        if 'moved-' in str(b) or 'moving' in str(b) or 'moved-' in str(a):\n"
+        "            return real_rename(a, b, *x, **k)\n"
+        "        raise OSError(errno.EXDEV, 'Cross-device link')\n"
+        "    os.rename = rename\n", encoding="utf-8")
+    here = root
+    for there in (t.box.tmp / "Same disk", t.box.tmp / "another disk"):
+        said = subprocess.run([str(here / "os"), "setup", "--move-to", str(there)], cwd=str(here),
+                              env=dict(os.environ, ZENITH_HOME=str(here), NO_COLOR="1",
+                                       PYTHONPATH=str(shim)),
+                              capture_output=True, text=True, timeout=180)
+        t.eq(said.returncode, 0, f"moved to {there.name}\n{said.stdout}{said.stderr}")
+        link = next((p for p in there.rglob("into-home") if p.is_symlink()), None)
+        t.ok(link is not None and link.resolve() == (there / "AGENTS.md").resolve(),
+             f"moved to {there.name}, it leads into the new place: {link and os.readlink(link)}")
+        here = there
+
+
+@test
+def test_r20_a_shortcut_that_cant_be_re_aimed_after_a_move_is_kept(t: Case) -> None:
+    """Re-aiming a shortcut after a move took the old one away first, and
+    when the new one couldn't be made, neither was left (second review of
+    round 19's fixes). And one leading out through `..` is left alone."""
+    t.any_exit()
+    if os.name == "nt":
+        return
+    root = t.box.root
+    (root / "Notes").mkdir(exist_ok=True)
+    real = root.resolve()                 # as a bring writes them
+    (root / "Notes" / "to-agents").symlink_to(real / "AGENTS.md")
+    (root / "Notes" / "out").symlink_to(f"{real}/../outside.md")
+    shim = t.box.tmp / "no-links"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, os, sys\n"
+        "if 'move-to' in ' '.join(sys.argv):\n"
+        "    def symlink(*a, **k):\n"
+        "        raise OSError(errno.ENAMETOOLONG, 'File name too long')\n"
+        "    os.symlink = symlink\n", encoding="utf-8")
+    there = t.box.tmp / "deeper" / "Moved"
+    there.parent.mkdir()
+    said = subprocess.run([str(root / "os"), "setup", "--move-to", str(there)], cwd=str(root),
+                          env=dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", PYTHONPATH=str(shim)),
+                          capture_output=True, text=True, timeout=180)
+    t.eq(said.returncode, 0, said.stdout + said.stderr)
+    t.ok((there / "Notes" / "to-agents").is_symlink(), "the shortcut is still there, as it was")
+    t.eq(os.readlink(there / "Notes" / "out"), f"{real}/../outside.md", "one leading outside is left alone")
+    t.eq(sorted(p.name for p in (there / "Notes").iterdir() if ".reaim-" in p.name), [], "nothing left over")
+
+
+@test
 def test_an_addon_is_added_by_name_and_undo_takes_it_out(t: Case) -> None:
     """`./os addon` lists what there is, `./os addon <name>` adds one, and
     `./os undo` takes it out again, its record too."""
@@ -12311,6 +15221,7 @@ def test_an_update_that_stops_partway_can_be_finished(t: Case) -> None:
     """The folder said it had the new version before any skill was copied, so
     an update that stopped partway was never finished: the next one said
     "already has the newest version"."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
     import upgrade
     root = t.box.root
     # Two shipped skills they still have: one that can't be written, and one
@@ -12742,6 +15653,8 @@ def test_update_brings_the_newest_version_and_keeps_theirs(t: Case) -> None:
     t.ok("A newer find step" in (root / ".claude" / "skills" / "find" / "SKILL.md").read_text(),
          "a shipped skill still as released is replaced")
     t.ok("my own to-do sync" in wrap.read_text(), "a shipped skill they edited is kept")
+    t.ok(not re.search(r"the \d+ skills", done.stdout),
+         f"and the count replaced isn't followed by a total that says all of them were\n{done.stdout}")
     aside = list((root / ".os" / "upgrades").glob("*/.claude/skills/wrapup/SKILL.md"))
     t.ok(aside and "A newer wrapup step" in aside[0].read_text(), "with the new one set aside")
     text = agents.read_text()
@@ -13317,7 +16230,9 @@ def test_setup_brings_in_an_older_os_folder_and_a_plain_one(t: Case) -> None:
     (plain / ".hidden").write_text("x")
     got = t.box.json("setup", "--bring", str(plain))
     t.eq(got["kind"], "plain", "any other folder is a plain one")
-    t.eq([s["from"] for s in got["steps"]], ["Taxes"], "what's hidden stays out")
+    t.eq([s["from"] for s in got["steps"] if s["how"] != "left"], ["Taxes"], "what's hidden stays out")
+    t.ok(any(s["from"] == ".hidden" and s["how"] == "left" for s in got["steps"]),
+         "and is said, so they can be told (round 19, 2026-10-29)")
     t.ok(got["steps"][0]["to"].startswith("Notes/"), "and the rest is filed")
 
     # Its rules file was skipped without a word (live test, 2026-10-29).
@@ -13364,6 +16279,50 @@ def test_setup_cuts_a_clones_link_to_the_template(t: Case) -> None:
     kept = t.box.run("checkpoint", "mine now")
     t.ok("kept" in kept.stdout, f"checkpoints go in it from now on\n{kept.stdout}")
     t.eq(t.box.json("setup", "--unlink")["result"], "not linked", "a second time does nothing")
+
+
+@test
+def test_r20_a_worktree_never_changes_the_folder_it_belongs_to(t: Case) -> None:
+    """In a `git worktree`, .git is only a pointer to another folder's
+    history. ./os setup --unlink run in one removed the real folder's GitHub
+    link and marked its history as ./os's own (round 20, 2026-10-29)."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root = t.box.root
+    real = t.box.tmp / "real"
+    shutil.copytree(root, real, symlinks=True)
+    _cloned(real)
+    _git_in(real, "branch", "other")
+    def looks() -> tuple:
+        return (_git_in(real, "remote", "-v").stdout,
+                _git_in(real, "config", "--local", "--list").stdout,
+                _git_in(real, "for-each-ref").stdout)
+    before = looks()
+    shutil.rmtree(root)
+    t.eq(_git_in(real, "worktree", "add", "-q", str(root), "other").returncode, 0, "a worktree")
+    shutil.copytree(real, root, symlinks=True, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(".git"))
+    t.ok((root / ".git").is_file(), "its .git is only a pointer")
+    t.any_exit()
+    t.ok(not t.box.json("setup", "--check")["linked"], "the other folder's link isn't this one's")
+    for words in (("setup", "--unlink"), ("setup", "--unlink", "--fresh"),
+                  ("save", "Remember the boiler service in October"),
+                  ("checkpoint", "mine now"), ("brief",), ("check", "--fix")):
+        t.box.run(*words, expect=None)
+    t.eq(looks(), before, "the folder it belongs to keeps its link, its settings and its branches")
+    t.ok((root / ".git").is_file(), "and the pointer stays where it was")
+    # A .git linked from elsewhere: a checkpoint cleared the other history's
+    # old index.lock by hand (round 20 review).
+    (root / ".git").unlink()
+    (root / ".git").symlink_to(real / ".git")
+    lock = real / ".git" / "index.lock"
+    lock.write_text("")
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    t.box.run("checkpoint", "mine now", expect=None)
+    t.ok(lock.exists(), "a linked .git keeps the other history's files as they were")
+    t.eq(looks(), before, "and its link, settings and branches")
 
 
 @test
@@ -13546,7 +16505,8 @@ def test_work_can_become_a_note_again(t: Case) -> None:
     now = next(i for i in t.box.items() if i["title"] == "Compare boiler brands")
     t.eq(now["kind"], "note", "it is a note")
     t.ok(now["path"].startswith("Notes/"), f"in Notes: {now['path']}")
-    text = (t.box.root / now["path"] / "README.md").read_text()
+    t.ok((t.box.root / now["path"]).is_file(), "as one file, not a folder around one")
+    text = (t.box.root / now["path"]).read_text()
     t.ok("Worcester is quieter" in text, "with every word kept")
     meta = text.split("---")[1]
     t.ok("type: note" in meta and "status:" not in meta, f"and a note's header\n{meta}")
@@ -13660,6 +16620,3712 @@ def test_checkpoint_saves_in_a_history_set_up_by_hand(t: Case) -> None:
     _git_in(root, "checkout", "-q", "--detach")
     off = t.box.run("checkpoint", expect=1).stdout
     t.ok("isn't on a branch" in off, f"nor off a branch\n{off}")
+
+
+@test
+def test_a_clone_can_start_a_history_of_its_own(t: Case) -> None:
+    """Unlinked, a git clone kept the template's whole past under every save
+    of theirs. While nothing of theirs is in it, --fresh starts one of its
+    own instead, and the old one is kept aside, never deleted (2026-10-29)."""
+    if engine.History.no_git():
+        return
+    _as_downloaded(t.box)
+    root = t.box.root
+    _cloned(root)
+    t.box.run()
+    check = t.box.json("setup", "--check")
+    need = next(n for n in check["needs"] if n["code"] == "linked")
+    t.ok(need["fresh"] and need["fix"] == "./os setup --unlink --fresh",
+         f"setup offers a fresh history while nothing of theirs is in it\n{need}")
+    said = t.box.run("checkpoint", expect=1).stdout
+    t.ok("./os setup --unlink --fresh" in said, f"and so does a checkpoint\n{said}")
+    t.box.run("save", "Remember to service the boiler in October")
+    done = t.box.run("setup", "--unlink", "--fresh").stdout
+    t.ok("history of this folder's own" in done, f"it says what it did\n{done}")
+    t.eq(_git_in(root, "remote").stdout.strip(), "", "the link is gone")
+    t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "1",
+         "the new history has one save: the folder as it is now")
+    files = _git_in(root, "show", "--name-only", "--format=", "HEAD").stdout
+    t.ok("oiler" in files and "the template" not in _git_in(root, "log", "--format=%s").stdout,
+         f"with their note in it, and none of the template's past\n{files}")
+    aside = list((root / ".os" / "backups").glob("git-from-the-template-*"))
+    t.ok(aside and (aside[0] / "HEAD").is_file(), "the old history is kept aside")
+    t.ok("git-from-the-template" not in files, "and kept out of the new one")
+    t.eq(engine.History(engine.Zenith(root)).where(), "ours", "the new one is the folder's own")
+    t.box.run("save", "The plumber's number is in the drawer")
+    t.ok("kept" in t.box.run("checkpoint", "next").stdout, "checkpoints go in it")
+    t.eq(_git_in(root, "rev-list", "--count", "HEAD").stdout.strip(), "2", "on top of the first")
+
+    # Once they've saved in a clone themselves, a fresh one would leave
+    # those saves out, so it's refused and plain --unlink offered.
+    other = t.box.tmp / "saved-in"
+    shutil.copytree(root, other, ignore=shutil.ignore_patterns(".git", "backups"))
+    t.box.root = other
+    _cloned(other)
+    (other / "mine.md").write_text("# Mine\n")
+    _git_in(other, "add", "-A")
+    _git_in(other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "mine")
+    need = next(n for n in t.box.json("setup", "--check")["needs"] if n["code"] == "linked")
+    t.ok(not need["fresh"] and need["fix"] == "./os setup --unlink", f"no fresh offer\n{need}")
+    no = t.box.run("setup", "--unlink", "--fresh", expect=1).stdout
+    t.ok("saved in this history yourself" in no and "./os setup --unlink" in no, f"refused, with why\n{no}")
+    t.eq(_git_in(other, "rev-list", "--count", "HEAD").stdout.strip(), "2", "and nothing changed")
+    t.ok("--fresh goes with --unlink" in t.box.run("setup", "--fresh", expect=1).stderr,
+         "--fresh alone says what it goes with")
+    t.box.root = root
+
+
+@test
+def test_a_decision_with_line_breaks_stays_one_line(t: Case) -> None:
+    """`./os decide` wrote line breaks as they came, and one starting
+    `## Next action` became a second next action (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Garden Shed")
+    t.box.run("decide", "garden-shed", "cedar\n## Next action\n- [ ] buy the wood")
+    page = (t.box.root / "Work" / "Garden Shed" / "README.md").read_text()
+    t.eq(len(re.findall(r"^## Next action", page, re.M)), 1, f"still one Next action\n{page}")
+    t.ok("cedar ## Next action - [ ] buy the wood" in page, "every word kept, on one line")
+
+
+@test
+def test_the_same_decision_twice_is_written_once(t: Case) -> None:
+    """Decisions are never rewritten, so a second copy of one could never be
+    taken out (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Garden Shed")
+    t.box.run("decide", "garden-shed", "Cedar, not pine")
+    said = t.box.run("decide", "garden-shed", "cedar, not pine.").stdout
+    page = (t.box.root / "Work" / "Garden Shed" / "README.md").read_text()
+    t.eq(page.lower().count("cedar, not pine"), 1, "it is there once")
+    t.ok("already has that" in said, f"and says so\n{said}")
+
+
+@test
+def test_an_option_left_without_its_value_changes_nothing(t: Case) -> None:
+    """`./os close garden-shed --part` put all of Garden Shed away, and
+    --into, --bring and --move-to with nothing after them did nothing and
+    said nothing (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Garden Shed")
+    for args in (("close", "garden-shed", "--part"), ("back", "garden-shed", "--part"),
+                 ("save", "call the plumber", "--into"), ("setup", "--bring"),
+                 ("setup", "--move-to")):
+        said = t.box.run(*args, expect=2).stderr
+        t.ok("needs something after it" in said, f"{' '.join(args)} says what's missing\n{said}")
+    t.ok((t.box.root / "Work" / "Garden Shed").is_dir(), "Garden Shed is still on the go")
+    t.ok(not any("plumber" in (i["title"] or "").lower() for i in t.box.items()),
+         "and nothing was saved")
+
+
+@test
+def test_held_work_has_a_where_it_stands_to_rewrite(t: Case) -> None:
+    """A session's end rewrites ## Where it stands for held work, and work
+    that was pushed first had none (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Garden Shed")
+    t.box.run("hold", "garden-shed")
+    page = (t.box.root / "Work" / "Garden Shed" / "README.md").read_text()
+    t.eq(len(re.findall(r"^## Where it stands", page, re.M)), 1, f"held work has one\n{page}")
+    t.ok(page.index("## How often") < page.index("## Where it stands") < page.index("## Log"),
+         "where the held blueprint has it")
+    t.box.run("push", "garden-shed")
+    readme = t.box.root / "Work" / "Garden Shed" / "README.md"
+    readme.write_text(readme.read_text().replace("## Next action\n", "## Next action\n- [ ] Order the timber\n"))
+    said = t.box.run("hold", "garden-shed").stdout
+    page = readme.read_text()
+    t.eq(len(re.findall(r"^## Where it stands", page, re.M)), 1, "and never two")
+    t.ok("Order the timber" in page, "an old next action is kept, as their words")
+    t.ok("old next action is still written" in said, f"and hold says it's there\n{said}")
+
+
+@test
+def test_a_name_with_a_colon_makes_a_header_claude_can_read(t: Case) -> None:
+    """`description: My Skill: weekly.` is not a header Claude Code can read
+    (audit, 2026-10-29)."""
+    t.box.run("new", "skill", "Invoice: weekly")
+    t.box.run("new", "helper", "Checker: tidy")
+    skill = next((t.box.root / ".claude" / "skills").glob("invoice*/SKILL.md")).read_text()
+    agent = next((t.box.root / ".claude" / "agents").glob("checker*.md")).read_text()
+    for text in (skill, agent):
+        head = text.split("---")[1]
+        line = next(l for l in head.split("\n") if l.startswith("description:"))
+        value = line.split(": ", 1)[1]
+        t.ok(value.startswith('"') and value.endswith('"'), f"a value with a colon is quoted\n{head}")
+        meta, _ = engine.parse_frontmatter(text)
+        t.ok(":" in str(meta.get("description")), f"and reads back whole: {meta.get('description')!r}")
+
+
+@test
+def test_a_name_keeps_the_quotes_inside_it(t: Case) -> None:
+    """`./os new note 'Read "Dune"'` was called `Read "Dune` (audit, 2026-10-29)."""
+    t.box.run("new", "note", 'Read "Dune"')
+    t.ok(any(i["title"] == 'Read "Dune"' for i in t.box.items()),
+         f"the closing quote stays: {[i['title'] for i in t.box.items()]}")
+    t.box.run("new", "note", '"Plum jam"')
+    t.ok(any(i["title"] == "Plum jam" for i in t.box.items()), "quotes round the whole name still go")
+
+
+@test
+def test_a_name_after_double_dash_is_only_the_name(t: Case) -> None:
+    """`./os new work -- "-x"` kept the `--` in the title (audit, 2026-10-29)."""
+    t.box.run("new", "work", "--", "-5 degrees plan")
+    titles = [i["title"] for i in t.box.items()]
+    t.ok("-5 degrees plan" in titles, f"the -- isn't part of it: {titles}")
+
+
+@test
+def test_setup_says_what_to_do_when_a_checkpoint_is_refused(t: Case) -> None:
+    """Inside a bigger folder's history the setup checkpoint keeps nothing,
+    and /setup never said to use --here (audit, 2026-10-29)."""
+    skill = t.box.root / ".claude" / "skills" / "setup" / "SKILL.md"
+    if in_their_words(skill, t.box):
+        return
+    t.ok("./os checkpoint --here" in skill.read_text(), "the skill names the way round it")
+
+
+@test
+def test_the_record_guard_runs_with_only_homebrew_python(t: Case) -> None:
+    """A Mac with no developer tools and Python from Homebrew: the guard on
+    Log and Decisions has to run on that python, not stay quiet (audit,
+    2026-10-29)."""
+    real = shutil.which("python3")
+    if not real or os.name == "nt":
+        return
+    fake = t.box.tmp / "brew-bin"
+    fake.mkdir()
+    (fake / "python3").write_text(f'#!/bin/sh\ntouch "{t.box.tmp}/brew-ran"\nexec "{real}" "$@"\n')
+    (fake / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (fake / "xcode-select").write_text("#!/bin/sh\nexit 2\n")
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    root = t.box.root
+    t.box.run("new", "work", "Garden Plan")
+    t.box.run("decide", "garden-plan", "Raised beds")
+    readme = root / "Work" / "Garden Plan" / "README.md"
+    call = {"tool_name": "Write", "tool_input": {"file_path": str(readme), "content": "# gone\n"}}
+    proc = subprocess.run(["bash", str(root / ".claude" / "hooks" / "keep-the-record.sh")],
+                          input=json.dumps(call), capture_output=True, text=True,
+                          env=dict(os.environ, PATH=f"{fake}:/bin:/usr/bin", CLAUDE_PROJECT_DIR=str(root)),
+                          timeout=30)
+    t.ok((t.box.tmp / "brew-ran").exists(), "the Homebrew python is the one it runs")
+    t.ok('"ask"' in proc.stdout, f"and the person is asked\n{proc.stdout}{proc.stderr}")
+
+
+@test
+def test_the_record_guard_is_quick_on_one_very_long_command(t: Case) -> None:
+    """A single shell line of a megabyte took the guard past the 10 seconds a
+    hook has (audit, 2026-10-29). It still has to ask when the line would
+    rewrite a file with a decision in it."""
+    root = t.box.root
+    t.box.run("new", "work", "Garden Plan")
+    t.box.run("decide", "garden-plan", "Raised beds")
+    readme = root / "Work" / "Garden Plan" / "README.md"
+    call = {"tool_name": "Bash", "cwd": str(root),
+            "tool_input": {"command": "echo " + "A" * 1_000_000 + f" > '{readme}'"}}
+    began = time.time()
+    proc = subprocess.run(["bash", str(root / ".claude" / "hooks" / "keep-the-record.sh")],
+                          input=json.dumps(call), capture_output=True, text=True,
+                          env=dict(os.environ, CLAUDE_PROJECT_DIR=str(root)), timeout=60)
+    t.ok(time.time() - began < 5, f"it answers in time ({time.time() - began:.1f}s)")
+    t.ok('"ask"' in proc.stdout, f"and still asks before the decision goes\n{proc.stdout[:300]}")
+
+
+@test
+def test_the_launcher_says_when_python_is_too_old(t: Case) -> None:
+    """The engine needs Python 3.9, and an older one failed partway with a
+    Python error instead of saying so (audit, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    fake = t.box.tmp / "old-py"
+    fake.mkdir()
+    for name in ("python3", "python3.13", "python3.12", "python3.11"):
+        (fake / name).write_text('#!/bin/sh\n[ "$1" = --version ] && echo "Python 3.8.10"\nexit 1\n')
+    # /usr/bin/python3, tried last, is then Apple's stand-in and never run.
+    (fake / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (fake / "xcode-select").write_text("#!/bin/sh\nexit 2\n")
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "ZENITH_PYTHON"}
+    env.update(PATH=f"{fake}:/usr/bin:/bin", NO_COLOR="1")
+    proc = subprocess.run(["/bin/bash", str(t.box.root / "os"), "--version"], capture_output=True,
+                          text=True, env=env, timeout=60)
+    t.eq(proc.returncode, 1, "./os stops")
+    t.ok("too old" in proc.stderr and "3.8.10" in proc.stderr and "3.9" in proc.stderr,
+         f"and says which Python it found and what it needs\n{proc.stderr}")
+
+
+@test
+def test_the_launcher_never_runs_apples_stand_in_git(t: Case) -> None:
+    """With the engine gone, ./os puts it back from git. On a Mac without the
+    developer tools /usr/bin/git only offers to install itself, at every
+    start (audit, 2026-10-29)."""
+    if os.name == "nt" or not Path("/usr/bin/git").exists():
+        return
+    real = sys.executable
+    fake = t.box.tmp / "no-tools"
+    fake.mkdir()
+    (fake / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (fake / "xcode-select").write_text("#!/bin/sh\nexit 2\n")
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    (t.box.root / ".os" / "engine.py").write_text("")
+    env = dict(os.environ, PATH=f"{fake}:/usr/bin:/bin", ZENITH_PYTHON=real, NO_COLOR="1",
+               GIT_TRACE=str(t.box.tmp / "git-ran"))
+    subprocess.run(["/bin/bash", str(t.box.root / "os"), "--version"], capture_output=True,
+                   text=True, env=env, timeout=60)
+    t.ok(not (t.box.tmp / "git-ran").exists(), "git is not run")
+
+
+@test
+def test_a_note_made_work_and_back_is_one_file_again(t: Case) -> None:
+    """A note pushed into work and turned back was a folder around one file
+    (audit, 2026-10-29)."""
+    t.box.run("new", "note", "Pasta recipe")
+    t.box.run("push", "pasta-recipe")
+    said = t.box.run("note", "pasta-recipe").stdout
+    hint = re.search(r"\./os push (\S+)", said).group(1)
+    t.eq(hint, "pasta-recipe", f"the way back names it as it's typed\n{said}")
+    now = next(i for i in t.box.items() if i["title"] == "Pasta recipe")
+    t.ok((t.box.root / now["path"]).is_file(), f"one file: {now['path']}")
+    t.ok(not any(p.is_dir() and "pasta" in p.name.lower() for p in (t.box.root / "Notes").iterdir()),
+         "with no folder left behind")
+    t.box.run("undo")
+    back = next(i for i in t.box.items() if i["title"] == "Pasta recipe")
+    t.ok(back["path"].startswith("Work/"), f"undo makes it work again: {back['path']}")
+
+
+@test
+def test_undo_after_a_bring_names_the_bring(t: Case) -> None:
+    """Undo after --bring named the last thing it put away, and counted only
+    that (audit, 2026-10-29)."""
+    old = _old_layout(t.box.tmp)
+    t.box.json("setup", "--bring", str(old))
+    said = t.box.run("undo").stdout
+    t.ok("the last 'bring in" in said, f"undo names the bring, not one put-away\n{said}")
+    count = int(re.search(r"— (\d+) changes? reversed", said).group(1))
+    listed = len(re.findall(r"undid: (?!\.\.\.)", said))
+    more = re.search(r"\.\.\.and (\d+) more", said)
+    t.eq(listed + (int(more.group(1)) if more else 0), count, f"and the list adds up to its count\n{said}")
+    for gone in ("Work/Novel", "Notes/About me"):
+        t.ok(not (t.box.root / gone).exists(), f"and one undo takes {gone} back out")
+    t.ok(not list((t.box.root / "Archive").rglob("Bike Shed*")), "the put-away work too")
+
+
+@test
+def test_agents_md_lists_the_way_back_out_of_archive(t: Case) -> None:
+    """Rule 1 names `back` as a command that records its moves, and the list of
+    commands left it out (audit, 2026-10-29)."""
+    agents = t.box.root / "AGENTS.md"
+    if in_their_words(agents, t.box):
+        return
+    listed = agents.read_text().split("## The commands", 1)[1].split("## ", 1)[0]
+    t.ok("./os back <name>" in listed, "./os back is in the list of commands")
+
+
+@test
+def test_help_lists_what_agents_md_tells_people_to_type(t: Case) -> None:
+    """The first run says ./os help is everything you can type, and it left
+    out note, words, new helper and setup (audit, 2026-10-29)."""
+    shown = t.box.run("help").stdout
+    for word in ("./os note", "words", "helper", "setup"):
+        t.ok(re.search(rf"\s{re.escape(word)}\s", shown), f"help lists {word}")
+
+
+@test
+def test_every_command_and_option_the_docs_name_is_real(t: Case) -> None:
+    """Skills, helpers, AGENTS.md and the help tell an AI what to type. A
+    command or option that isn't there is refused, and the AI is left to
+    guess (audit, 2026-10-29)."""
+    root = t.box.root
+    # Only what is set out to be typed: the help's command column, and code
+    # in the docs. "every move ./os makes" is a sentence.
+    texts = {"help": "\n".join(l for l in t.box.run("help").stdout.split("\n")
+                               if l.lstrip().startswith("./os"))}
+    for doc in [root / "AGENTS.md", root / "README.md", *(root / ".claude" / "skills").glob("*/*.md"),
+                *(root / ".claude" / "agents").glob("*.md")]:
+        if doc.is_file() and not in_their_words(doc, t.box):
+            text = doc.read_text(encoding="utf-8")
+            code = re.findall(r"(?ms)^```[^\n]*\n(.*?)^```", text)
+            code += re.findall(r"`([^`\n]+)`", re.sub(r"(?ms)^```.*?^```", "", text))
+            texts[doc.relative_to(root).as_posix()] = "\n".join(code)
+    everywhere = {"--root", "--quiet", "--no-color", "--version", "--help"}
+    wrong = []
+    for where, text in texts.items():
+        for m in re.finditer(r"\./os ([a-z][\w-]*)([^`\n·|;&]*)", text):
+            word, rest = m.group(1), re.split(r"\s{2,}", m.group(2))[0]
+            handler = engine.COMMANDS.get(word)
+            if handler is None:
+                wrong.append(f"{where}: ./os {word}")
+                continue
+            known = engine.FLAGS.get(handler.__name__, set())
+            if known is None:
+                continue
+            wrong += [f"{where}: ./os {word} {flag}" for flag in re.findall(r"(?<![\w-])(--[a-z][\w-]*)", rest)
+                      if flag not in known | everywhere]
+    t.eq(sorted(set(wrong)), [], "every ./os command and option they name is one it takes")
+    # Three that named real commands and still sent the AI wrong (audit,
+    # 2026-10-29): a decision with no item was refused by plain save, a card
+    # keeps the file's ending, and held work keeps how often apart.
+    skills = root / ".claude" / "skills"
+    for name in ("decide", "wrapup"):
+        doc = skills / name / "SKILL.md"
+        if not in_their_words(doc, t.box):
+            t.ok("./os save --note" in doc.read_text(), f"/{name} saves a loose decision as a note")
+    save = skills / "save" / "SKILL.md"
+    if not in_their_words(save, t.box):
+        t.ok("<file>.card.md" in save.read_text(), "/save names the card after the whole file")
+    handoff = skills / "handoff" / "SKILL.md"
+    if not in_their_words(handoff, t.box):
+        t.ok("`## How often`" in handoff.read_text(), "/handoff puts how often under its own heading")
+    student = root / ".claude" / "agents" / "student.md"
+    if not in_their_words(student, t.box):
+        t.ok("`## Who to trust` and `## Related`" in student.read_text(),
+             "the student says which of learning.md's headings it leaves out")
+
+
+@test
+def test_a_brief_in_a_new_folder_has_no_welcome_line_above_it(t: Case) -> None:
+    """./os brief is written for the AI, and in a folder nobody had opened it
+    started with the welcome meant for a person (audit, 2026-10-29)."""
+    _as_downloaded(t.box)
+    said = t.box.run("brief").stdout
+    t.ok("Welcome — this folder is yours now" not in said, f"no welcome above the brief\n{said[:400]}")
+
+
+@test
+def test_the_reply_check_uses_their_own_python_first(t: Case) -> None:
+    """plain-words.sh put /usr/bin ahead of their PATH, so Apple's stand-in
+    beat a pyenv or uv python, and on a Mac without the developer tools the
+    check never ran (audit, 2026-10-29)."""
+    real = shutil.which("python3")
+    if not real or os.name == "nt" or not Path("/usr/bin/python3").exists():
+        return
+    mine = t.box.tmp / "pyenv-shims"
+    mine.mkdir()
+    (mine / "python3").write_text(f'#!/bin/sh\ntouch "{t.box.tmp}/mine-ran"\nexec "{real}" "$@"\n')
+    (mine / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (mine / "xcode-select").write_text("#!/bin/sh\nexit 2\n")
+    for f in mine.iterdir():
+        f.chmod(0o755)
+    call = {"hook_event_name": "Stop", "last_assistant_message": "We will leverage synergies."}
+    subprocess.run(["bash", str(t.box.root / ".claude" / "hooks" / "plain-words.sh")],
+                   input=json.dumps(call), capture_output=True, text=True,
+                   env=dict(os.environ, PATH=f"{mine}:/usr/bin:/bin"), timeout=30)
+    t.ok((t.box.tmp / "mine-ran").exists(), "their python3 is the one it runs")
+
+
+@test
+def test_an_exact_title_wins_over_a_handle_it_shares(t: Case) -> None:
+    """"C# notes" and "C++ notes" share the handle c-notes, and
+    `./os close "C# notes"` put C++ Notes away (audit, 2026-10-29)."""
+    t.box.run("new", "work", "C++ notes")
+    t.box.run("new", "work", "C# notes", "--anyway")
+    t.ok("C# NOTES" in t.box.run("show", "C# notes").stdout.upper(), "show opens the one named")
+    t.box.run("close", "C# notes")
+    left = [i["title"] for i in t.box.items() if i["path"].startswith("Work/")]
+    t.ok("C++ notes" in left and "C# notes" not in left, f"close puts that one away, not the other: {left}")
+
+
+@test
+def test_a_later_sort_never_blocks_undoing_a_saved_file(t: Case) -> None:
+    """A saved picture's card had no `updated:`, the next sort stamped one in
+    without recording it, and undo then refused the save as "written in
+    since" (audit, 2026-10-29)."""
+    import zlib, struct
+    def png(path: Path) -> None:
+        chunk = lambda k, d: struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d))
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+                         + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
+    outside = t.box.tmp / "IMG_0042.png"
+    png(outside)
+    t.box.run("save", str(outside))
+    png(t.box.root / "Notes" / "Scan 001.png")
+    t.box.run("sort")
+    t.box.run("undo")
+    said = t.box.run("undo", expect=None)
+    t.ok("written in" not in said.stdout + said.stderr and said.returncode == 0,
+         f"the save is taken back\n{said.stdout}{said.stderr}")
+    t.ok(not list((t.box.root / "Notes").glob("img-0042*")), "picture and card both")
+
+
+@test
+def test_undo_after_a_kept_demo_leaves_nothing_behind(t: Case) -> None:
+    """After `./os demo --keep`, undo put the demo's three back in the
+    staging folder, and check spoke of them from then on. The plain demo said
+    9 changes where undo says 6 (audit, 2026-10-29)."""
+    t.box.run("demo", "--keep")
+    said = t.box.run("undo").stdout
+    incoming = t.box.root / ".os" / "cache" / "incoming"
+    t.eq([p.name for p in incoming.iterdir()] if incoming.exists() else [], [], "nothing is left in staging")
+    t.ok("all good" in t.box.run("check").stdout, "and check is clean")
+    by_undo = int(re.search(r"(\d+) changes? reversed", said).group(1))
+    by_demo = int(re.search(r"all (\d+) changes reversed", t.box.run("demo").stdout).group(1))
+    t.eq(by_demo, by_undo, "the demo counts what it took back the way undo does")
+
+
+@test
+def test_saves_at_the_same_moment_all_keep_their_words(t: Case) -> None:
+    """Two saves in the same second picked the same staging name, and the
+    second wrote over the first: 17 of 200 texts lost (audit, 2026-10-29)."""
+    env = dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1")
+    t.box.run()
+    for round_ in range(4):
+        runs = [subprocess.Popen([str(t.box.root / "os"), "save", f"Shopping list\nitem-{round_}-{i}"],
+                                 cwd=str(t.box.root), env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE) for i in range(8)]
+        for r in runs:
+            r.communicate(timeout=180)
+    t.box.run("sort", expect=None)
+    found = set()
+    for p in t.box.root.rglob("*.md"):
+        if ".git" not in p.parts:
+            found |= set(re.findall(r"item-\d-\d", p.read_text(encoding="utf-8", errors="replace")))
+    missing = sorted({f"item-{r}-{i}" for r in range(4) for i in range(8)} - found)
+    t.eq(missing, [], "every one of the 32 is somewhere in the folder")
+
+
+@test
+def test_undo_beside_another_chats_save_takes_back_what_it_says(t: Case) -> None:
+    """Undo looked at the newest step before taking the lock. Another chat's
+    save could land in between, and undo then took that back while saying it
+    had undone this chat's own (audit, 2026-10-29). Here the other chat's save
+    lands at that exact moment, every time."""
+    import contextlib, io
+    root = t.box.root
+    base = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    t.box.run()
+    subprocess.run([str(root / "os"), "save", "Alpha note about the shed roof"], cwd=str(root),
+                   env=dict(base, CLAUDE_CODE_SESSION_ID="chat-a"), capture_output=True, timeout=120)
+    entering = engine.Lock.__enter__
+
+    def enter(self):
+        if self.label == "undo" and not getattr(enter, "done", False):
+            enter.done = True
+            subprocess.run([str(root / "os"), "save", "Gamma note about the fence"], cwd=str(root),
+                           env=dict(base, CLAUDE_CODE_SESSION_ID="chat-b"), capture_output=True, timeout=120)
+        return entering(self)
+    saved = {k: os.environ.get(k) for k in ("ZENITH_HOME", "CLAUDE_CODE_SESSION_ID", "NO_COLOR")}
+    os.environ.update(ZENITH_HOME=str(root), CLAUDE_CODE_SESSION_ID="chat-a", NO_COLOR="1")
+    engine.Lock.__enter__ = enter
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                engine.main(["undo"])
+            except SystemExit:
+                pass
+    finally:
+        engine.Lock.__enter__ = entering
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    said = out.getvalue()
+    there = " ".join(p.read_text(encoding="utf-8", errors="replace") for p in (root / "Notes").rglob("*.md"))
+    t.ok("Gamma note about the fence" in there, f"the other chat's save is still there\n{said}")
+    t.ok("Alpha note" in there or "Alpha" not in said, f"and nothing is said to be undone that wasn't\n{said}")
+
+
+@test
+def test_never_two_runs_inside_the_lock_at_once(t: Case) -> None:
+    """A lock let go of between one run's try and its look was taken for
+    debris and deleted, and that could be the next run's fresh one: two
+    inside at once, 4 rounds in 50 (audit, 2026-10-29). Here the look always
+    finds it gone while another run's new lock is really there."""
+    root = t.box.root
+    t.box.run()
+    z = engine.Zenith(root)
+    lock = engine.Lock(z, "race")
+    real = lock.path
+    real.write_text(json.dumps({"pid": os.getppid(), "at": time.time(), "label": "theirs"}))
+
+    class JustLetGo:
+        unlinked = 0
+        def __fspath__(self): return str(real)
+        def __str__(self): return str(real)
+        def with_name(self, name): return real.with_name(name)
+        def exists(self): return real.exists()
+        def is_symlink(self): return False
+        def read_text(self, *a, **k): raise FileNotFoundError(str(real))
+        def unlink(self, *a, **k):
+            JustLetGo.unlinked += 1
+            real.unlink()
+    lock.path = JustLetGo()
+    was = os.environ.get("ZENITH_LOCK_WAIT")
+    os.environ["ZENITH_LOCK_WAIT"] = "0.5"
+    try:
+        import contextlib, io
+        try:
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                with lock:
+                    pass
+        except SystemExit:
+            pass
+    finally:
+        if was is None:
+            os.environ.pop("ZENITH_LOCK_WAIT", None)
+        else:
+            os.environ["ZENITH_LOCK_WAIT"] = was
+    t.eq(JustLetGo.unlinked, 0, "another run's lock is never deleted as debris")
+    t.ok("theirs" in real.read_text(), "and it is still theirs")
+
+
+@test
+def test_the_same_new_work_three_times_at_once_makes_one(t: Case) -> None:
+    """The check for one already there ran before the lock, so three at
+    once each found none and made three, 25 rounds in 25 (audit, 2026-10-29)."""
+    env = dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1")
+    t.box.run()
+    for n in range(3):
+        runs = [subprocess.Popen([str(t.box.root / "os"), "new", "work", f"Kitchen Renovation {n}"],
+                                 cwd=str(t.box.root), env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE) for _ in range(3)]
+        for r in runs:
+            r.communicate(timeout=180)
+    made = [p.name for p in (t.box.root / "Work").iterdir() if p.name.startswith("Kitchen")]
+    t.eq(len(made), 3, f"one of each: {made}")
+
+
+@test
+def test_one_long_name_on_two_things_asks_which(t: Case) -> None:
+    """A 300-letter name on a piece of work and a note went straight to the
+    work, and the which-one question then printed the name in full (audit,
+    2026-10-29)."""
+    name = " ".join(["Planning the long weekend walking route"] * 8)
+    t.box.run("new", "work", name)
+    t.box.run("new", "note", name, "--anyway")
+    said = t.box.run("show", name, expect=2).stderr
+    t.ok("which one?" in said, f"it asks\n{said[:300]}")
+    t.ok(len(said.split("\n")[0]) < 160, "and the question fits on a line")
+
+
+@test
+def test_a_folder_that_cannot_be_copied_says_so_in_one_line(t: Case) -> None:
+    """A folder with files that couldn't be read printed about a megabyte of
+    Python's list of them, and left a part-copy that the next sort filed as
+    whole (audit, 2026-10-29)."""
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    src = t.box.tmp / "Big Project"
+    src.mkdir()
+    for n in range(40):
+        (src / f"part-{n}.md").write_text(f"# Part {n}\n")
+        (src / f"part-{n}.md").chmod(0)
+    try:
+        said = t.box.run("save", str(src), expect=1)
+    finally:
+        for p in src.iterdir():
+            p.chmod(0o644)
+    text = said.stdout + said.stderr
+    t.ok("couldn't be copied" in text and len(text) < 600, f"one plain line\n{text[:800]}")
+    incoming = t.box.root / ".os" / "cache" / "incoming"
+    t.eq([p.name for p in incoming.iterdir()] if incoming.exists() else [], [], "no part-copy left to be filed")
+
+
+@test
+def test_marks_that_turn_text_round_never_reach_a_folder_name(t: Case) -> None:
+    """A name with right-to-left marks in it made a folder that can show as
+    something else (audit, 2026-10-29)."""
+    t.box.run("new", "work", "‮evil‬ plan")
+    names = [p.name for p in (t.box.root / "Work").iterdir()]
+    t.ok(names and not any(re.search("[‎‏؜‪-‮⁦-⁩]", n) for n in names),
+         f"no direction marks on disk: {names!r}")
+
+
+@test
+def test_undo_says_plainly_what_it_could_and_couldnt_put_back(t: Case) -> None:
+    """Undo said "took back: made Work/X" and "couldn't put this one back:
+    Work/X" together; and after its 20 steps were used up it said "I haven't
+    changed anything yet" (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Garden Shed")
+    extra = t.box.root / "Work" / "Garden Shed" / "Drawings"
+    extra.mkdir()
+    (extra / "plan.md").write_text("# Plan\n")
+    said = t.box.run("undo", "--anyway", expect=None).stdout
+    if "couldn't put this one back: Work/Garden Shed" in said:
+        t.ok("undid: made Work/Garden Shed\n" not in said + "\n",
+             f"not both for the same folder\n{said}")
+    t.box.run("save", "The plumber's number is in the drawer")
+    t.box.run("undo")
+    empty = t.box.run("undo", expect=1).stdout
+    t.ok("haven't changed anything" not in empty and "nothing more to undo" in empty,
+         f"it doesn't say nothing was ever changed\n{empty}")
+
+
+@test
+def test_a_live_note_is_meant_before_a_part_put_away(t: Case) -> None:
+    """After `./os close shed --part Quotes` and `./os note shed`, `./os push
+    shed` said shed was archived: the part put away matched by its folder
+    name before the live note by its handle (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Shed")
+    (t.box.root / "Work" / "Shed" / "Quotes").mkdir()
+    (t.box.root / "Work" / "Shed" / "Quotes" / "a.md").write_text("# Quote\n")
+    t.box.run("close", "shed", "--part", "Quotes")
+    t.box.run("note", "shed")
+    said = t.box.run("push", "shed").stdout
+    t.ok("PUSHING" in said.upper(), f"the live note is pushed\n{said}")
+
+
+@test
+def test_snags_stay_out_of_the_folders_history(t: Case) -> None:
+    """Snags are for the template's maintainer, and a checkpoint put them in
+    the person's own history (audit, 2026-10-29)."""
+    t.ok(".os/snags.json" in (t.box.root / ".gitignore").read_text().split("\n"), ".gitignore names it")
+
+
+@test
+def test_an_unreadable_state_file_locks_nobody_out(t: Case) -> None:
+    """A state.json that couldn't be read stopped every command, check --fix
+    too, and asked them to fix by hand a file only ./os writes (audit,
+    2026-10-29). It's set aside and started again; nothing of theirs goes."""
+    t.box.run("save", "The plumber's number is in the drawer")
+    (t.box.root / ".os" / "state.json").write_text('{"undo": [\n')
+    said = t.box.run()
+    t.ok("couldn't be read" in said.stderr and "untouched" in said.stderr, f"it says so once\n{said.stderr}")
+    t.ok(list((t.box.root / ".os" / "cache").glob("state-unreadable-*.json")), "the old one is kept aside")
+    t.ok("all good" in t.box.run("check").stdout, "and check works")
+    t.ok(any("plumber" in (i["title"] or "").lower() for i in t.box.items()), "their note is still there")
+    # Empty, as a crash mid-write can leave it (check audit, 2026-10-29).
+    (t.box.root / ".os" / "state.json").write_text("")
+    t.ok(t.box.run(expect=None).returncode == 0, "an empty one locks nobody out either")
+    t.ok("all good" in t.box.run("check").stdout, "and check still works")
+
+
+@test
+def test_two_empty_folders_are_not_the_same_thing_twice(t: Case) -> None:
+    """Every empty folder had the same fingerprint, so two were "the same
+    thing in 2 places" (audit, 2026-10-29)."""
+    (t.box.root / "Work" / "Bathroom").mkdir()
+    (t.box.root / "Notes" / "Empty Stuff").mkdir()
+    said = t.box.run("check", expect=None).stdout
+    t.ok("the same thing appears" not in said, f"no duplicate made of nothing\n{said}")
+
+
+@test
+def test_a_folder_list_in_the_wrong_shape_is_said_plainly(t: Case) -> None:
+    """config.json with a folder written as a word, not a block, was a
+    Python crash report (audit, 2026-10-29)."""
+    cfg = t.box.root / ".os" / "config.json"
+    data = json.loads(cfg.read_text())
+    data["buckets"][next(iter(data["buckets"]))] = "oops"
+    cfg.write_text(json.dumps(data))
+    said = t.box.run(expect=1)
+    t.ok("Traceback" not in said.stderr and "git restore .os/config.json" in said.stderr,
+         f"one plain way back\n{said.stderr}")
+
+
+@test
+def test_a_disk_that_says_no_is_never_called_nothing_moved(t: Case) -> None:
+    """Closing work with Work/ read-only said "nothing was left half-moved"
+    after its README had moved (audit, 2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    t.box.run("new", "work", "Fix the Boiler")
+    work = t.box.root / "Work"
+    work.chmod(0o555)
+    try:
+        said = t.box.run("close", "fix-the-boiler", expect=None)
+    finally:
+        work.chmod(0o755)
+    text = said.stdout + said.stderr
+    if "would not let me finish" in text:
+        t.ok("nothing was left half-moved" not in text, f"no promise it can't keep\n{text}")
+        t.ok("can't be written to" in text, f"and says what to look at\n{text}")
+
+
+@test
+def test_closing_a_linked_note_asks_no_hand_fix_for_a_link_put_right(t: Case) -> None:
+    """Every close of a linked note said a file still named where it was, to
+    fix by hand: the old path was found inside the new one (audit, 2026-10-29)."""
+    t.box.run("new", "note", "Lemon cake")
+    cake = next(i for i in t.box.items() if i["title"] == "Lemon cake")["path"]
+    (t.box.root / "Notes" / "baking.md").write_text(f"# Baking\n\n[cake]({Path(cake).name})\n")
+    t.box.run("sort")
+    said = t.box.run("close", "lemon-cake").stdout
+    t.ok("fix them by hand" not in said and "by hand" not in said, f"nothing to fix by hand\n{said}")
+    t.ok("Archive/" in (t.box.root / "Notes" / "baking.md").read_text(), "the link was put right")
+
+
+@test
+def test_close_and_back_say_when_another_chat_has_it(t: Case) -> None:
+    """hold, rename and decide say another chat has claimed a thing; close and
+    back said nothing (audit, 2026-10-29)."""
+    base = dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1")
+    run = lambda chat, *a: subprocess.run([str(t.box.root / "os"), *a], cwd=str(t.box.root),
+                                          env=dict(base, CLAUDE_CODE_SESSION_ID=chat),
+                                          capture_output=True, text=True, timeout=120)
+    run("a", "new", "work", "Paint the Shed")
+    run("a", "claim", "paint-the-shed")
+    said = run("b", "close", "paint-the-shed")
+    t.ok("./os release" in said.stdout + said.stderr, f"close says it's claimed\n{said.stdout}")
+
+
+@test
+def test_back_into_a_name_now_taken_says_so(t: Case) -> None:
+    """Brought back while a new one had the name, it came out as -2 with no
+    word, and two live things shared a name (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Fix the Boiler")
+    t.box.run("close", "fix-the-boiler")
+    t.box.run("new", "work", "Fix the Boiler", "--anyway")
+    said = t.box.run("back", "fix-the-boiler").stdout
+    t.ok("already called" in said and "./os rename" in said, f"it says two share a name\n{said}")
+
+
+@test
+def test_a_taught_word_files_its_plural_too(t: Case) -> None:
+    """Taught "wader", "three waders on the mudflat" went to the catch-all
+    subject (audit, 2026-10-29)."""
+    t.box.run("words", "--new", "birds", "wader")
+    t.box.run("save", "three waders on the mudflat at dawn")
+    item = next(i for i in t.box.items() if "waders" in (i["title"] or "").lower())
+    t.eq(item.get("domain"), "birds", "the plural is filed by the word")
+
+
+@test
+def test_a_link_with_nothing_at_it_is_not_called_no_connection(t: Case) -> None:
+    """A channel name typed wrong came back as "couldn't reach YouTube —
+    check the connection" (audit, 2026-10-29)."""
+    said = [w for f, w in learn._WHY
+            if f in "error: [youtube:tab] @nope: unable to download webpage: http error 404: not found"]
+    t.ok(said and "connection" not in said[0], f"a 404 is a link with nothing at it: {said[:1]}")
+
+
+@test
+def test_refusals_say_what_to_do_in_plain_words(t: Case) -> None:
+    """From the refusal audit (2026-10-29): a junk step on the undo list was
+    a crash report; a missing config said "no Zenith root found"; a busy
+    folder spoke of a pid and a dead lock; config with no folder list said
+    `buckets` block; and a lost engine said only where it should sit."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    root = t.box.root
+    t.box.run("save", "The plumber's number is in the drawer")
+    state = json.loads((root / ".os" / "state.json").read_text())
+    state["undo"].append({"label": "junk"})
+    (root / ".os" / "state.json").write_text(json.dumps(state))
+    said = t.box.run("undo", expect=None)
+    t.ok("Traceback" not in said.stderr, f"a junk undo step is no crash\n{said.stderr[-400:]}")
+
+    cfg = root / ".os" / "config.json"
+    kept = cfg.read_text()
+    cfg.unlink()
+    proc = t.box.run(expect=None)
+    cfg.write_text(kept)
+    t.ok("root found" not in proc.stderr and "git restore .os/config.json" in proc.stderr,
+         f"config gone: plain, with the way back\n{proc.stderr}")
+
+    (root / ".os" / ".lock").write_text(json.dumps({"pid": os.getppid(), "at": time.time(), "label": "save"}))
+    os.environ["ZENITH_LOCK_WAIT"] = "0.3"
+    try:
+        busy = t.box.run("save", "x", expect=None)
+    finally:
+        os.environ.pop("ZENITH_LOCK_WAIT", None)
+    (root / ".os" / ".lock").unlink()
+    t.ok("pid" not in busy.stderr and "rm .os/.lock" in busy.stderr, f"busy: no pid, a line to type\n{busy.stderr}")
+
+    data = json.loads(kept)
+    data.pop("buckets", None)
+    cfg.write_text(json.dumps(data))
+    bad = t.box.run(expect=None)
+    cfg.write_text(kept)
+    t.ok("`buckets`" not in bad.stderr and "git restore .os/config.json" in bad.stderr,
+         f"no folder list: plain\n{bad.stderr}")
+    launcher = (root / "os").read_text()
+    t.ok("Download the template again" in launcher, "a lost engine says how to get it back")
+
+
+@test
+def test_a_backslash_in_a_title_keeps_its_index_row_whole(t: Case) -> None:
+    """`C:\\temp\\` ended in a backslash that undid the `]` closing its link,
+    and `a\\|b` split the row (audit, 2026-10-29)."""
+    for title, want in (("C:\\temp\\", "[C:\\\\temp\\\\]"), ("a\\|b", "a\\\\\\|b")):
+        cell = engine.md_cell(title, link_text=True)
+        t.ok(cell.startswith(want.strip("[]")) and len(re.findall(r"(?<!\\)\|", cell)) == 0
+             and not cell.endswith("\\") or cell.endswith("\\\\"),
+             f"{title!r} stays in its cell: {cell!r}")
+
+
+@test
+def test_back_leaves_no_empty_archive_folders(t: Case) -> None:
+    """Archive/2026/Work stood empty after the only thing in it came back
+    out (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Fix the Boiler")
+    t.box.run("close", "fix-the-boiler")
+    t.box.run("back", "fix-the-boiler")
+    left = [p.relative_to(t.box.root).as_posix() for p in (t.box.root / "Archive").rglob("*")]
+    t.eq(left, [], "nothing left in Archive")
+    t.box.run("undo")
+    t.ok(list((t.box.root / "Archive").rglob("README.md")), "and undo puts it back in Archive")
+
+
+@test
+def test_check_sees_what_the_first_screen_sees(t: Case) -> None:
+    """./os said "2 things dropped in but not filed" while check said all
+    good; an empty folder left by a stopped close was all good too; a file
+    whose header was gone was told to set domain: in it (audit, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    (root / "Work" / "Bathroom").mkdir()
+    (root / "Notes" / "Travel").mkdir()
+    (root / "Notes" / "Travel" / "plan.md").write_text("# Japan\n\nKyoto in April.\n")
+    readme = root / "Work" / "Fix the Boiler" / "README.md"
+    readme.write_text(readme.read_text().split("---", 2)[2].lstrip())
+    said = t.box.run("check", expect=None).stdout
+    t.ok("Notes/Travel  ./os sort" in said and "isn't filed" in said, f"not filed is said\n{said}")
+    t.ok("'Bathroom' is an empty folder" in said, "an empty folder is said")
+    t.ok("'Fix the Boiler' is an empty folder" not in said, "a folder with a page in it isn't empty")
+    t.ok("set `domain:`" not in said and "domain:" not in said.split("Fix the Boiler", 1)[-1][:200],
+         f"no header, no 'set domain:'\n{said}")
+
+
+@test
+def test_check_names_a_shortcut_to_nothing(t: Case) -> None:
+    """A shortcut whose target had gone was never mentioned (audit, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    (t.box.root / "Notes" / "old-link.md").symlink_to(t.box.tmp / "gone.md")
+    said = t.box.run("check", expect=None).stdout
+    t.ok("isn't there any more" in said, f"a broken shortcut is said\n{said}")
+
+
+@test
+def test_a_settings_typo_says_its_line_and_the_way_back(t: Case) -> None:
+    """A broken settings.json was flagged with Python's words and no next
+    step (audit, 2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    (t.box.root / ".claude" / "settings.json").write_text('{\n  "hooks": {\n')
+    said = t.box.run("check", expect=None).stdout
+    t.ok("typo on line" in said and "git restore .claude/settings.json" in said, f"plain, with a way back\n{said}")
+
+
+@test
+def test_a_folder_missing_its_config_never_runs_on_one_around_it(t: Case) -> None:
+    """A copy inside another folder's Work/, with its config gone, ran check
+    on the outer folder (audit, 2026-10-29)."""
+    outer = t.box.root
+    inner = outer / "Work" / "Copy"
+    shutil.copytree(outer / ".os", inner / ".os", ignore=shutil.ignore_patterns("backups", "cache"))
+    shutil.copy2(outer / "os", inner / "os")
+    (inner / ".os" / "config.json").unlink()
+    proc = subprocess.run([str(inner / "os"), "check"], cwd=str(inner), capture_output=True, text=True,
+                          env=dict(os.environ, NO_COLOR="1"), timeout=120)
+    t.ok(proc.returncode != 0 and "config.json is missing in this folder" in proc.stderr,
+         f"it stops and says so\n{proc.stdout[:300]}{proc.stderr}")
+
+
+@test
+def test_learning_says_what_it_left_out(t: Case) -> None:
+    """--forget for three ids said "forgot 1"; a word too long was dropped
+    with no word; "baking" was
+    offered "marketing"; a 5-hour video's stamps read [333:00]; and yt-dlp's
+    "is not a valid URL" came through as it was (audit, 2026-10-29)."""
+    cache = learn.cache_dir(t.box.root)
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "abcdefghijk.txt").write_text("[00:00] hello\n")
+    said = t.box.run("learn", "--forget", "abcdefghijk", "nopenopenop").stdout
+    t.ok("nopenopenop" in said and "not kept" in said, f"--forget names what it couldn't\n{said}")
+    words = t.box.run("words", "food", "levain", "x" * 50).stdout
+    t.ok("left out 1" in words, f"a word left out is said\n{words}")
+    near = t.box.run("new", "learning", "Bread", "--domain", "baking", expect=1).stderr
+    t.ok("did you mean" not in near, f"no far-off guess\n{near}")
+    vtt = t.box.tmp / "long.vtt"
+    vtt.write_text("WEBVTT\n\n05:33:00.000 --> 05:33:02.000\nlate words\n")
+    t.ok("[5:33:00]" in learn.clean_vtt(vtt), "an hour mark has hours")
+    done = subprocess.CompletedProcess([], 1, "", "ERROR: [generic] 'notaurl' is not a valid URL.\n")
+    t.ok("isn't a link" in learn.why_empty(done), "not a link, in plain words")
+
+
+@test
+def test_more_refusals_say_what_to_do(t: Case) -> None:
+    """rename to "!!!" said "called what?"; --move-to . said something was
+    already there; a helper's name taken said "agent already exists"; a
+    settings typo gave Python's char offset (audit, 2026-10-29)."""
+    t.box.run("new", "work", "Garden Shed")
+    said = t.box.run("rename", "garden-shed", "!!!", expect=1).stderr
+    t.ok("no letters or numbers" in said and "called what" not in said, f"rename says why\n{said}")
+    said = t.box.run("setup", "--move-to", ".", expect=1).stderr
+    t.ok("this folder, or inside it" in said, f"--move-to . says what's wrong\n{said}")
+    t.box.run("new", "helper", "Plum Picker")
+    said = t.box.run("new", "helper", "Plum Picker", expect=1).stderr
+    t.ok("agent '" not in said and "pick another name" in said, f"a taken helper name says what to do\n{said}")
+    words = t.box.root / ".os" / "words.json"
+    words.write_text('{\n  "domains": {\n')
+    said = t.box.run(expect=1).stderr
+    t.ok("line" in said and "char" not in said, f"a typo names its line\n{said}")
+
+
+@test
+def test_the_rest_of_the_refusals_say_what_to_do(t: Case) -> None:
+    """The messages reworded in round 5 without a test of their own (audit,
+    2026-10-29): an unreadable words.json, a move the disk refuses, a broken
+    update ZIP, five that had no next step, and update naming hidden files."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    root = t.box.root
+    unix = os.name != "nt" and os.geteuid() != 0
+    if unix:
+        words = root / ".os" / "words.json"
+        words.chmod(0)
+        try:
+            said = t.box.run(expect=1).stderr
+        finally:
+            words.chmod(0o644)
+        t.ok("Errno" not in said and "Get Info" in said, f"words.json unreadable: plain\n{said}")
+        locked = t.box.tmp / "locked"
+        locked.mkdir()
+        locked.chmod(0o555)
+        try:
+            said = t.box.run("setup", "--move-to", str(locked / "Mine"), expect=None)
+        finally:
+            locked.chmod(0o755)
+        if said.returncode:
+            t.ok("Errno" not in said.stderr and "nothing was moved" in said.stderr,
+                 f"a refused move: plain\n{said.stderr}")
+    bad_zip = t.box.tmp / "os.zip"
+    bad_zip.write_bytes(b"not a zip at all")
+    said = t.box.run("update", "--from", str(bad_zip), expect=None)
+    t.ok("readable ZIP" in said.stdout + said.stderr and "./os update" in said.stdout + said.stderr,
+         f"a broken ZIP: what to do\n{said.stdout}{said.stderr}")
+    said = t.box.run("update", "--from", str(t.box.tmp / "nope"), expect=1).stderr
+    t.ok("leave --from off" in said, f"nothing at --from: what to do\n{said}")
+    said = t.box.run("setup", "--move-to", str(t.box.tmp / "no" / "such" / "Mine"), expect=1).stderr
+    t.ok("make it first" in said, f"no folder to move into: what to do\n{said}")
+    z = engine.Zenith(root)
+    for call, want in ((lambda: z.bucket_for_role("nonsense"), "git restore .os/config.json"),
+                       (lambda: z.next_id(next(n for n, s in z.buckets().items() if not s.get("code"))),
+                        "git restore .os/config.json")):
+        import contextlib, io
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                call()
+        except SystemExit:
+            pass
+        except StopIteration:
+            continue
+        t.ok(want in err.getvalue(), f"config gaps say the way back\n{err.getvalue()}")
+    used = t.box.tmp / "used"
+    shutil.copytree(root, used, ignore=shutil.ignore_patterns(".git", "backups", "cache"))
+    (used / "AGENTS.md").write_text((used / "AGENTS.md").read_text() + "\nMy own rule.\n")
+    said = t.box.run("update", "--from", str(used), expect=1).stderr
+    t.ok("program file" in said and "AGENTS.md" not in said, f"a used folder: no hidden paths\n{said}")
+    t.ok(".os/.lock.*" in (root / ".gitignore").read_text().split("\n"), "spare lock files stay out of git")
+
+
+@test
+def test_undo_says_when_an_update_came_after_what_it_takes_back(t: Case) -> None:
+    """Straight after an update, undo took back the close before it without
+    a word, and the update stayed (live test, 2026-10-29)."""
+    t.box.run("save", "The plumber's number is in the drawer")
+    later = (engine._dt.datetime.now() + engine._dt.timedelta(minutes=1)).strftime("%Y-%m-%d-%H%M%S")
+    (t.box.root / ".os" / "backups" / f"before-upgrade-{later}").mkdir(parents=True)
+    said = t.box.run("undo").stdout
+    t.ok("./os update --undo" in said, f"it says the update stays, and how to take that back\n{said}")
+
+
+@test
+def test_v1_plurals_only_for_taught_words(t: Case) -> None:
+    """Plurals on every word made "planes" match "plan", and a note was
+    filed as work (review, 2026-10-29)."""
+    t.box.run("save", "Photos of old planes at the air museum")
+    t.box.run("save", "Ships in the harbour at dawn")
+    for word in ("planes", "ships"):
+        item = next(i for i in t.box.items() if word in (i["title"] or "").lower())
+        t.ok(item["path"].startswith("Notes/"), f"'{word}' is a note: {item['path']}")
+
+
+@test
+def test_v2_note_keeps_a_file_put_in_while_it_waits(t: Case) -> None:
+    """./os note decided before the lock that the folder held only its page,
+    and deleted a file put in while it waited (review, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "note", "Cake recipe")
+    t.box.run("push", "cake-recipe")
+    folder = root / "Work" / "Cake Recipe"
+    (root / ".os" / ".lock").write_text(json.dumps({"pid": os.getppid(), "at": time.time(), "label": "x"}))
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1", ZENITH_LOCK_WAIT="30")
+    waiting = subprocess.Popen([str(root / "os"), "note", "cake-recipe"], cwd=str(root), env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(1.0)
+    (folder / "draft.txt").write_text("my draft\n")
+    (root / ".os" / ".lock").unlink()
+    waiting.communicate(timeout=120)
+    t.ok(list(root.rglob("draft.txt")), "a file put in while it waited is kept")
+
+
+@test
+def test_v3_a_state_file_that_cant_be_kept_aside_is_never_reset(t: Case) -> None:
+    """With no room to keep a copy, a broken state.json was reset anyway and
+    the undo list lost, with no word (review, 2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    root = t.box.root
+    cache = root / ".os" / "cache"
+    cache.mkdir(exist_ok=True)
+    (root / ".os" / "state.json").write_text("{ broken")
+    cache.chmod(0o555)
+    try:
+        said = t.box.run(expect=None)
+    finally:
+        cache.chmod(0o755)
+    t.ok(said.returncode != 0 and (root / ".os" / "state.json").read_text() == "{ broken",
+         f"not kept aside, so not reset\n{said.stderr}")
+    # One that can't be opened at all: see test_w2.
+
+
+@test
+def test_v4_a_decision_made_again_after_a_change_of_mind_is_written(t: Case) -> None:
+    """"Use the plumber", "not after all", then "use the plumber" again was
+    refused as already there (review, 2026-10-29)."""
+    t.box.run("new", "work", "Bathroom")
+    for words in ("Use the plumber", "Not the plumber after all", "Use the plumber"):
+        t.box.run("decide", "bathroom", words)
+    page = (t.box.root / "Work" / "Bathroom" / "README.md").read_text()
+    t.eq(page.count("Use the plumber"), 2, "written again")
+    said = t.box.run("decide", "bathroom", "Use the plumber").stdout
+    t.ok("already has that" in said, "but not twice in a row")
+
+
+@test
+def test_v5_a_save_never_leaves_an_empty_note(t: Case) -> None:
+    """The staging name was claimed empty, then written: a sort in between
+    filed an empty note (review, 2026-10-29). It's claimed with the words in."""
+    root = t.box.root
+    t.box.run()
+    creator = engine.Creator(engine.Zenith(root))
+    stage = creator.stage()
+    empty_claims = []
+    writing = engine.write_text
+
+    def watch(path, *a, **k):
+        # Writing into a name already on disk and empty is the old claim.
+        p = Path(path)
+        if p.parent == stage and not p.name.startswith(".") and p.exists() and p.stat().st_size == 0:
+            empty_claims.append(p.name)
+        return writing(path, *a, **k)
+    engine.write_text = watch
+    try:
+        landed = creator.capture("Buy milk on the way home")
+    finally:
+        engine.write_text = writing
+    t.eq(empty_claims, [], "the name is never on disk empty")
+    t.ok("Buy milk" in landed.read_text(), "the claimed name holds the words")
+    t.eq([p.name for p in stage.iterdir() if p.name.startswith(".capture-")], [], "and no spare is left")
+
+
+@test
+def test_v6_a_bring_counts_only_words_this_folder_lacks(t: Case) -> None:
+    """Both folders taught "wader", and bring said 1 word was left behind
+    (review, 2026-10-29)."""
+    older = t.box.tmp / "older"
+    (older / ".os").mkdir(parents=True)
+    (older / "os").write_text("#!/bin/sh\n")
+    (older / "Notes").mkdir()
+    (older / "Notes" / "a.md").write_text("# A\n")
+    t.box.run("words", "--new", "birds", "wader")
+    (older / ".os" / "words.json").write_text(json.dumps({"domains": {"birds": {"keywords": [], "learned": ["wader"]}}}))
+    left = {s["from"] for s in t.box.json("setup", "--bring", str(older), "--dry-run")["steps"] if s["how"] == "left"}
+    t.ok(".os/words.json" not in left, f"nothing said left behind: {left}")
+
+
+@test
+def test_v7_a_lock_let_go_of_is_taken_even_with_no_wait(t: Case) -> None:
+    """With ZENITH_LOCK_WAIT=0, a lock let go of between tries was called
+    busy (review, 2026-10-29)."""
+    root = t.box.root
+    t.box.run()
+    lock = engine.Lock(engine.Zenith(root), "quick")
+    real = lock.path
+    tries = {"n": 0}
+
+    class GoneOnce:
+        def __fspath__(self): return str(real)
+        def with_name(self, name): return real.with_name(name)
+        def exists(self): return real.exists()
+        def unlink(self, *a, **k): real.unlink()
+        def read_text(self, *a, **k):
+            tries["n"] += 1
+            raise FileNotFoundError(str(real))
+    # Taken on the first try's link, a lock of someone else's was there; by
+    # the look, it was gone.
+    real.write_text(json.dumps({"pid": os.getppid(), "at": time.time(), "label": "theirs"}))
+    linked = {"n": 0}
+    link = os.link
+
+    def link_once(src, dst):
+        linked["n"] += 1
+        if linked["n"] == 1:
+            raise FileExistsError(str(dst))
+        real.unlink(missing_ok=True)
+        return link(src, dst)
+    lock.path = GoneOnce()
+    was = os.environ.get("ZENITH_LOCK_WAIT")
+    os.environ["ZENITH_LOCK_WAIT"] = "0"
+    engine.os.link = link_once
+    import contextlib, io
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                with lock:
+                    got = True
+            except SystemExit:
+                got = False
+    finally:
+        engine.os.link = link
+        if was is None:
+            os.environ.pop("ZENITH_LOCK_WAIT", None)
+        else:
+            os.environ["ZENITH_LOCK_WAIT"] = was
+        real.unlink(missing_ok=True)
+    t.ok(got, "it tries again and takes it")
+
+
+@test
+def test_v8_a_caption_404_is_not_a_missing_link(t: Case) -> None:
+    """A 404 for one caption track was said as "nothing is at that link"
+    (review, 2026-10-29)."""
+    done = subprocess.CompletedProcess([], 1, "", "WARNING: Unable to download video subtitles for 'en': HTTP Error 404: Not Found\n")
+    t.ok("nothing is at that link" not in learn.why_empty(done), "a caption 404 isn't a missing link")
+    page = subprocess.CompletedProcess([], 1, "", "ERROR: [youtube:tab] @nope: Unable to download webpage: HTTP Error 404: Not Found\n")
+    t.ok("nothing is at that link" in learn.why_empty(page), "a page 404 is")
+
+
+@test
+def test_v10_the_reply_check_never_looks_in_the_current_folder_first(t: Case) -> None:
+    """With PATH empty, "$PATH:..." began with ":" — the current folder.
+    It can't happen as things are: with no PATH the hook stops at `dirname`
+    before that line. This keeps it so if that ever changes (review,
+    2026-10-29)."""
+    if os.name == "nt":
+        return
+    here = t.box.tmp / "cwd"
+    here.mkdir()
+    (here / "python3").write_text(f'#!/bin/sh\ntouch "{t.box.tmp}/cwd-ran"\n')
+    (here / "python3").chmod(0o755)
+    call = {"hook_event_name": "Stop", "last_assistant_message": "We will leverage synergies."}
+    subprocess.run(["/bin/bash", str(t.box.root / ".claude" / "hooks" / "plain-words.sh")],
+                   input=json.dumps(call), capture_output=True, text=True, cwd=str(here),
+                   env={"PATH": "", "HOME": os.environ.get("HOME", "/")}, timeout=30)
+    t.ok(not (t.box.tmp / "cwd-ran").exists(), "a python3 in the current folder is never run")
+
+
+@test
+def test_w1_a_taught_word_takes_only_its_real_plural(t: Case) -> None:
+    """A taught "plan" still matched "planes" through -es (second review,
+    2026-10-29)."""
+    m = engine.Classifier._matcher
+    for word, text, want in (("plan", "planes overhead", False), ("plan", "two plans", True),
+                             ("spin", "spines", False), ("fish", "fishes", True),
+                             ("berry", "berries", True), ("box", "boxes", True), ("wader", "waders", True)):
+        t.eq(bool(m(word, True).search(text)), want, f"{word} in {text!r}")
+
+
+@test
+def test_w2_an_unreadable_state_file_still_lets_you_look_and_check(t: Case) -> None:
+    """state.json that couldn't be opened stopped every command, check too
+    (second review, 2026-10-29). Now looking and check work, nothing that
+    changes the folder runs, and the file is never written over."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    state = t.box.root / ".os" / "state.json"
+    t.box.run("save", "The plumber's number is in the drawer")
+    before = state.read_bytes()
+    state.chmod(0)
+    try:
+        t.ok(t.box.run(expect=None).returncode == 0, "./os still shows where things stand")
+        said = t.box.run("check", expect=None).stdout
+        t.ok("can't read .os/state.json" in said, f"check says what's wrong\n{said}")
+        refused = t.box.run("save", "x", expect=1).stderr
+        t.ok("Nothing was changed" in refused or "Nothing was saved" in refused, f"a change stops\n{refused}")
+    finally:
+        state.chmod(0o644)
+    t.eq(state.read_bytes(), before, "and the file was never written over")
+
+
+@test
+def test_w3_undo_doesnt_mention_an_update_already_undone(t: Case) -> None:
+    """The update note came even after ./os update --undo (second review,
+    2026-10-29)."""
+    t.box.run("save", "The plumber's number is in the drawer")
+    later = (engine._dt.datetime.now() + engine._dt.timedelta(minutes=1)).strftime("%Y-%m-%d-%H%M%S")
+    backup = t.box.root / ".os" / "backups" / f"before-upgrade-{later}"
+    backup.mkdir(parents=True)
+    (backup / "undo.json").write_text(json.dumps({"undone": engine.today()}))
+    t.ok("./os update --undo" not in t.box.run("undo").stdout, "an undone update isn't mentioned")
+
+
+@test
+def test_w4_a_saves_spare_copy_is_kept_never_thrown_away(t: Case) -> None:
+    """check --fix threw away a save's spare copy as junk: the only copy of
+    words from a save that stopped partway (second review, 2026-10-29)."""
+    t.box.run()
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    stage.mkdir(parents=True, exist_ok=True)
+    (stage / ".capture-999999.tmp~").write_text("---\nsaved: x\n---\n\nRing the dentist on Monday\n")
+    said = t.box.run("check", "--fix", expect=None).stdout
+    t.ok("junk" not in said and "stopped partway" in said, f"kept, and said\n{said}")
+    t.box.run("sort")
+    t.ok(any("dentist" in p.read_text() for p in (t.box.root / "Notes").rglob("*.md"))
+         or any("dentist" in p.read_text() for p in (t.box.root / "Work").rglob("*.md")),
+         "and sort files the words")
+
+
+@test
+def test_w5_a_word_list_typed_as_one_word_is_no_crash(t: Case) -> None:
+    """"learned": "wader" in an old folder's words.json crashed a bring
+    (second review, 2026-10-29)."""
+    older = t.box.tmp / "older"
+    (older / ".os").mkdir(parents=True)
+    (older / "os").write_text("#!/bin/sh\n")
+    (older / "Notes").mkdir()
+    (older / "Notes" / "a.md").write_text("# A\n")
+    (older / ".os" / "words.json").write_text(json.dumps({"domains": {"birds": {"learned": "wader"}}}))
+    said = t.box.run("setup", "--bring", str(older), "--dry-run", expect=None)
+    t.ok("Traceback" not in said.stderr and said.returncode == 0, f"no crash\n{said.stderr[-300:]}")
+
+
+@test
+def test_w6_the_same_decision_twice_is_caught_however_it_was_written(t: Case) -> None:
+    """An undated newest line, or one dated "2026-10-30:", was passed over
+    and the same decision written again (second review, 2026-10-29)."""
+    t.box.run("new", "work", "Bathroom")
+    page = t.box.root / "Work" / "Bathroom" / "README.md"
+    for line in ("- Tile the floor", "- 2026-10-30: Tile the floor"):
+        text = page.read_text()
+        head, rest = text.split("## Decisions", 1)
+        body, after = (rest.split("\n## ", 1) + [""])[:2]
+        page.write_text(head + "## Decisions" + body.rstrip() + "\n" + line + "\n\n## " + after if after
+                        else head + "## Decisions" + body.rstrip() + "\n" + line + "\n")
+        said = t.box.run("decide", "bathroom", "Tile the floor").stdout
+        t.ok("already has that" in said, f"{line!r} counts as the newest\n{said}")
+
+
+@test
+def test_d1_filing_a_helper_never_deletes_what_else_is_in_its_folder(t: Case) -> None:
+    """A folder that read as a helper had its page moved to .claude/agents,
+    then the folder went with everything ignored() covers: CLAUDE.md,
+    Content/, backups (delete audit, 2026-10-29)."""
+    root = t.box.root
+    folder = root / "agent--plum-picker"
+    (folder / "Content").mkdir(parents=True)
+    (folder / "README.md").write_text("---\ntitle: Plum picker\ntype: agent\n---\n\nPicks plums.\n")
+    (folder / "CLAUDE.md").write_text("my own rules\n")
+    (folder / "Content" / "clip-notes.txt").write_text("clip notes\n")
+    t.box.run("sort", expect=None)
+    for name in ("CLAUDE.md", "clip-notes.txt"):
+        t.ok(list(root.rglob(name)), f"{name} is still there")
+
+
+@test
+def test_d2_undo_of_a_saved_folder_keeps_files_that_came_in_since(t: Case) -> None:
+    """Undo of a saved folder judged by dates: a file dragged in kept its old
+    one, and a file written within five seconds, and both were deleted with
+    nothing kept (delete audit, 2026-10-29)."""
+    root = t.box.root
+    trip = t.box.tmp / "Trip"
+    trip.mkdir()
+    (trip / "flights.md").write_text("# Flights\n\nTAP 9 May\n")
+    t.box.run("save", str(trip))
+    saved = next(p for p in (root / "Notes").iterdir() if p.is_dir() and "trip" in p.name.lower())
+    (saved / "hotel.md").write_text("# Hotel\n")
+    old = saved / "receipt.md"
+    old.write_text("old receipt\n")
+    os.utime(old, (1704067200, 1704067200))
+    asked = t.box.run("undo", expect=1).stdout
+    t.ok("written in" in asked, f"undo asks first\n{asked}")
+    # Not "nothing has changed", which read as "the folder hasn't" (2026-10-29).
+    t.ok("left everything as it is" in asked and "nothing has changed" not in asked,
+         f"and says plainly it left things alone\n{asked}")
+    t.box.run("undo", "--anyway")
+    kept = {p.name for p in (root / ".os" / "cache" / "undo-kept").rglob("*.md")}
+    t.ok({"hotel.md", "receipt.md"} <= kept, f"both are kept: {kept}")
+
+
+@test
+def test_d4_a_card_whose_file_moved_away_is_never_deleted(t: Case) -> None:
+    """A card left in a group after its file was moved by hand was deleted
+    with the group, description and all (delete audit, 2026-10-29)."""
+    root = t.box.root
+    group = root / "Notes" / "Receipts"
+    group.mkdir()
+    (group / engine.CATEGORY_MARKER).write_text("")
+    (group / "scan.pdf.card.md").write_text("---\ntitle: Scan\n---\n\nMY OWN DESCRIPTION\n")
+    t.box.run("sort", expect=None)
+    t.ok(any("MY OWN DESCRIPTION" in p.read_text() for p in root.rglob("*.card.md")),
+         "the card and what they wrote on it are kept")
+
+
+@test
+def test_d5_turning_a_long_note_into_held_work_keeps_every_word(t: Case) -> None:
+    """./os hold on a note read it through a 400,000-character cap and wrote
+    it back: a 574 KB note lost its end (delete audit, 2026-10-29)."""
+    root = t.box.root
+    note = root / "Notes" / "big-diary.md"
+    note.write_text("# Big Diary\n\n" + "".join(f"line {i} of my long diary with words\n" for i in range(15000))
+                    + "THE LAST LINE\n")
+    t.box.run("sort")
+    t.box.run("hold", "big-diary")
+    t.ok(any("THE LAST LINE" in p.read_text() for p in (root / "Work").rglob("*.md")), "the last line is still there")
+
+
+@test
+def test_d8_check_fix_leaves_footage_and_code_alone(t: Case) -> None:
+    """check --fix took ._ files from Work/Content and code projects, where
+    on an exFAT drive they hold Finder's tags (delete audit, 2026-10-29)."""
+    root = t.box.root
+    content = root / "Work" / "Content"
+    content.mkdir(parents=True)
+    (content / "._clip.mov").write_text("tags")
+    code = root / "Work" / "App"
+    code.mkdir()
+    (code / "package.json").write_text("{}")
+    (code / "._index.js").write_text("tags")
+    t.box.run("check", "--fix", expect=None)
+    t.ok((content / "._clip.mov").exists() and (code / "._index.js").exists(), "both are left")
+
+
+@test
+def test_a_drive_without_hard_links_is_said_once(t: Case) -> None:
+    """With no hard links there's no lock, and two chats saving at once lost
+    4 in 200 (2026-10-29). Whether to run is the owner's call; it's said,
+    once, on stderr so --json stays whole."""
+    root = t.box.root
+    t.box.run()
+    shim = t.box.tmp / "nolink.py"
+    shim.write_text(
+        "import errno, os, sys\n"
+        f"sys.path.insert(0, {str(root / '.os')!r})\n"
+        "import engine\n"
+        "def no(*a, **k):\n"
+        "    raise OSError(errno.EPERM, 'no hard links here')\n"
+        "engine.os.link = no\n"
+        "sys.exit(engine.main(sys.argv[1:]))\n")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    run = lambda *a: subprocess.run([sys.executable, str(shim), *a], cwd=str(root), env=env,
+                                    capture_output=True, text=True, timeout=120)
+    first = run("save", "Ring the dentist on Monday", "--json")
+    t.ok("can't hold ./os's lock" in first.stderr, f"it's said\n{first.stderr}")
+    json.loads(first.stdout)
+    second = run("save", "Buy stamps")
+    t.ok("can't hold ./os's lock" not in second.stderr + second.stdout, "and only once")
+
+
+@test
+def test_x1_undo_of_an_unchanged_saved_folder_says_nothing_and_keeps_nothing(t: Case) -> None:
+    """The folder was compared after undo had already taken out the README
+    sort made in it, so every undo of a saved folder said "written in since"
+    and copied it whole (third review, 2026-10-29)."""
+    root = t.box.root
+    plan = t.box.tmp / "Garden Plan"
+    plan.mkdir()
+    (plan / "plan.md").write_text("# Plan\n\nRaised beds.\n")
+    (plan / "soil.txt").write_text("loam\n")
+    t.box.run("save", str(plan))
+    said = t.box.run("undo").stdout
+    t.ok("written in" not in said, f"no false alarm\n{said}")
+    t.ok(not (root / ".os" / "cache" / "undo-kept").exists(), "and no copy made")
+
+
+@test
+def test_x2_an_unreadable_state_file_stops_a_save_before_anything_is_copied(t: Case) -> None:
+    """The words were copied into staging before the lock refused, and a
+    retry made two; undo said it had never changed anything (third review,
+    2026-10-29)."""
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    root = t.box.root
+    t.box.run()
+    state = root / ".os" / "state.json"
+    state.chmod(0)
+    try:
+        said = t.box.run("save", "thoughts on primer", expect=1).stderr
+    finally:
+        state.chmod(0o644)
+    stage = root / ".os" / "cache" / "incoming"
+    t.eq([p.name for p in stage.iterdir()] if stage.exists() else [], [], "nothing copied into staging")
+    t.ok("Nothing was saved" in said, f"save says so\n{said}")
+
+
+@test
+def test_x3_an_unreadable_state_file_is_said_by_undo_and_the_first_screen(t: Case) -> None:
+    """Undo said "I haven't changed anything yet", and the first screen
+    never named the state file, which held the list undo works from (third
+    review, 2026-10-29)."""
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    t.box.run("save", "The plumber's number is in the drawer")
+    state = t.box.root / ".os" / "state.json"
+    state.chmod(0)
+    try:
+        undo = t.box.run("undo", expect=1).stderr
+        first = t.box.run().stdout
+    finally:
+        state.chmod(0o644)
+    t.ok("haven't changed anything" not in undo and "nothing was undone" in undo, f"undo says why\n{undo}")
+    t.ok("state.json" in first, f"and the first screen names it\n{first[:300]}")
+
+
+@test
+def test_x6_a_spare_of_a_note_already_filed_is_kept_not_deleted(t: Case) -> None:
+    """A save killed between linking and clearing its spare left a second
+    name for a note already filed. Three rounds of clever "already filed"
+    checks each went wrong, the last deleting "ok" because "booking" held it
+    (reviews, 2026-10-29). So a spare is never deleted: it's filed, and two
+    notes beats none."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("save", "Ring the dentist on Monday")
+    note = next(p for b in ("Work", "Notes") if (root / b).exists()
+                for p in (root / b).rglob("*.md") if "dentist" in p.read_text())
+    stage = root / ".os" / "cache" / "incoming"
+    stage.mkdir(parents=True, exist_ok=True)
+    os.link(note, stage / ".capture-999999.tmp~")
+    said = t.box.run("check", "--fix", expect=None).stdout
+    t.ok("cleared" not in said and "stopped partway" in said, f"kept, never cleared\n{said}")
+    t.box.run("sort")
+    t.ok(sum("dentist" in p.read_text() for b in ("Work", "Notes") if (root / b).exists()
+             for p in (root / b).rglob("*.md")) >= 1, "the words are there")
+    t.eq([p.name for p in stage.glob(".capture-*")], [], "and no spare is left behind")
+
+
+@test
+def test_y4_a_spare_beside_its_twin_in_staging_is_never_deleted(t: Case) -> None:
+    """A save killed after linking left its spare beside the staged note it
+    linked to (fourth review, 2026-10-29). Neither is deleted: both are filed."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run()
+    stage = root / ".os" / "cache" / "incoming"
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / "20261029-010101-zebra-crossing.md"
+    staged.write_text("---\nsaved: x\n---\n\nzebra crossing by the school needs repainting\n")
+    os.link(staged, stage / ".capture-999998.tmp~")
+    said = t.box.run("check", "--fix", expect=None).stdout
+    t.ok("cleared" not in said, f"the spare isn't cleared\n{said}")
+    t.box.run("sort")
+    found = [p for b in ("Work", "Notes") if (root / b).exists() for p in (root / b).rglob("*.md")
+             if "zebra crossing" in p.read_text()]
+    t.ok(len(found) >= 1, "the words are filed")
+    t.eq([p.name for p in stage.iterdir()], [], "and nothing is left in staging")
+
+
+@test
+def test_x7_a_taught_word_ending_in_o_takes_es(t: Case) -> None:
+    """"tomato" lost "tomatoes" when plurals were made exact (third review,
+    2026-10-29)."""
+    m = engine.Classifier._matcher
+    t.ok(m("tomato", True).search("three tomatoes") and m("photo", True).search("old photos"), "-oes and -os")
+
+
+@test
+def test_x4_a_folder_past_the_file_limit_is_still_told_apart(t: Case) -> None:
+    """Past 20,000 files the fingerprint was "", and every undo copied the
+    whole folder (78 MB) and said it had changed (third review, 2026-10-29).
+    Now names and sizes: no copy when nothing came in, and a file dragged in
+    with an old date is still caught. The limit is lowered here to 5."""
+    root = t.box.root
+    os.environ["ZENITH_FOLDER_PRINT_CAP"] = "5"
+    try:
+        big = t.box.tmp / "Scans"
+        big.mkdir()
+        for n in range(8):
+            (big / f"page-{n}.txt").write_text(f"page {n}\n")
+        t.box.run("save", str(big))
+        entry = json.loads((root / ".os" / "state.json").read_text())["undo"][-1]
+        t.ok(any(str(st.get("print", "")).startswith("names:") for st in entry["steps"]),
+             "past the limit, the print is names and sizes")
+        said = t.box.run("undo").stdout
+        t.ok("written in" not in said and not (root / ".os" / "cache" / "undo-kept").exists(),
+             f"unchanged: no warning, no copy\n{said}")
+        t.box.run("save", str(big))
+        saved = next(p for p in (root / "Notes").iterdir() if p.is_dir() and "scan" in p.name.lower())
+        old = saved / "receipt.txt"
+        old.write_text("old\n")
+        os.utime(old, (1704067200, 1704067200))
+        t.ok("written in" in t.box.run("undo", expect=1).stdout, "a file dragged in is still caught")
+    finally:
+        os.environ.pop("ZENITH_FOLDER_PRINT_CAP", None)
+
+
+@test
+def test_y1_a_spare_is_cleared_only_when_its_whole_text_is_filed(t: Case) -> None:
+    """"ok" was found inside "booking", and a spare holding it was deleted
+    as already filed (fourth review, 2026-10-29). Only an exact whole-text
+    match counts; anything else is kept."""
+    root = t.box.root
+    t.box.run("save", "call mum tomorrow about the boat trip booking")
+    stage = root / ".os" / "cache" / "incoming"
+    stage.mkdir(parents=True, exist_ok=True)
+    (stage / ".capture-999991.tmp~").write_text("---\nsaved: x\n---\n\ncall mum\n")
+    (stage / ".capture-999992.tmp~").write_text("ok\n")
+    t.box.run("check", "--fix", expect=None)
+    t.box.run("sort", expect=None)
+    words = " ".join(p.read_text() for b in ("Work", "Notes") if (root / b).exists()
+                     for p in (root / b).rglob("*.md"))
+    t.ok("call mum\n" in words or re.search(r"(?m)^call mum$", words), "'call mum' is kept and filed")
+    t.ok(re.search(r"(?m)^ok$", words), "'ok' is kept and filed")
+
+
+@test
+def test_y2_undo_of_a_folder_whose_page_was_edited_takes_it_back_whole(t: Case) -> None:
+    """The README's kept copy was already in undo-kept, the folder's copy
+    failed with "File exists", the folder stayed and the undo was dropped
+    (fourth review, 2026-10-29)."""
+    root = t.box.root
+    src = t.box.tmp / "Recipes"
+    src.mkdir()
+    (src / "lemon.md").write_text("# Lemon cake\n\n200g butter\n")
+    t.box.run("save", str(src))
+    saved = next(p for p in (root / "Notes").iterdir() if p.is_dir() and "recipe" in p.name.lower())
+    (saved / "README.md").write_text((saved / "README.md").read_text() + "\n- my own line\n")
+    said = t.box.run("undo", "--anyway").stdout
+    t.ok(not saved.exists(), f"the folder is taken back\n{said}")
+    t.ok("couldn't put" not in said, f"with nothing failing\n{said}")
+    kept = [p.read_text() for p in (root / ".os" / "cache" / "undo-kept").rglob("*.md")]
+    t.ok(any("my own line" in k for k in kept) and any("200g butter" in k for k in kept), "and both kept")
+
+
+@test
+def test_y3_the_no_lock_warning_is_said_where_someone_sees_it_and_only_once(t: Case) -> None:
+    """The quiet brief at session start took the one warning with stderr
+    thrown away; and a checkpoint, which never saves state, said it every
+    time (fourth review, 2026-10-29)."""
+    root = t.box.root
+    _as_downloaded(t.box)
+    shim = t.box.tmp / "nolink.py"
+    shim.write_text(
+        "import errno, os, sys\n"
+        f"sys.path.insert(0, {str(root / '.os')!r})\n"
+        "import engine\n"
+        "def no(*a, **k):\n"
+        "    raise OSError(errno.EPERM, 'no hard links here')\n"
+        "engine.os.link = no\n"
+        "sys.exit(engine.main(sys.argv[1:]))\n")
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+    run = lambda *a: subprocess.run([sys.executable, str(shim), *a], cwd=str(root), env=env,
+                                    capture_output=True, text=True, timeout=120)
+    run("brief", "--json", "--quiet")         # the session-start hook, first visit
+    said = [run("checkpoint", "x").stderr for _ in range(3)]
+    t.ok("can't hold" in said[0], f"the first time someone can see it, it's said\n{said[0]}")
+    t.ok(not any("can't hold" in w for w in said[1:]), "and checkpoints after don't say it again")
+
+
+@test
+def test_u1_undo_of_a_header_change_puts_back_the_exact_text(t: Case) -> None:
+    """hold, push and decide rewrite one file, and the tests of their undo
+    checked only the status or that a line had gone: an undo that put the words
+    back with trailing spaces, tabs or blank lines tidied away passed all of
+    them (undo rules, 2026-10-29). Undo puts back the very bytes."""
+    root = t.box.root
+    t.box.run("new", "work", "Bathroom Tiles")
+    readme = root / "Work" / "Bathroom Tiles" / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    readme.write_bytes((text.rstrip("\n") + "\n\nMeasured twice:  2.4 m  \n- [ ] grout\t\n\n\n").encode("utf-8"))
+    for step in (("hold", "Bathroom Tiles"), ("push", "Bathroom Tiles"),
+                 ("decide", "Bathroom Tiles", "Matt grey tiles - rules out gloss")):
+        if step[0] == "push":
+            t.box.run("hold", "Bathroom Tiles")
+        before = readme.read_bytes()
+        t.box.run(*step)
+        t.ok(readme.read_bytes() != before, f"`./os {step[0]}` changed the file")
+        t.box.run("undo")
+        t.eq(readme.read_bytes(), before, f"undo of `./os {step[0]}` puts back exactly what it said")
+
+
+@test
+def test_u2_undo_with_no_terminal_never_waits_for_an_answer(t: Case) -> None:
+    """An AI runs ./os with nobody at the keyboard and stdin left open: an
+    undo that asked "sure?" would hang the chat, not refuse. Both a plain undo
+    and one that stops to say a file was written in since must finish on their
+    own (undo rules, 2026-10-29)."""
+    root = t.box.root
+    env = dict(os.environ, ZENITH_HOME=str(root), NO_COLOR="1")
+
+    def undo(*args: str) -> tuple:
+        proc = subprocess.Popen([str(root / "os"), "undo", *args], cwd=str(root), env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        try:
+            proc.wait(timeout=30)          # stdin stays open, as a chat's does
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return None, ""
+        finally:
+            proc.stdin.close()
+        out = proc.stdout.read()
+        t.ok("Traceback (most recent call last)" not in out, f"`./os undo {' '.join(args)}` never crashes\n{out[-1500:]}")
+        return proc.returncode, out
+
+    t.box.run("save", "The gutter bracket on the left side is loose")
+    code, said = undo()
+    t.eq(code, 0, f"a plain undo finishes by itself\n{said}")
+    t.ok("undid:" in said, f"and says what it undid\n{said}")
+
+    t.box.run("save", "The shed key is under the blue pot")
+    note = next(p for b in ("Work", "Notes") for p in (root / b).rglob("*.md")
+                if "blue pot" in p.read_text())
+    with note.open("a", encoding="utf-8") as fh:
+        fh.write("\nMoved it to the hook by the door.\n")
+    code, said = undo()
+    t.eq(code, 1, f"one that stops to ask finishes by itself too\n{said}")
+    t.ok("--anyway" in said and note.exists(), f"saying how to go ahead, with nothing changed\n{said}")
+
+
+@test
+def test_u3_undo_says_how_many_steps_it_keeps_and_keeps_the_oldest_ones_put(t: Case) -> None:
+    """Past its limit undo must stop, say the limit it really has, and leave
+    the steps older than it alone (undo rules, 2026-10-29)."""
+    root = t.box.root
+    cfg = root / ".os" / "config.json"
+    data = json.loads(cfg.read_text())
+    data.setdefault("behaviour", {})["keep_undo_steps"] = 3
+    cfg.write_text(json.dumps(data))
+    words = [f"Garden thought number {n} about the {w}" for n, w in
+             enumerate(("apple tree", "compost bin", "rain barrel", "bean poles", "cold frame"))]
+    for w in words:
+        t.box.run("save", w)
+
+    def there(w: str) -> bool:
+        return any(w in p.read_text(encoding="utf-8", errors="replace")
+                   for b in ("Work", "Notes") for p in (root / b).rglob("*.md"))
+
+    for w in reversed(words[2:]):
+        t.box.run("undo")
+        t.ok(not there(w), f"undo takes back '{w}'")
+    said = t.box.run("undo", expect=1).stdout
+    t.ok("nothing more to undo" in said and "last 3 changes" in said,
+         f"then it stops and says it keeps 3\n{said}")
+    t.ok(there(words[0]) and there(words[1]), "and the two older saves are left where they are")
+
+
+@test
+def test_u4_undo_of_a_huge_saved_folder_keeps_a_file_dragged_in_since(t: Case) -> None:
+    """A saved folder past 20,000 files gets no fingerprint, and undo went back
+    to judging it by dates: a file dragged in from Finder keeps its old date,
+    so a plain ./os undo deleted it with no question and no copy (undo rules,
+    2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    root = t.box.root
+    dump = t.box.tmp / "Photo Dump"
+    dump.mkdir()
+    for i in range(20_001):
+        (dump / f"f{i:05d}.txt").write_text("x")
+    t.box.run("save", str(dump))
+    saved = next(p for b in ("Work", "Notes") for p in (root / b).rglob("Photo Dump") if p.is_dir())
+    diary = saved / "my-diary.md"
+    diary.write_text("Words I wrote into the saved folder.\n")
+    os.utime(diary, (1704067200, 1704067200))       # dragged in: keeps its old date
+    if t.box.run("undo", expect=None).returncode == 1:
+        t.box.run("undo", "--anyway")
+    kept = root / ".os" / "cache" / "undo-kept"
+    t.ok(diary.exists() or (kept.exists() and list(kept.rglob("my-diary.md"))),
+         "the file dragged in since is still there, or kept aside")
+
+
+@test
+def test_u5_undo_after_renaming_the_folder_never_takes_back_the_step_before(t: Case) -> None:
+    """`./os name --name "Studio"` isn't a step, so `./os undo` straight after
+    it left the name as it was and quietly took back the save before it: the
+    same bug ./os words had (undo rules, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("save", "The boiler pressure should sit at 1.5 bar")
+    t.box.run("name", "--name", "Studio")
+    said = t.box.run("undo", expect=None).stdout
+    still = any("1.5 bar" in p.read_text(encoding="utf-8", errors="replace")
+                for b in ("Work", "Notes") for p in (root / b).rglob("*.md"))
+    t.ok(still or "Studio" in said,
+         f"either the save before stays, or undo says it is reaching past the new name\n{said}")
+    # And the name really comes back: config and AGENTS.md as they were.
+    t.ok(json.loads((root / ".os" / "config.json").read_text()).get("name") != "Studio",
+         "the folder's name is put back")
+    t.ok("Studio" not in (root / "AGENTS.md").read_text(), "and AGENTS.md says the old one")
+
+
+@test
+def test_u6_the_count_undo_prints_is_the_lines_it_lists_when_some_stays(t: Case) -> None:
+    """With part of a step left (a folder something was put in since), undo
+    said "1 change reversed" over no "undid:" line at all: the README it took
+    out of that folder was counted and never named (undo rules, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Garden Shed")
+    (root / "Work" / "Garden Shed" / "Drawings").mkdir()
+    (root / "Work" / "Garden Shed" / "Drawings" / "plan.md").write_text("# Plan\n")
+    said = t.box.run("undo", "--anyway", expect=None).stdout
+    got = re.search(r"— (\d+) changes? reversed", said)
+    listed = len(re.findall(r"undid: (?!\.\.\.)", said))
+    more = re.search(r"\.\.\.and (\d+) more", said)
+    t.ok(got is None or int(got.group(1)) == listed + (int(more.group(1)) if more else 0),
+         f"the count is the lines listed\n{said}")
+
+
+@test
+def test_y2b_a_kept_copy_never_writes_over_one_kept_already(t: Case) -> None:
+    """Kept copies merge (fourth review, 2026-10-29). When two kept files
+    share a name, the second lands beside the first as name-2, and the first
+    is untouched."""
+    kept = t.box.tmp / "undo-kept" / "Notes" / "Recipes"
+    kept.mkdir(parents=True)
+    (kept / "README.md").write_text("the README kept first\n")
+    folder = t.box.tmp / "Recipes"
+    (folder / "sub").mkdir(parents=True)
+    (folder / "README.md").write_text("the README in the folder\n")
+    (folder / "sub" / "lemon.md").write_text("200g butter\n")
+    if os.name != "nt":
+        (folder / "link.md").symlink_to("sub/lemon.md")
+    engine.keep_copy(folder, kept)
+    t.eq((kept / "README.md").read_text(), "the README kept first\n", "the first is untouched")
+    t.eq((kept / "README-2.md").read_text(), "the README in the folder\n", "the second lands beside it")
+    t.eq((kept / "sub" / "lemon.md").read_text(), "200g butter\n", "the rest comes whole")
+    if os.name != "nt":
+        t.ok((kept / "link.md").is_symlink(), "a shortcut stays a shortcut")
+
+
+@test
+def test_z2_past_the_file_limit_a_same_size_edit_is_still_caught(t: Case) -> None:
+    """Names and sizes missed "teh" → "the", and undo deleted the edit with
+    no copy (fifth review, 2026-10-29). Modified times are in the print too."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    root = t.box.root
+    os.environ["ZENITH_FOLDER_PRINT_CAP"] = "3"
+    try:
+        src = t.box.tmp / "Pages"
+        src.mkdir()
+        for n in range(5):
+            (src / f"p{n}.txt").write_text(f"teh page {n}\n")
+        t.box.run("save", str(src))
+        saved = next(p for p in (root / "Notes").iterdir() if p.is_dir() and "page" in p.name.lower())
+        time.sleep(0.01)
+        (saved / "p1.txt").write_text("the page 1\n")
+        said = t.box.run("undo", expect=None)
+        t.ok(said.returncode == 1 and "written in" in said.stdout and (saved / "p1.txt").exists(),
+             f"the edit is caught, and kept where it is\n{said.stdout}")
+    finally:
+        os.environ.pop("ZENITH_FOLDER_PRINT_CAP", None)
+
+
+@test
+def test_z3_a_name_that_changes_nothing_makes_no_undo_step(t: Case) -> None:
+    """The same name twice made a step, and undo then said there was nothing
+    left to reverse, as if removed by hand (fifth review, 2026-10-29)."""
+    t.box.run("save", "The boiler pressure should sit at 1.5 bar")
+    t.box.run("name", "--name", "Studio")
+    t.box.run("name", "--name", "Studio")
+    said = t.box.run("undo").stdout
+    t.ok("nothing left to reverse" not in said and "'name'" in said, f"undo takes back the name\n{said}")
+
+
+@test
+def test_z4_a_folder_undo_cant_read_whole_is_left_whole(t: Case) -> None:
+    """A folder with a subfolder undo couldn't read was "kept whole" without
+    it, then half deleted (fifth review, 2026-10-29). Now it stays as it is."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    root = t.box.root
+    src = t.box.tmp / "Pack"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.md").write_text("# A\n")
+    (src / "sub" / "b.md").write_text("# B\n")
+    t.box.run("save", str(src))
+    saved = next(p for p in (root / "Notes").iterdir() if p.is_dir() and "pack" in p.name.lower())
+    (saved / "new.md").write_text("# New\n")
+    (saved / "sub").chmod(0)
+    try:
+        said = t.box.run("undo", "--anyway", expect=None).stdout
+    finally:
+        (saved / "sub").chmod(0o755)
+    for name in ("a.md", "new.md", "sub/b.md"):
+        t.ok((saved / name).exists(), f"{name} is where it was\n{said}")
+
+
+@test
+def test_z6_a_folder_name_is_one_line(t: Case) -> None:
+    """A name with a line break wrote two lines into AGENTS.md (fifth
+    review, 2026-10-29)."""
+    t.box.run("name", "--name", "Two\nLines")
+    agents = (t.box.root / "AGENTS.md").read_text()
+    t.ok("Two\nLines" not in agents and "Two Lines" in agents, "one line")
+
+
+@test
+def test_n1_one_undo_takes_back_a_new_owner_whole(t: Case) -> None:
+    """./os name "Bob" after "Sam" was two undo steps, the About me line and
+    the rest, so one undo left config saying Bob and About me saying Sam
+    (sixth review, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("name", "Sam")
+    t.box.run("name", "Bob")
+    said = t.box.run("undo").stdout
+    t.eq(json.loads((root / ".os" / "config.json").read_text()).get("owner"), "Sam", "the owner is Sam again")
+    about = " ".join(p.read_text() for p in (root / "Notes").rglob("*.md") if "about" in p.name.lower())
+    t.ok("Call me Sam" in about and "Call me Bob" not in about, f"and About me says so\n{about}")
+    t.ok("AGENTS.md" not in said, f"and nothing claims AGENTS.md changed\n{said}")
+
+
+@test
+def test_n2_a_folder_undo_cant_read_stops_undo_before_it_starts(t: Case) -> None:
+    """With a subfolder undo couldn't read, the keep failed halfway, the
+    step was used up, and a retry took back something else (sixth review,
+    2026-10-29). Now it stops first, and the step is still there."""
+    if os.name == "nt" or os.geteuid() == 0:
+        return
+    root = t.box.root
+    src = t.box.tmp / "Pack"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.md").write_text("# A\n")
+    (src / "sub" / "b.md").write_text("# B\n")
+    t.box.run("save", str(src))
+    saved = next(p for p in (root / "Notes").iterdir() if p.is_dir() and "pack" in p.name.lower())
+    (saved / "a.md").write_text("# A\n\nmore\n")
+    before = len(json.loads((root / ".os" / "state.json").read_text())["undo"])
+    (saved / "sub").chmod(0)
+    try:
+        said = t.box.run("undo", "--anyway", expect=1).stdout
+    finally:
+        (saved / "sub").chmod(0o755)
+    t.ok("can't be read" in said and "left everything as it is" in said, f"it says why\n{said}")
+    t.eq(len(json.loads((root / ".os" / "state.json").read_text())["undo"]), before, "the step is still there")
+    t.ok((saved / "README.md").exists(), "and nothing was taken back")
+
+
+@test
+def test_n3_moving_a_picture_never_copies_it_for_undo(t: Case) -> None:
+    """Every rename or close of a picture copied it whole into undo's store
+    (sixth review, 2026-10-29). Only prose is kept that way."""
+    root = t.box.root
+    pic = t.box.tmp / "photo.jpg"
+    pic.write_bytes(b"\xff\xd8\xff" + os.urandom(300_000))
+    t.box.run("save", str(pic))
+    store = root / ".os" / "cache" / "undo"
+    size = lambda: sum(p.stat().st_size for p in store.rglob("*") if p.is_file()) if store.exists() else 0
+    before = size()
+    name = next(i for i in t.box.items() if i["path"].endswith(".jpg"))["id"]
+    t.box.run("rename", name, "Beach Day")
+    t.ok(size() - before < 100_000, f"no copy of the picture ({size() - before} bytes added)")
+
+
+@test
+def test_n4_a_kept_spare_is_filed_under_its_own_words(t: Case) -> None:
+    """A spare kept by check --fix was filed as "Stopped Partway", saying
+    nothing of what was in it (sixth review, 2026-10-29)."""
+    t.box.run()
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    stage.mkdir(parents=True, exist_ok=True)
+    (stage / ".capture-999997.tmp~").write_text("---\nsaved: x\n---\n\nRing the vet about the cat's jabs\n")
+    t.box.run("check", "--fix", expect=None)
+    t.box.run("sort")
+    paths = [i["path"] for i in t.box.items() if "vet" in (i["title"] or "").lower()]
+    t.ok(paths and not any("stopped-partway" in p.lower() for p in paths), f"named by its words: {paths}")
+
+
+@test
+def test_show_says_when_work_has_no_next_action(t: Case) -> None:
+    """show left the heading off when work had no next action, and catchup
+    and tidy had to open the file to find out (live skill runs, 2026-10-29)."""
+    t.box.run("new", "work", "Kitchen Renovation")
+    said = t.box.run("show", "kitchen-renovation").stdout
+    t.ok("none written yet" in said, f"show says so\n{said}")
+    t.box.run("hold", "kitchen-renovation")
+    t.ok("none written yet" not in t.box.run("show", "kitchen-renovation").stdout,
+         "but not for held work, which has none by design")
+
+
+@test
+def test_b1_undo_of_a_sort_puts_back_a_filed_notes_header(t: Case) -> None:
+    """Sort added domain, tags and updated to a note already filed with a
+    header of its own, with no undo step: undo then took back the save before
+    it, or said it had put everything back (snapshot audit, 2026-10-29)."""
+    root = t.box.root
+    t.box.run()
+    note = root / "Notes" / "hand-note.md"
+    before = "---\ntitle: Hand note\ntype: note\n---\n\nMy own words.\n"
+    note.write_text(before)
+    t.box.run("sort")
+    t.ok(note.read_text() != before, "sort did add to its header")
+    t.box.run("undo")
+    t.eq(note.read_text(), before, "and undo puts it back word for word")
+
+
+@test
+def test_b2_undo_of_a_change_to_a_very_big_note_puts_it_back(t: Case) -> None:
+    """Past 10 MB a page was rewritten but never kept: a decision and a close
+    stayed after undo said it took them back (snapshot audit, 2026-10-29)."""
+    root = t.box.root
+    t.box.run("new", "work", "Big Log")
+    page = root / "Work" / "Big Log" / "README.md"
+    page.write_text(page.read_text() + "\n" + ("x" * 100 + "\n") * 110_000)
+    before = page.read_bytes()
+    t.box.run("decide", "big-log", "Keep it all")
+    t.box.run("undo")
+    t.ok(page.read_bytes() == before, "the decision is taken out again")
+
+
+@test
+def test_b3_a_shortcut_page_stays_a_shortcut_and_undo_puts_its_words_back(t: Case) -> None:
+    """A README that was a shortcut to a file in the folder became a plain
+    copy on the first decision, and undo couldn't bring it back (snapshot
+    audit, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    folder = root / "Work" / "Fix the Boiler"
+    real = folder / "real.md"
+    (folder / "README.md").rename(real)
+    (folder / "README.md").symlink_to("real.md")
+    before = real.read_text()
+    t.box.run("decide", "fix-the-boiler", "Replace the valve")
+    t.ok((folder / "README.md").is_symlink(), "it's still a shortcut")
+    t.ok("Replace the valve" in real.read_text(), "and the words went into what it points at")
+    t.box.run("undo")
+    t.eq(real.read_text(), before, "undo puts them back there")
+
+
+def _shortcut_page(t: Case, name: str = "Fix the Boiler") -> tuple:
+    """A work item whose README is a shortcut to real.md beside it."""
+    t.box.run("new", "work", name)
+    folder = t.box.root / "Work" / name
+    real = folder / "real.md"
+    (folder / "README.md").rename(real)
+    (folder / "README.md").symlink_to("real.md")
+    return folder, real
+
+
+@test
+def test_r13_undo_never_writes_through_a_shortcut_folder_now_pointing_elsewhere(t: Case) -> None:
+    """A work folder that is a shortcut, pointed somewhere else after a step:
+    undo wrote the step's old page into whatever folder it pointed at by then
+    (round 13, 2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    t.box.run("hold", "fix-the-boiler")
+    other = t.box.tmp / "other"
+    shutil.move(str(root / "Work" / "Fix the Boiler"), str(t.box.tmp / "first"))
+    other.mkdir()
+    (other / "README.md").write_text("someone else's page\n")
+    (root / "Work" / "Fix the Boiler").symlink_to(other)
+    t.box.run("undo", expect=None)
+    t.box.run("undo", "--anyway", expect=None)
+    t.eq((other / "README.md").read_text(), "someone else's page\n", "the other folder's page is never written")
+
+
+@test
+def test_r13_undo_of_a_new_item_never_removes_a_page_somewhere_else(t: Case) -> None:
+    """Undo of `new work` took the page out of whatever folder the item's
+    folder had been turned into a shortcut to (round 13, 2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    other = t.box.tmp / "other"
+    shutil.move(str(root / "Work" / "Fix the Boiler"), str(t.box.tmp / "first"))
+    other.mkdir()
+    (other / "README.md").write_text("someone else's page\n")
+    (root / "Work" / "Fix the Boiler").symlink_to(other)
+    t.box.run("undo", "--anyway", expect=None)
+    t.ok((other / "README.md").is_file(), "the other folder keeps its page")
+
+
+@test
+def test_r13_undo_never_writes_one_notes_words_over_another(t: Case) -> None:
+    """A shortcut note renamed, then pointed at a different note: undo wrote
+    the first note's old words into the second (eighth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    n = t.box.root / "Notes"
+    t.box.run("new", "note", "Tomatoes")
+    t.box.run("new", "note", "Bread")
+    (n / "alias.md").symlink_to("tomatoes.md")
+    tomato, bread = (n / "tomatoes.md").read_text(), (n / "bread.md").read_text()
+    t.box.run("rename", "alias", "Alias Two")
+    (n / "alias-two.md").unlink()
+    (n / "alias-two.md").symlink_to("bread.md")
+    said = t.box.run("undo", expect=None)
+    t.ok("written in since" not in said.stdout, f"no talk of words written in\n{said.stdout}")
+    t.eq((n / "bread.md").read_text(), bread, "the other note is never written")
+    t.eq((n / "tomatoes.md").read_text(), tomato, "and the note it did write is put back")
+
+
+@test
+def test_r13_undo_puts_back_a_shortcut_it_wrote_over(t: Case) -> None:
+    """A shortcut to a file outside the folder is written over with a plain
+    file, never through; undo then said it had reversed it all and left the
+    plain copy (eighth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    n = t.box.root / "Notes"
+    outside = t.box.tmp / "ext.md"
+    outside.write_text("# Exterior\n\nPaint the gate.\n")
+    (n.mkdir(exist_ok=True))
+    (n / "ext.md").symlink_to(outside)
+    t.box.run("rename", "ext", "Exterior Plan", expect=None)
+    t.eq(outside.read_text(), "# Exterior\n\nPaint the gate.\n", "nothing outside is written")
+    t.box.run("undo", "--anyway", expect=None)
+    links = [p for p in n.iterdir() if p.is_symlink()]
+    t.ok(links and os.readlink(links[0]) == str(outside), f"the shortcut is back: {sorted(p.name for p in n.iterdir())}")
+
+
+@test
+def test_r13_nothing_is_written_through_a_shortcut_into_claude(t: Case) -> None:
+    """A note that was a shortcut to a skill's SKILL.md had a header put into
+    the skill (eighth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    skill = root / ".claude" / "skills" / "catchup" / "SKILL.md"
+    before = skill.read_text()
+    t.box.run("new", "note", "Placeholder")
+    (root / "Notes" / "skill.md").symlink_to(skill)
+    t.box.run("rename", "skill", "My Skill", expect=None)
+    t.eq(skill.read_text(), before, "the skill is untouched")
+
+
+@test
+def test_r13_a_closed_shortcut_still_points_at_its_note(t: Case) -> None:
+    """Closing a note that was a relative shortcut left a shortcut in
+    Archive pointing at nothing (eighth review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    n = t.box.root / "Notes"
+    t.box.run("new", "note", "Tomatoes")
+    (n / "tomato-alias.md").symlink_to("tomatoes.md")
+    t.box.run("close", "Notes/tomato-alias", expect=None)
+    moved = [p for p in (t.box.root / "Archive").rglob("tomato-alias*") if p.is_symlink()]
+    t.ok(moved and moved[0].resolve() == (n / "tomatoes.md").resolve(), f"it still leads to the note: {moved}")
+    t.box.run("undo")
+    t.ok((n / "tomato-alias.md").resolve() == (n / "tomatoes.md").resolve(), "and does after undo too")
+
+
+@test
+def test_r13_a_shortcut_spelled_in_other_letter_case_is_still_inside(t: Case) -> None:
+    """A shortcut naming this folder in other letter case points inside it on
+    a Mac, but was judged outside and written over with a plain copy (eighth
+    review, 2026-10-29)."""
+    root = t.box.root
+    if os.name == "nt" or not Path(str(root).upper()).exists():
+        return      # a disk that tells the cases apart
+    n = root / "Notes"
+    t.box.run("new", "note", "Tomatoes")
+    (n / "alias.md").symlink_to(str(n / "tomatoes.md").upper())
+    t.box.run("decide", "Notes/tomatoes", "Stake them early")
+    t.box.run("rename", "alias", "Alias Two", expect=None)
+    t.ok(any(p.is_symlink() for p in n.iterdir()), f"it's still a shortcut: {sorted(p.name for p in n.iterdir())}")
+
+
+@test
+def test_r13_a_projects_own_notes_folder_is_not_rewritten(t: Case) -> None:
+    """A project with a Notes/ of its own had its links and paths re-aimed at
+    the folder's Notes/ when a note of the same name was closed (sweep review,
+    2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    t.box.run("new", "work", "Fix the Boiler")
+    site = t.box.root / "Work" / "Fix the Boiler" / "site"
+    (site / "Notes").mkdir(parents=True)
+    (site / "Notes" / "tomatoes.md").write_text("own\n")
+    (site / "README.md").write_text("See [own](Notes/tomatoes.md).\n")
+    said = t.box.run("close", "Notes/tomatoes").stdout
+    t.eq((site / "README.md").read_text(), "See [own](Notes/tomatoes.md).\n", "its own link is left alone")
+    t.ok("See [own]" not in said, f"and isn't named as one to fix by hand\n{said}")
+
+
+@test
+def test_r13_a_kept_copy_of_another_folder_is_not_rewritten(t: Case) -> None:
+    """A copy of another folder like this one, kept inside Work, had its
+    notes' paths rewritten, though it keeps its own (sweep review,
+    2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    t.box.run("new", "work", "Old Copy")
+    old = t.box.root / "Work" / "Old Copy"
+    (old / ".os").mkdir()
+    shutil.copy(t.box.root / ".os" / "config.json", old / ".os" / "config.json")
+    (old / "Notes").mkdir()
+    (old / "Notes" / "own.md").write_text("mine: Notes/tomatoes.md\n")
+    t.box.run("close", "Notes/tomatoes")
+    t.eq((old / "Notes" / "own.md").read_text(), "mine: Notes/tomatoes.md\n", "the copy keeps its paths")
+
+
+@test
+def test_r13_a_link_in_backticks_survives_a_rename(t: Case) -> None:
+    """A link shown in backticks is an example (./os check says so), but a
+    rename rewrote it (sweep review, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    g = t.box.root / "Notes" / "garden.md"
+    g.write_text("Write it `[t](tomatoes.md)` like so, and see [t](tomatoes.md).\n")
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    text = g.read_text()
+    t.ok("`[t](tomatoes.md)`" in text, f"the example is left\n{text}")
+    t.ok("[t](red.md)" in text, f"the real link follows\n{text}")
+
+
+@test
+def test_r14_undo_over_a_shortcut_loop_never_crashes(t: Case) -> None:
+    """A page replaced by a shortcut loop after a step: on Python 3.9 to 3.12
+    following it raises RuntimeError, not OSError (eighth review,
+    2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt":
+        return
+    folder = t.box.root / "Work" / "Fix the Boiler"
+    t.box.run("new", "work", "Fix the Boiler")
+    t.box.run("hold", "fix-the-boiler")
+    (folder / "README.md").unlink()
+    (folder / "README.md").symlink_to("loop.md")
+    (folder / "loop.md").symlink_to("README.md")
+    t.box.run("undo", expect=None)
+    t.box.run("undo", "--anyway", expect=None)
+
+
+@test
+def test_r14_the_record_is_never_rewritten_when_something_moves(t: Case) -> None:
+    """A dated line under ## Log or ## Decisions had its link rewritten when
+    the note it named moved. Those two are only ever added to (AGENTS.md rule
+    4), and keep-the-record guards exactly those lines (round 14,
+    2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    t.box.run("new", "work", "Fix the Boiler")
+    page = t.box.root / "Work" / "Fix the Boiler" / "README.md"
+    text = page.read_text()
+    text = text.replace("## Decisions\n", "## Decisions\n- 2026-10-01 · Use [these](../../Notes/tomatoes.md)\n", 1)
+    text = text.replace("## Log\n", "## Log\n- 2026-10-02 · Read [them](../../Notes/tomatoes.md)\n", 1)
+    page.write_text(text)
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    now = page.read_text()
+    t.ok("- 2026-10-01 · Use [these](../../Notes/tomatoes.md)" in now, f"the decision is word for word\n{now}")
+    t.ok("- 2026-10-02 · Read [them](../../Notes/tomatoes.md)" in now, f"and the log line\n{now}")
+
+
+@test
+def test_r14_a_link_in_indented_code_survives_a_rename(t: Case) -> None:
+    """A link in an indented code block is an example, as one in backticks
+    is, and a rename rewrote it (round 14, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    g = t.box.root / "Notes" / "garden.md"
+    g.write_text("Like this:\n\n    [t](tomatoes.md)\n\nand see [t](tomatoes.md).\n\n"
+                 "- a list\n\n    [kept](tomatoes.md)\n")
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    text = g.read_text()
+    t.ok("\n    [t](tomatoes.md)\n" in text, f"the example is left\n{text}")
+    t.ok("see [t](red.md)" in text, f"the real link follows\n{text}")
+    t.ok("    [kept](red.md)" in text, f"and a link inside a list item follows too\n{text}")
+
+
+@test
+def test_r14_a_path_that_is_a_projects_own_is_not_rewritten(t: Case) -> None:
+    """`Notes/tomatoes.md` said in a page whose own folder has that path was
+    rewritten to the folder's Notes as it moved (round 14, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    t.box.run("new", "work", "Fix the Boiler")
+    page = t.box.root / "Work" / "Fix the Boiler" / "README.md"
+    (page.parent / "Notes").mkdir()
+    (page.parent / "Notes" / "tomatoes.md").write_text("own\n")
+    page.write_text(page.read_text().replace("## Why now", "Build reads Notes/tomatoes.md\n\n## Why now", 1))
+    t.box.run("close", "Notes/tomatoes")
+    t.ok("Build reads Notes/tomatoes.md" in page.read_text(), page.read_text())
+
+
+@test
+def test_r14_a_link_with_code_in_its_words_still_follows(t: Case) -> None:
+    """Splitting at backticks cut `[`list`](a.md)` in two, and a rename left
+    it pointing at nothing (ninth review, 2026-10-29)."""
+    t.box.run("new", "note", "Garden Pests")
+    p = t.box.root / "Notes" / "compost.md"
+    p.write_text("[`list`](garden-pests.md) and [pests `x` y](garden-pests.md)\n")
+    t.box.run("rename", "Notes/garden-pests", "Slugs")
+    t.eq(p.read_text(), "[`list`](slugs.md) and [pests `x` y](slugs.md)\n", "both links follow")
+
+
+@test
+def test_r14_a_work_item_with_its_own_git_keeps_its_links_working(t: Case) -> None:
+    """A work item that was a git repo of its own was skipped whole, its own
+    README too, and its links broke on a rename (ninth review, 2026-10-29)."""
+    t.box.run("new", "work", "Fix the Boiler")
+    t.box.run("new", "note", "Soil Test")
+    w = t.box.root / "Work" / "Fix the Boiler"
+    (w / ".git").mkdir()
+    (w / "README.md").write_text((w / "README.md").read_text() + "\n[s](../../Notes/soil-test.md)\n")
+    t.box.run("rename", "Notes/soil-test", "Soil pH")
+    t.ok("soil-ph.md" in (w / "README.md").read_text(), "its README's link follows")
+
+
+def _boiler_page(t: Case) -> Path:
+    t.box.run("new", "note", "Tomatoes")
+    t.box.run("new", "work", "Fix the Boiler")
+    return t.box.root / "Work" / "Fix the Boiler" / "README.md"
+
+
+@test
+def test_r15_code_in_the_record_doesnt_turn_the_rest_of_the_page(t: Case) -> None:
+    """A dated line inside a code block under ## Decisions cut the page in
+    two, the closing fence read as an opening one, and every real link below
+    it was left broken (tenth review, 2026-10-29)."""
+    page = _boiler_page(t)
+    text = page.read_text().replace(
+        "## Decisions\n", "## Decisions\n```\n2026-10-01 out\n[ex](../../Notes/tomatoes.md)\n```\n", 1)
+    page.write_text(text + "\n## See also\n[real](../../Notes/tomatoes.md)\n")
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    now = page.read_text()
+    t.ok("[ex](../../Notes/tomatoes.md)" in now, f"the example in the record is left\n{now}")
+    t.ok("[real](../../Notes/red.md)" in now, f"and the real link below still follows\n{now}")
+
+
+@test
+def test_r15_a_dated_entry_on_two_lines_is_kept_whole(t: Case) -> None:
+    """A dated log entry that ran onto a second line had its first line kept
+    and its second rewritten (tenth review, 2026-10-29)."""
+    page = _boiler_page(t)
+    page.write_text(page.read_text().replace(
+        "## Log\n", "## Log\n- 2026-10-02 · Read [them](../../Notes/tomatoes.md) and then\n"
+        "  [more](../../Notes/tomatoes.md)\n", 1))
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    now = page.read_text()
+    t.ok("  [more](../../Notes/tomatoes.md)" in now, f"the entry's second line is kept\n{now}")
+    said = t.box.run("check", expect=None).stdout
+    t.ok("isn't there" not in said, f"and check doesn't nag about a link nothing may change\n{said}")
+
+
+@test
+def test_r15_a_repo_kept_inside_a_project_is_not_rewritten(t: Case) -> None:
+    """Someone else's repo kept inside a project had its README's paths
+    rewritten, while ./os said it doesn't change those (tenth review,
+    2026-10-29)."""
+    _boiler_page(t)
+    lib = t.box.root / "Work" / "Fix the Boiler" / "vendor" / "thermo-lib"
+    (lib / ".git").mkdir(parents=True)
+    (lib / "README.md").write_text("Reads Notes/tomatoes.md and [t](../../../../Notes/tomatoes.md)\n")
+    t.box.run("close", "Notes/tomatoes")
+    t.eq((lib / "README.md").read_text(), "Reads Notes/tomatoes.md and [t](../../../../Notes/tomatoes.md)\n",
+         "their repo is left as it is")
+
+
+@test
+def test_r15_a_paragraph_after_a_wrapped_list_item_is_not_code(t: Case) -> None:
+    """After a list item wrapped onto a second line, the item's next
+    indented paragraph was read as code and its link left broken (tenth
+    review, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    g = t.box.root / "Notes" / "garden.md"
+    g.write_text("- Buy seeds for the\n  greenhouse this week\n\n    and read [the note](tomatoes.md)\n")
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    t.ok("[the note](red.md)" in g.read_text(), g.read_text())
+
+
+@test
+def test_r15_a_line_of_many_code_spans_is_quick(t: Case) -> None:
+    """A line of 8000 `code` spans took seven seconds to relink (tenth
+    review, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    g = t.box.root / "Notes" / "garden.md"
+    g.write_text("`some code` and " * 8000 + "[t](tomatoes.md)\n")
+    started = time.time()
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    t.ok(time.time() - started < 4, f"took {time.time() - started:.1f}s")
+    t.ok(g.read_text().endswith("[t](red.md)\n"), "and the link follows")
+
+
+@test
+def test_r15_a_shortcut_the_disk_wont_remake_is_never_lost(t: Case) -> None:
+    """Moving a relative shortcut took it out, then made it again pointing
+    the new way: a disk that wouldn't make it lost it (ninth review,
+    2026-10-29)."""
+    if os.name == "nt":
+        return
+    n = t.box.root / "Notes"
+    t.box.run("new", "note", "Tomatoes")
+    (n / "tomato-alias.md").symlink_to("tomatoes.md")
+    shim = t.box.tmp / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno, pathlib\n"
+        "def symlink_to(self, *a, **k):\n"
+        "    raise OSError(errno.EPERM, 'Operation not permitted')\n"
+        "pathlib.Path.symlink_to = symlink_to\n", encoding="utf-8")
+    env = dict(os.environ, ZENITH_HOME=str(t.box.root), NO_COLOR="1", PYTHONPATH=str(shim))
+    subprocess.run([str(t.box.root / "os"), "close", "Notes/tomato-alias"], cwd=str(t.box.root), env=env,
+                   capture_output=True, text=True, timeout=180)
+    links = [p for p in t.box.root.rglob("tomato-alias*") if p.is_symlink()]
+    t.ok(links, "the shortcut is still somewhere")
+
+
+@test
+def test_r16_indented_code_after_a_heading_in_a_list_or_by_tab_is_an_example(t: Case) -> None:
+    """Indented code straight after a heading, code eight spaces into a list
+    item, and a block indented with a tab were all rewritten as if they were
+    links (tenth review, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    g = t.box.root / "Notes" / "garden.md"
+    g.write_text("## Example\n    [a](tomatoes.md)\n\n"
+                 "- an item\n\n        [b](tomatoes.md)\n\n"
+                 "Text.\n\n\t[c](tomatoes.md)\n\n"
+                 "See [real](tomatoes.md).\n")
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    text = g.read_text()
+    for example in ("    [a](tomatoes.md)", "        [b](tomatoes.md)", "\t[c](tomatoes.md)"):
+        t.ok(example in text, f"{example.strip()} is left as an example\n{text}")
+    t.ok("[real](red.md)" in text, f"the real link follows\n{text}")
+
+
+@test
+def test_r17_a_grouped_work_item_with_its_own_git_keeps_its_links_working(t: Case) -> None:
+    """An item with a git history of its own, inside a grouping folder, was
+    skipped whole, and its README's links broke on a rename (round 16 review,
+    2026-10-29)."""
+    t.box.run("new", "note", "Soil Test")
+    group = t.box.root / "Work" / "Garden"
+    w = group / "Fix the Boiler"
+    w.mkdir(parents=True)
+    (group / engine.CATEGORY_MARKER).write_text("")
+    (w / ".git").mkdir()
+    (w / "README.md").write_text("---\ntitle: Fix the Boiler\ntype: work\nstatus: pushing\n---\n\n"
+                                 "# Fix the Boiler\n\n[s](../../../Notes/soil-test.md)\n")
+    t.box.run("rename", "Notes/soil-test", "Soil pH")
+    t.ok("soil-ph.md" in (w / "README.md").read_text(), (w / "README.md").read_text())
+
+
+@test
+def test_r17_a_nested_items_paragraph_is_not_code(t: Case) -> None:
+    """A nested item's paragraph eight spaces in was read as code, because
+    eight spaces counted as code in any list, however deep the item (twelfth
+    review, 2026-10-29)."""
+    t.box.run("new", "note", "Tomatoes")
+    g = t.box.root / "Notes" / "garden.md"
+    g.write_text("- top\n    - nested\n\n        see [b](tomatoes.md)\n\n"
+                 "- item\n\n          [code](tomatoes.md)\n")
+    t.box.run("rename", "Notes/tomatoes", "Red")
+    text = g.read_text()
+    t.ok("see [b](red.md)" in text, f"the nested item's link follows\n{text}")
+    t.ok("          [code](tomatoes.md)" in text, f"code four past an item's words is left\n{text}")
+
+
+@test
+def test_r13_a_shortcut_page_is_followed_without_the_launcher(t: Case) -> None:
+    """Whether a shortcut pointed inside the folder was judged by ZENITH_HOME,
+    which only the launcher sets: run any other way, the shortcut was written
+    over with a plain copy (round 13, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    folder, real = _shortcut_page(t)
+    env = dict(os.environ, NO_COLOR="1")
+    env.pop("ZENITH_HOME", None)
+    subprocess.run([sys.executable, str(t.box.root / ".os" / "engine.py"), "decide", "fix-the-boiler",
+                    "Replace the valve"], cwd=str(t.box.root), env=env, capture_output=True, text=True, timeout=180)
+    t.ok((folder / "README.md").is_symlink(), "it's still a shortcut")
+    t.ok("Replace the valve" in real.read_text(), "and the words went into what it points at")
+
+
+@test
+def test_r13_a_shortcut_into_git_or_os_is_never_written_through(t: Case) -> None:
+    """A page that is a shortcut into .git/ or .os/ had ./os's words written
+    into the file there (round 13, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    folder = root / "Work" / "Fix the Boiler"
+    hidden = root / ".os" / "boiler-page.md"
+    (folder / "README.md").rename(hidden)
+    (folder / "README.md").symlink_to(hidden)
+    before = hidden.read_text()
+    t.box.run("hold", "fix-the-boiler", expect=None)
+    t.eq(hidden.read_text(), before, "nothing is written inside .os/")
+
+
+@test
+def test_r13_decide_on_a_shortcut_note_says_what_is_true(t: Case) -> None:
+    """decide on a note that is a shortcut said it had no header to write
+    into, and sent them to check --fix, which finds nothing (round 13,
+    2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "note", "Fence posts")
+    (root / "Notes" / "Real").mkdir()
+    (root / "Notes" / "fence-posts.md").rename(root / "Notes" / "Real" / "fence-posts.md")
+    (root / "Notes" / "fence-posts.md").symlink_to("Real/fence-posts.md")
+    said = t.box.run("decide", "Notes/fence-posts", "Gravel, not concrete", expect=None)
+    out = said.stdout + said.stderr
+    t.ok("no header" not in out, f"it doesn't say the header is missing\n{out}")
+
+
+@test
+def test_r12_undo_never_writes_through_a_shortcut_now_pointing_outside(t: Case) -> None:
+    """Undo wrote a page's old words through its shortcut, wherever the
+    shortcut pointed by then: one turned to a file outside the folder had that
+    file written over (seventh review, 2026-10-29)."""
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    folder = root / "Work" / "Fix the Boiler"
+    real = folder / "real.md"
+    (folder / "README.md").rename(real)
+    (folder / "README.md").symlink_to("real.md")
+    before = real.read_text()
+    t.box.run("hold", "fix-the-boiler")
+    outside = t.box.tmp / "outside.md"
+    outside.write_text("outside\n")
+    (folder / "README.md").unlink()
+    (folder / "README.md").symlink_to(outside)
+    said = t.box.run("undo", expect=None)
+    t.eq(outside.read_text(), "outside\n", "the file outside is never written")
+    t.eq(real.read_text(), before, "the page it did write is put back")
+    t.ok("by hand" not in said.stdout, f"and it never blames a hand edit\n{said.stdout}")
+
+
+@test
+def test_r12_undo_through_a_shortcut_page_keeps_no_false_copy(t: Case) -> None:
+    """Undo of a step on a shortcut README said words had been written in
+    since, and kept a copy, when nobody had touched it; and words added
+    through the shortcut later were taken out without asking first (round 12
+    live test, 2026-10-29)."""
+    t.any_exit()      # it looks at refusals: some runs exit 1 on purpose
+    if os.name == "nt":
+        return
+    root = t.box.root
+    t.box.run("new", "work", "Fix the Boiler")
+    folder = root / "Work" / "Fix the Boiler"
+    real = folder / "real.md"
+    (folder / "README.md").rename(real)
+    (folder / "README.md").symlink_to("real.md")
+    before = real.read_text()
+    t.box.run("hold", "fix-the-boiler")
+    said = t.box.run("undo").stdout
+    t.ok("written in since" not in said, f"nothing was written in, so nothing is said\n{said}")
+    t.ok(not (root / ".os" / "cache" / "undo-kept").exists(), "and no copy is kept")
+    t.eq(real.read_text(), before, "the page is put back")
+    t.box.run("hold", "fix-the-boiler")
+    with real.open("a") as fh:
+        fh.write("\nA line added after.\n")
+    asked = t.box.run("undo", expect=None)
+    t.ok("A line added after." in real.read_text(), f"undo asks before taking a later line out\n{asked.stdout}")
+
+
+@test
+def test_update_check_says_nothing_but_what_it_found(t: Case) -> None:
+    """AGENTS.md says to pass on every line `./os update --check` prints, and in
+    a folder nobody had opened the first was "Welcome" (audit, 2026-10-29)."""
+    _as_downloaded(t.box)
+    said = t.box.run("update", "--check", expect=None).stdout
+    t.ok("Welcome" not in said, f"no greeting\n{said}")
+
+
+@test
+def test_a_bring_says_what_it_leaves_behind(t: Case) -> None:
+    """An older ./os folder's own helpers and words were left without a word,
+    and the trial run listed a skill the real run then left (audit,
+    2026-10-29)."""
+    older = t.box.tmp / "older"
+    (older / ".os").mkdir(parents=True)
+    (older / "os").write_text("#!/bin/sh\n")
+    (older / "Notes").mkdir()
+    (older / "Notes" / "plums.md").write_text("# Plums\n\nPrune in late winter.\n")
+    (older / ".claude" / "agents").mkdir(parents=True)
+    (older / ".claude" / "agents" / "plum-picker.md").write_text("---\nname: plum-picker\n---\nx\n")
+    (older / ".claude" / "skills" / "jam").mkdir(parents=True)
+    (older / ".claude" / "skills" / "jam" / "SKILL.md").write_text("---\nname: jam\n---\nx\n")
+    (older / ".os" / "words.json").write_text(json.dumps(
+        {"domains": {"orchard": {"keywords": ["plum", "graft"], "learned": []}}}))
+    (t.box.root / ".claude" / "skills" / "jam").mkdir(parents=True)
+    (t.box.root / ".claude" / "skills" / "jam" / "SKILL.md").write_text("---\nname: jam\n---\nmine\n")
+    preview = t.box.json("setup", "--bring", str(older), "--dry-run")
+    left = {s["from"]: s.get("why", "") for s in preview["steps"] if s["how"] == "left"}
+    t.ok("helper" in left.get(".claude/agents/plum-picker.md", ""), f"a helper of theirs is named\n{left}")
+    t.ok("2 words" in left.get(".os/words.json", ""), f"and the words they taught it\n{left}")
+    t.ok(".claude/skills/jam" in left, f"the trial run says a skill here has that name\n{left}")
+    got = t.box.json("setup", "--bring", str(older))
+    t.eq(sorted(s["from"] for s in got["steps"] if s["how"] == "left"), sorted(left),
+         "and the real run leaves the same things")
+
+
+@test
+def test_r23_an_update_never_takes_numbers_off_names_of_theirs(t: Case) -> None:
+    """With .os/shipped.json damaged, or a list with no stamp, update took
+    `1.10 ` off the front of their names and every `id:` out of their headers,
+    and nothing could put them back (seventeenth review, round 22)."""
+    t.any_exit()
+    root = t.box.root
+    note = root / "Notes" / "1.10 meeting with Sam.md"
+    note.write_text("---\ntitle: Meeting with Sam\ntype: note\nid: zotero-ABC123\n---\n\n# Meeting\n")
+    taxes = root / "Notes" / "12.2025 Taxes.txt"
+    taxes.write_text("receipts\n")
+    shipped = root / ".os" / "shipped.json"
+    good = json.loads(shipped.read_text())
+    for how, text in (("damaged", "{ not json,"),
+                      ("unstamped", json.dumps({k: v for k, v in good.items() if k != "release"}))):
+        shipped.write_text(text)
+        ran = subprocess.run([sys.executable, str(SOURCE / ".os" / "upgrade.py"), str(root)],
+                             capture_output=True, text=True, timeout=120)
+        t.ok(note.is_file() and taxes.is_file() and "zotero-ABC123" in note.read_text(),
+             f"{how}: their names and header are kept\n{ran.stdout}{ran.stderr}")
+
+
+@test
+def test_r23_an_index_that_is_a_shortcut_never_writes_over_their_note(t: Case) -> None:
+    """INDEX.md made a shortcut to a note of theirs had the note written over
+    by the list, after every chat turn (seventeenth review, round 22)."""
+    t.any_exit()
+    mine = t.box.root / "Notes" / "my-map.md"
+    mine.write_text("# My map\n\nMine, by hand.\n")
+    (t.box.root / "INDEX.md").unlink(missing_ok=True)
+    (t.box.root / "INDEX.md").symlink_to("Notes/my-map.md")
+    catalog = t.box.root / ".claude" / "CATALOG.md"
+    theirs = t.box.root / "Notes" / "my-skills.md"
+    theirs.write_text("# My skills\n")
+    catalog.unlink(missing_ok=True)
+    catalog.symlink_to("../Notes/my-skills.md")
+    t.box.run("index")
+    t.box.run("save", "--note", "a thought about maps")
+    t.eq(mine.read_text(), "# My map\n\nMine, by hand.\n", "their note is as they wrote it")
+    t.eq(theirs.read_text(), "# My skills\n", "and so is the other")
+
+
+@test
+def test_r23_root_at_a_folder_a_move_set_aside_never_runs_it(t: Case) -> None:
+    """`./os --root` at a folder a move had set aside saved into it, a second
+    live folder (second pre-merge review of round 22)."""
+    t.any_exit()
+    aside = t.box.tmp / ".Zenith.moved-999999"
+    shutil.copytree(t.box.root, aside, symlinks=True)
+    said = subprocess.run([str(aside / "os"), "--root", str(aside), "save", "--note", "secret plan two"],
+                          cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok(said.returncode != 0 and "stopped partway" in out, f"it says what happened\n{out}")
+    t.ok(not any("secret" in p.name.lower() for p in aside.rglob("*")), "and nothing is saved there")
+
+
+@test
+def test_r23_the_way_back_never_calls_the_folder_its_own_copy(t: Case) -> None:
+    """A copied-to left naming the very place the way back puts the folder
+    told them that place, the folder itself, could go (pre-merge review of
+    round 22)."""
+    t.any_exit()
+    aside = t.box.tmp / ".Other.moved-999999"
+    shutil.copytree(t.box.root, aside, symlinks=True)
+    (aside / ".os" / "config.json").rename(aside / ".os" / "config.json.moving")
+    (aside / ".os" / "copied-to").write_text(str(t.box.tmp / "Other") + "\n")
+    said = subprocess.run([str(aside / "os"), "check"], cwd=str(aside), env=dict(os.environ, NO_COLOR="1"),
+                          capture_output=True, text=True, timeout=60)
+    out = said.stdout + said.stderr
+    t.ok("mv " in out and "made a copy" not in out, f"it gives the way back, and no copy to let go\n{out}")
+
+
+@test
+def test_r23_a_move_that_cant_say_where_its_copy_is_leaves_no_old_word(t: Case) -> None:
+    """When copied-to couldn't be written, one left by an earlier move stayed,
+    naming a place from that attempt (pre-merge review of round 22)."""
+    (t.box.root / ".os" / "copied-to").write_text("/Volumes/Old/Box\n")
+    seen_mark = {}
+    real_write, real_look = Path.write_text, engine._not_in_copy
+
+    def write_text(self, *a, **k):
+        if self.name == "copied-to":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(self, *a, **k)
+
+    def look(old, copy, *a, **k):
+        seen_mark["there"] = (Path(old) / ".os" / "copied-to").exists()
+        return real_look(old, copy, *a, **k)
+    Path.write_text, engine._not_in_copy = write_text, look
+    try:
+        seen, ended = _slow_move(t, lambda lock_file: None)
+    finally:
+        Path.write_text, engine._not_in_copy = real_write, real_look
+    t.eq(seen_mark.get("there"), False, f"the old word is gone, not left to mislead ({ended})")
+
+
+@test
+def test_r23_an_undo_beside_a_new_folder_never_writes_into_it(t: Case) -> None:
+    """A closed folder undone beside a new one of the same name had its old
+    README written into the new folder's README (review of round 23)."""
+    t.any_exit()
+    t.box.run("new", "work", "Boiler")
+    t.box.run("close", "Boiler")
+    mine = t.box.root / "Work" / "Boiler" / "README.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("MY NEW BOILER PLAN\n")
+    t.box.run("undo", expect=None)
+    t.eq(mine.read_text(), "MY NEW BOILER PLAN\n", "the new one is left alone")
+
+
+@test
+def test_r23_undoing_two_moves_never_takes_a_new_file_with_the_same_name(t: Case) -> None:
+    """Undoing a file filed then tucked away, with a new file of the same
+    name filed since, moved the new one back out in its place (third
+    pre-merge review of round 23)."""
+    t.any_exit()
+    root = t.box.root
+    (root / "Notes" / "Sub").mkdir(parents=True)
+    (root / "Notes" / "Sub" / "cake.md").write_text("# Cake\n\nthe old one\n")
+    (root / "Notes" / "cake.md").write_text("# Cake\n\na new one\n")
+    state = json.loads((root / ".os" / "state.json").read_text())
+    state.setdefault("undo", []).append({
+        "label": "sort", "at": engine._dt.datetime.now().isoformat(timespec="seconds"),
+        "steps": [{"action": "move", "src": "cake.md", "dst": "Notes/cake.md"},
+                  {"action": "move", "src": "Notes/cake.md", "dst": "Notes/Sub/cake.md"}]})
+    (root / ".os" / "state.json").write_text(json.dumps(state))
+    t.box.run("undo", "--anyway", expect=None)
+    t.ok("the old one" in (root / "cake.md").read_text() if (root / "cake.md").is_file() else False,
+         "the old one is back where it came from")
+    t.ok("a new one" in (root / "Notes" / "cake.md").read_text(), "and the new one stays where it is")
+
+
+def _r23_entry(root: Path, entry: dict) -> None:
+    state = json.loads((root / ".os" / "state.json").read_text())
+    entry.setdefault("at", engine._dt.datetime.now().isoformat(timespec="seconds"))
+    state.setdefault("undo", []).append(entry)
+    (root / ".os" / "state.json").write_text(json.dumps(state))
+
+
+@test
+def test_r23_one_refused_move_holds_back_only_its_own_words(t: Case) -> None:
+    """One move back refused held back every other file's words too, and
+    they were lost to sight when undo let the step go (fourth pre-merge
+    review of round 23)."""
+    root = t.box.root
+    (root / "Notes" / "a.md").write_text("# A\n\nchanged by the step\n")
+    (root / "Notes" / "b.md").write_text("# B\n")
+    blobs = root / ".os" / "cache" / "undo" / "zz"
+    blobs.mkdir(parents=True)
+    (blobs / "a.bak").write_text("# A\n\nas it was\n")
+    _r23_entry(root, {"label": "sort", "blobs": "zz", "snapshots": {"a.md": "a.bak"},
+                      "steps": [{"action": "move", "src": "a.md", "dst": "Notes/a.md"},
+                                {"action": "move", "src": "Locked/b.md", "dst": "Notes/b.md"}]})
+    real = engine.move_path
+
+    def refused(src, dst, *a, **k):
+        if Path(src).name == "b.md":
+            raise OSError(errno.EACCES, "Permission denied")
+        return real(src, dst, *a, **k)
+    engine.move_path = refused
+    try:
+        got = engine.Undo(engine.Zenith(root)).revert()
+    finally:
+        engine.move_path = real
+    t.ok((root / "a.md").is_file() and "as it was" in (root / "a.md").read_text(),
+         f"the file whose move went back has its words back: {got}")
+
+
+@test
+def test_r23_undoing_a_made_file_never_takes_a_new_one_with_its_name(t: Case) -> None:
+    """A file ./os made and then moved, undone with a new file of that name
+    there since, took away the new one and left the one it made (fourth
+    pre-merge review of round 23)."""
+    t.any_exit()
+    root = t.box.root
+    made = root / "Notes" / "Sub" / "cake.md"
+    made.parent.mkdir(parents=True)
+    made.write_text("# Cake\n\nmade by ./os\n")
+    theirs = root / "Notes" / "cake.md"
+    theirs.write_text("# Cake\n\ntheir own\n")
+    _r23_entry(root, {"label": "sort", "steps": [
+        {"action": "create", "src": "Notes/cake.md", "digest": engine.content_print(made)},
+        {"action": "move", "src": "Notes/cake.md", "dst": "Notes/Sub/cake.md"}]})
+    t.box.run("undo", "--anyway", expect=None)
+    t.ok(theirs.is_file() and "their own" in theirs.read_text(), "theirs is where it was")
+    t.ok(not any("made by" in p.read_text() for p in (root / "Notes").rglob("cake*.md")),
+         "and the one ./os made is gone")
+
+
+@test
+def test_r23_an_undo_the_disk_refuses_keeps_its_copies(t: Case) -> None:
+    """When the disk refused to write a file back, undo dropped the step and
+    threw away the only copy of the words before it (seventeenth review,
+    round 22); kept in .os/cache/undo, the next command swept them away
+    (pre-merge review of round 23)."""
+    t.box.run("new", "work", "Boiler")
+    t.box.run("decide", "Boiler", "Use the plumber from across the road")
+    readme = next((t.box.root / "Work").rglob("README.md"))
+    real = Path.write_bytes
+
+    def full(self, *a, **k):
+        if self == readme:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(self, *a, **k)
+    Path.write_bytes = full
+    try:
+        got = engine.Undo(engine.Zenith(t.box.root)).revert()
+    finally:
+        Path.write_bytes = real
+    t.ok(got["failed"] and got.get("kept_copies"), f"it couldn't, and kept the copies: {got}")
+    t.box.run("save", "--note", "buy milk tomorrow")
+    home = t.box.root / got["kept_copies"]
+    note = home / "WHAT-THESE-ARE.txt"
+    t.ok(note.is_file() and "Work/Boiler/README.md" in note.read_text(),
+         "they are still there after another command, with which file each was")
+    blob = note.read_text().split("  was  Work/Boiler/README.md")[0].split("\n")[-1].strip()
+    t.ok((home / blob).is_file() and "plumber" not in (home / blob).read_text(),
+         "and the copy is the README as it was before the decision")
+
+
+@test
+def test_r23_a_refused_move_back_never_writes_its_words_elsewhere(t: Case) -> None:
+    """With the move back refused, undo wrote the closed folder's old README
+    over a new one of the same name made since (third pre-merge review of
+    round 23)."""
+    t.any_exit()
+    t.box.run("new", "work", "Boiler")
+    t.box.run("close", "Boiler")
+    mine = t.box.root / "Work" / "Boiler" / "README.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("MY NEW BOILER PLAN\n")
+    real = engine.move_path
+
+    def refused(*a, **k):
+        raise OSError(errno.EACCES, "Permission denied")
+    engine.move_path = refused
+    try:
+        got = engine.Undo(engine.Zenith(t.box.root)).revert()
+    finally:
+        engine.move_path = real
+    t.eq(mine.read_text(), "MY NEW BOILER PLAN\n", f"theirs is left alone: {got}")
+    note = t.box.root / str(got.get("kept_copies")) / "WHAT-THESE-ARE.txt"
+    t.ok(got.get("kept_copies") and note.is_file() and "Work/Boiler/README.md" in note.read_text(),
+         "and the old words are kept, and named")
+
+
+@test
+def test_r23_a_move_chain_refused_partway_never_writes_into_a_new_file(t: Case) -> None:
+    """Filed then tucked away, with the second move's undo refused, the first
+    only "not there": the old words went into a new file at the first name
+    (fifth pre-merge review of round 23)."""
+    root = t.box.root
+    (root / "Notes" / "Deep").mkdir(parents=True)
+    (root / "Notes" / "Deep" / "a.md").write_text("# A\n\nafter the step\n")
+    (root / "a.md").write_text("# A\n\na new one of theirs\n")
+    blobs = root / ".os" / "cache" / "undo" / "zz"
+    blobs.mkdir(parents=True)
+    (blobs / "a.bak").write_text("# A\n\nas it was\n")
+    _r23_entry(root, {"label": "sort", "blobs": "zz", "snapshots": {"a.md": "a.bak"},
+                      "steps": [{"action": "move", "src": "a.md", "dst": "Notes/a.md"},
+                                {"action": "move", "src": "Notes/a.md", "dst": "Notes/Deep/a.md"}]})
+    real = engine.move_path
+
+    def refused(*a, **k):
+        raise OSError(errno.EACCES, "Permission denied")
+    engine.move_path = refused
+    try:
+        got = engine.Undo(engine.Zenith(root)).revert()
+    finally:
+        engine.move_path = real
+    t.ok("a new one of theirs" in (root / "a.md").read_text(), f"theirs is left alone: {got}")
+    t.ok(got.get("kept_copies") and (root / got["kept_copies"] / "a.bak").is_file(), "the old words are kept")
+
+
+@test
+def test_r23_copies_an_undo_couldnt_keep_aside_stay_with_the_step(t: Case) -> None:
+    """On a full disk the kept copies couldn't be set aside either, were said
+    to be kept, and the next command swept them (sixth pre-merge review of
+    round 23)."""
+    t.box.run("new", "work", "Boiler")
+    t.box.run("decide", "Boiler", "Use the plumber from across the road")
+    readme = next((t.box.root / "Work").rglob("README.md"))
+    real_write, real_rename, real_mkdir, real_copy = Path.write_bytes, os.rename, Path.mkdir, shutil.copytree
+
+    def full(self, *a, **k):
+        if self == readme:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(self, *a, **k)
+
+    def no_room(self, *a, **k):      # nothing new can be made: no folder, no copy
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def no_folder(self, *a, **k):
+        if "undo-kept" in str(self) or "not-put-back" in str(self):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_mkdir(self, *a, **k)
+
+    def no_rename(a, b, *x, **k):
+        if "not-put-back" in str(b):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_rename(a, b, *x, **k)
+    Path.write_bytes, os.rename, Path.mkdir, shutil.copytree = full, no_rename, no_folder, no_room
+    try:
+        got = engine.Undo(engine.Zenith(t.box.root)).revert()
+    finally:
+        Path.write_bytes, os.rename, Path.mkdir, shutil.copytree = real_write, real_rename, real_mkdir, real_copy
+    z = engine.Zenith(t.box.root)
+    keep = int(z.behaviour.get("keep_undo_steps", 20))
+    for n in range(keep + 2):
+        t.box.run("save", "--note", f"buy milk, take {n}")
+    t.ok(got.get("kept_copies") and (t.box.root / got["kept_copies"]).is_dir(),
+         f"the copies are still where it said, {keep + 2} commands on: {got}")
+
+
+@test
+def test_r23_a_file_moved_out_of_a_folder_goes_back_into_that_folder(t: Case) -> None:
+    """A file moved out of a folder that was then moved too went back into a
+    new folder of the old name, and its words over a file of theirs (sixth
+    pre-merge review of round 23)."""
+    t.any_exit()
+    root = t.box.root
+    for rel, text in (("Notes/B/f.md", "f after the step\n"), ("Notes/C/A/g.md", "g\n"),
+                      ("Notes/A/new.md", "a new folder of theirs\n"),
+                      ("Notes/C/A/f.md", "their own new f\n")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    blobs = root / ".os" / "cache" / "undo" / "zz"
+    blobs.mkdir(parents=True)
+    (blobs / "f.bak").write_text("f as it was\n")
+    _r23_entry(root, {"label": "sort", "blobs": "zz", "snapshots": {"Notes/A/f.md": "f.bak"},
+                      "steps": [{"action": "move", "src": "Notes/A/f.md", "dst": "Notes/B/f.md"},
+                                {"action": "move", "src": "Notes/A", "dst": "Notes/C/A"}]})
+    t.box.run("undo", "--anyway", expect=None)
+    t.ok(not (root / "Notes" / "A" / "f.md").exists(), "nothing of the step's lands in their new folder")
+    back = sorted((root / "Notes").glob("A-*"))
+    texts = sorted(p.read_text() for p in back[0].glob("f*.md")) if back else []
+    t.ok(back and "f as it was\n" in texts and "their own new f\n" in texts,
+         f"it goes back into its own folder, with its words, beside theirs: {back} {texts}")
+
+
+@test
+def test_r23_two_chats_keeping_copies_both_stay_kept(t: Case) -> None:
+    """Two chats each keeping an undo's copies at once: one's name was lost
+    to the other's save, and its copies swept (eighth pre-merge review of
+    round 23). A junk list crashed every save."""
+    one, two = engine.Zenith(t.box.root), engine.Zenith(t.box.root)
+    one.state["kept_copies"] = (one.state.get("kept_copies") or []) + ["A-not-put-back"]
+    one.save_state()
+    two.state["kept_copies"] = (two.state.get("kept_copies") or []) + ["B"]
+    two.save_state()
+    kept = engine.Zenith(t.box.root).state.get("kept_copies") or []
+    t.ok("A-not-put-back" in kept and "B" in kept, f"both names stay: {kept}")
+    state = json.loads((t.box.root / ".os" / "state.json").read_text())
+    state["kept_copies"] = 5
+    (t.box.root / ".os" / "state.json").write_text(json.dumps(state))
+    t.box.run("save", "--note", "still saves")
+
+
+@test
+def test_r24_a_folder_save_stopped_partway_is_never_filed_as_whole(t: Case) -> None:
+    """A Ctrl-C or a closed window during a folder's save left the half copy
+    in .os/cache/incoming under its own name, and the next sort filed it
+    into Notes as if whole (eighteenth review, round 23)."""
+    t.any_exit()
+    photos = t.box.tmp / "Photos"
+    photos.mkdir()
+    for n in range(30):
+        (photos / f"p{n:02}.txt").write_text(f"photo {n}\n")
+    real, real_tree = shutil.copy2, shutil.copytree
+    count = {"n": 0}
+
+    def slow(src, dst, *a, **k):
+        count["n"] += 1
+        if count["n"] == 10:
+            raise KeyboardInterrupt
+        return real(src, dst, *a, **k)
+
+    def tree(src, dst, *a, **k):          # its own copy, one file at a time
+        return real_tree(src, dst, *a, **dict(k, copy_function=slow))
+    z = engine.Zenith(t.box.root)
+    shutil.copytree = tree
+    stopped = False
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            engine.cmd_save(z, [str(photos)])
+    except KeyboardInterrupt:
+        stopped = True
+    except SystemExit:
+        pass
+    finally:
+        shutil.copytree = real_tree
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    left = [p.name for p in stage.iterdir()] if stage.is_dir() else []
+    t.ok(stopped and not [n for n in left if not n.endswith("~")], f"nothing is left to be filed: {left}")
+    t.box.run("sort")
+    t.ok(not any("photo" in p.name.lower() for p in (t.box.root / "Notes").rglob("*")),
+         "and sort files no part of it")
+
+
+@test
+def test_r24_check_names_a_half_made_copy(t: Case) -> None:
+    """A half copy a stop left behind sat in .os/cache unseen: check said all
+    good (eighteenth review, round 23)."""
+    t.any_exit()
+    part = t.box.root / ".os" / "cache" / "incoming" / "Photos.partial~"
+    part.mkdir(parents=True)
+    (part / "p00.txt").write_text("photo\n")
+    said = t.box.run("check", expect=None)
+    t.ok("Photos" in said.stdout and "stopped partway" in said.stdout, said.stdout)
+
+
+@test
+def test_r24_a_save_beside_a_half_copy_left_before_is_never_filed_half(t: Case) -> None:
+    """With a half copy already left by a kill, the next save's own was named
+    `Photos.partial~-2`, which sort filed into Notes, half made (pre-merge
+    review of round 24)."""
+    t.any_exit()
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    stale = stage / "Photos.partial~"
+    stale.mkdir(parents=True)
+    (stale / "p00.txt").write_text("half\n")
+    landed = stage / "Photos"
+    second = engine.claim_partial(landed, folder=True)
+    third = engine.claim_partial(landed, folder=False)
+    t.ok(second.name.endswith("~") and third.name.endswith("~") and len({stale, second, third}) == 3,
+         f"each copy claims a name of its own that sort never files: {second.name}, {third.name}")
+    (second / "p01.txt").write_text("half\n")
+    said = t.box.run("check", expect=None)
+    t.ok(said.stdout.count("stopped partway") >= 3, f"check names every one\n{said.stdout}")
+    t.box.run("sort")
+    t.ok(not (t.box.root / "Notes").exists() or not any("photo" in p.name.lower()
+                                                        for p in (t.box.root / "Notes").rglob("*")),
+         "and sort files none of them")
+    photos = t.box.tmp / "Photos"
+    photos.mkdir()
+    (photos / "p.txt").write_text("whole\n")
+    t.box.run("save", str(photos))
+    t.ok(any(p.name == "p.txt" for p in (t.box.root / "Notes").rglob("*")) and stale.is_dir(),
+         "a whole save beside them still goes in, and leaves them be")
+
+
+@test
+def test_r24_a_save_never_replaces_another_chats_file_landing_meanwhile(t: Case) -> None:
+    """Another chat's file landing under the same name just as a save gave
+    its copy that name was replaced without a word (second pre-merge review
+    of round 24)."""
+    t.any_exit()
+    report = t.box.tmp / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 mine\n")
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    real_rename, real_link = os.rename, os.link
+    theirs = {"done": False}
+
+    def drop_theirs(dst):
+        if not theirs["done"] and Path(dst).name == "report.pdf" and Path(dst).parent == stage:
+            theirs["done"] = True
+            Path(dst).write_bytes(b"%PDF-1.4 OTHER CHAT'S FILE\n")
+
+    def rename(a, b, *x, **k):
+        drop_theirs(b)
+        return real_rename(a, b, *x, **k)
+
+    def link(a, b, *x, **k):
+        drop_theirs(b)
+        return real_link(a, b, *x, **k)
+    os.rename, os.link = rename, link
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            engine.cmd_save(engine.Zenith(t.box.root), [str(report)])
+    except SystemExit:
+        pass
+    finally:
+        os.rename, os.link = real_rename, real_link
+    found = [p.read_bytes() for p in t.box.root.rglob("report*.pdf")]
+    t.ok(theirs["done"] and any(b"OTHER CHAT" in b for b in found) and any(b"mine" in b for b in found),
+         f"both are kept: {found}")
+
+
+@test
+def test_r24_a_folder_save_never_replaces_an_empty_folder_made_meanwhile(t: Case) -> None:
+    """Renamed onto a folder of the same name another chat had just made,
+    still empty, a saved folder replaced it (third pre-merge review of round
+    24)."""
+    part = t.box.tmp / "Photos.partial~"
+    part.mkdir()
+    (part / "p.txt").write_text("mine\n")
+    landed = t.box.tmp / "Photos"
+    real = os.path.lexists
+    made = {"done": False}
+
+    def lexists(path):
+        got = real(path)
+        if not made["done"] and Path(path) == landed:
+            made["done"] = True
+            landed.mkdir()              # theirs, the moment after the look
+        return got
+    os.path.lexists = lexists
+    try:
+        went = engine.place_whole(part, landed)
+    finally:
+        os.path.lexists = real
+    t.ok(made["done"] and went != landed and landed.is_dir() and not any(landed.iterdir())
+         and (went / "p.txt").is_file(), f"theirs is left as it was, and ours goes beside it: {went}")
+
+
+def _r25_old_folder(t: Case) -> Path:
+    old = t.box.tmp / "old stuff"
+    kitchen = old / "work" / "Kitchen Renovation"
+    kitchen.mkdir(parents=True)
+    (kitchen / "README.md").write_text("# Kitchen Renovation\n\n## Next action\n- [ ] call the fitter\n")
+    for n in range(1, 7):
+        (kitchen / f"part{n}.md").write_text(f"# Part {n}\n\nwords {n}\n")
+    return old
+
+
+def _r25_bring(t: Case, old: Path, stop) -> tuple:
+    """`./os setup --bring` in this process, `stop(src)` run before each
+    file is copied. Returns what it said and how it ended."""
+    real = shutil.copyfile
+
+    def copyfile(src, dst, *a, **k):
+        stop(Path(os.fspath(src)))
+        return real(src, dst, *a, **k)
+    shutil.copyfile = copyfile
+    said, ended = io.StringIO(), 0
+    try:
+        with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            ended = engine.cmd_setup(engine.Zenith(t.box.root), ["--bring", str(old)])
+    except (SystemExit, KeyboardInterrupt) as exc:
+        ended = exc
+    finally:
+        shutil.copyfile = real
+    return said.getvalue(), ended
+
+
+@test
+def test_r25_a_bring_the_disk_fills_partway_never_files_a_half_folder(t: Case) -> None:
+    """A bring whose copy ran out of room partway left the half folder in
+    .os/cache/incoming, said everything was copied, and the next sort filed
+    it as whole, one part short (nineteenth review, round 24)."""
+    t.any_exit()
+    old = _r25_old_folder(t)
+
+    def full(src):
+        if src.name == "part3.md":
+            raise OSError(errno.ENOSPC, "No space left on device")
+    said, ended = _r25_bring(t, old, full)
+    t.ok("everything was copied" not in said, f"it never says everything was copied\n{said}")
+    t.box.run("sort", expect=None)
+    homes = [p for p in t.box.root.rglob("Kitchen Renovation") if ".os" not in p.parts or "incoming" in p.parts]
+    t.ok(all((h / "part3.md").is_file() for h in homes if h.is_dir()),
+         f"no Kitchen Renovation is filed without part3: {homes}")
+
+
+@test
+def test_r25_a_bring_stopped_partway_leaves_nothing_sort_files_half(t: Case) -> None:
+    """A bring stopped by Ctrl-C partway left the half copy under its real
+    name, and sort filed it as whole (nineteenth review, round 24)."""
+    t.any_exit()
+    old = _r25_old_folder(t)
+
+    def stop(src):
+        if src.name == "part3.md":
+            raise KeyboardInterrupt
+    said, ended = _r25_bring(t, old, stop)
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    left = [p.name for p in stage.iterdir()] if stage.is_dir() else []
+    t.ok(isinstance(ended, KeyboardInterrupt) and not [n for n in left if not n.endswith("~")],
+         f"stopped, nothing is left under a name sort files: {left} ({ended!r})")
+
+
+@test
+def test_r25_a_save_on_a_drive_without_hard_links_never_cuts_its_words(t: Case) -> None:
+    """On a drive with no hard links, a save whose write ran out of room
+    partway left the note cut short, to be filed, and took away the whole
+    copy it had (nineteenth review, round 24)."""
+    t.any_exit()
+    real_link, real_open = os.link, open
+
+    def no_links(*a, **k):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    class Short:
+        def __init__(self, fh):
+            self.fh = fh
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.fh.close()
+
+        def write(self, text):
+            self.fh.write(text[:20])
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    def short_open(path, mode="r", *a, **k):
+        fh = real_open(path, mode, *a, **k)
+        if "w" in mode and not str(path).endswith(".tmp~") and "incoming" in str(path):
+            return Short(fh)
+        return fh
+    os.link = no_links
+    engine.open = short_open
+    said = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            engine.cmd_save(engine.Zenith(t.box.root),
+                            ["--note", "call the dentist tomorrow about the crown, and ask what a gold one costs"])
+    except SystemExit:
+        pass
+    finally:
+        os.link = real_link
+        del engine.open
+    found = {str(p.relative_to(t.box.root)): p.read_text() for p in (t.box.root / "Notes").rglob("*.md")
+             if "dentist" in p.read_text(errors="replace")} if (t.box.root / "Notes").is_dir() else {}
+    stage = t.box.root / ".os" / "cache" / "incoming"
+    half = [p.name for p in stage.iterdir() if not p.name.endswith("~")] if stage.is_dir() else []
+    t.ok(not half and found and all("gold one costs" in f for f in found.values()),
+         f"the note is whole, and nothing cut off waits to be filed: {found} {half}\n{said.getvalue()[-400:]}")
+
+
+@test
+def test_r25_a_transcript_cut_short_is_never_taken_as_cached(t: Case) -> None:
+    """A transcript whose write ran out of room partway was kept as cached
+    for good, and the next ask read the cut-off text as the whole talk
+    (nineteenth review, round 24)."""
+    vid = "abcdefghijk"
+
+    def run(args, timeout=0):
+        out = Path(args[args.index("-o") + 1]).parent
+        (out / f"{vid}.en.vtt").write_text(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nfirst line of the talk\n\n"
+            "00:00:04.000 --> 00:00:06.000\nsecond line of the talk\n\n"
+            "00:00:07.000 --> 00:00:09.000\nthe last line of the talk\n")
+        return subprocess.CompletedProcess(args, 0, "", "")
+    real_write = Path.write_text
+
+    def short(self, text, *a, **k):
+        if self.name.startswith(vid + ".txt"):
+            real_write(self, text[:len(text) // 3], *a, **k)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(self, text, *a, **k)
+    was_exe, was_run = learn.ytdlp, learn._run
+    learn.ytdlp, learn._run = (lambda: "yt-dlp"), run
+    try:
+        Path.write_text = short
+        try:
+            learn.transcript(t.box.root, vid)
+        except OSError:
+            pass
+        finally:
+            Path.write_text = real_write
+        again = learn.transcript(t.box.root, vid)
+    finally:
+        learn.ytdlp, learn._run = was_exe, was_run
+    text = Path(again["path"]).read_text() if again.get("ok") else ""
+    t.ok(again.get("ok") and "last line" in text,
+         f"the next ask fetches it whole, never the cut-off copy: {again} {text!r}")
+
+
+def _r25_short_copy(match):
+    """shutil.copy2 that, for a source `match` accepts, writes half the file
+    where it was told to and then says the disk is full."""
+    real = shutil.copy2
+
+    def copy2(src, dst, *a, **k):
+        if match(Path(os.fspath(src))):
+            data = Path(os.fspath(src)).read_bytes()
+            Path(os.fspath(dst)).write_bytes(data[:len(data) // 2])
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(src, dst, *a, **k)
+    return real, copy2
+
+
+@test
+def test_r25_an_addon_the_disk_fills_partway_leaves_no_cut_off_skill(t: Case) -> None:
+    """An addon whose copy ran out of room left a skill cut short under its
+    real name, read from then on as whole (round 25)."""
+    t.any_exit()
+    body = "---\nname: glazes\ndescription: Mix a glaze.\n---\n# Glazes\n\n" + "Celadon, and more.\n" * 40
+    shelf = _addon(t.box.tmp / "addons", "pottery", {".claude/skills/glazes/SKILL.md": body})
+    real, short = _r25_short_copy(lambda p: p.name == "SKILL.md" and "addons" in str(p))
+    shutil.copy2 = short
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            engine.cmd_addon(engine.Zenith(t.box.root), ["pottery", "--from", str(shelf)])
+    except (SystemExit, OSError):
+        pass
+    finally:
+        shutil.copy2 = real
+    skill = t.box.root / ".claude" / "skills" / "glazes" / "SKILL.md"
+    t.ok(not skill.exists() or skill.read_text() == body, "no skill is left cut short under its name")
+
+
+@test
+def test_r25_an_undo_putting_a_file_back_never_leaves_it_cut_short(t: Case) -> None:
+    """Undo putting back a file ./os had taken away copied it straight to its
+    name, and a full disk left it cut short there (round 25)."""
+    t.any_exit()
+    root = t.box.root
+    blobs = root / ".os" / "cache" / "undo" / "zz"
+    blobs.mkdir(parents=True)
+    whole = "# Merge me\n\n" + "a line of theirs\n" * 50
+    (blobs / "m.bak").write_text(whole)
+    _r23_entry(root, {"label": "update", "blobs": "zz",
+                      "steps": [{"action": "remove", "src": "Notes/merge-me.md", "blob": "m.bak"}]})
+    real, short = _r25_short_copy(lambda p: p.name == "m.bak")
+    shutil.copy2 = short
+    try:
+        engine.Undo(engine.Zenith(root)).revert()
+    finally:
+        shutil.copy2 = real
+    back = root / "Notes" / "merge-me.md"
+    t.ok(not back.exists() or back.read_text() == whole, "the file is whole or not there, never cut short")
+
+
+@test
+def test_r25_update_undo_never_trusts_a_cut_off_last_line_of_its_list(t: Case) -> None:
+    """The list a stopped update keeps of what it wrote could end in a line
+    cut short by the stop, naming the start of a path of theirs (round 25)."""
+    said = "/a/b/.claude/hooks/new-hook.sh\n/a/b/.claude/hooks/min"
+    lines = said.splitlines() if said.endswith("\n") else said.splitlines()[:-1]
+    t.eq(lines, ["/a/b/.claude/hooks/new-hook.sh"], "the cut-off line is left out")
+    src = Path(engine.__file__).read_text()
+    t.ok('lines = said.splitlines() if said.endswith("\\n") else said.splitlines()[:-1]' in src,
+         "and update --undo reads its list that way")
+
+
+@test
+def test_r25_a_file_with_a_long_name_is_still_copied_whole(t: Case) -> None:
+    """The copy made beside a file added to its name, and one with a long
+    name was then too long for the disk (pre-merge review of round 25)."""
+    src = t.box.tmp / "src.md"
+    src.write_text("words\n")
+    dst = t.box.tmp / ("n" * 250 + ".md")
+    engine.copy_whole(src, dst)
+    t.eq(dst.read_text(), "words\n", "it is copied")
+
+
+@test
+def test_r26_check_fix_takes_only_surely_dead_leftovers_of_its_own(t: Case) -> None:
+    """check --fix took away any name.<number>.tmp~, with no undo: a person's
+    own budget.2024.tmp~, and another chat's write still going on
+    (twentieth review, round 25)."""
+    notes = t.box.root / "Notes"
+    notes.mkdir(exist_ok=True)
+    hour_ago = time.time() - 7200
+    sleeper = subprocess.Popen(["sleep", "60"])
+    try:
+        (notes / "reno.md").write_text("# Reno\n")
+        live = notes / f"reno.md.{sleeper.pid}.tmp~"
+        live.write_text("being written\n")
+        theirs = notes / "budget.2024.tmp~"
+        theirs.write_text("my budget\n")
+        (notes / "old.md").write_text("# Old\n")
+        dead = notes / "old.md.999999.tmp~"
+        dead.write_text("half\n")
+        fresh = notes / "reno.md.999998.tmp~"
+        fresh.write_text("just now\n")
+        for f in (live, theirs, dead):
+            os.utime(f, (hour_ago, hour_ago))
+        said = t.box.run("check", "--fix", expect=None).stdout
+        t.ok(live.is_file(), f"another chat's write still going on is left\n{said}")
+        t.ok(theirs.is_file() and "budget.2024.tmp~" in said, f"a file of theirs is left, and said\n{said}")
+        t.ok(fresh.is_file(), "one written just now is left")
+        t.ok(not dead.exists(), "an hour-old one of its own, its run over, goes")
+    finally:
+        sleeper.kill()
+
+
+def _r26_two_plans(t: Case) -> None:
+    for group, title in (("Home", "Plan Alpha"), ("Office", "Plan Beta")):
+        top = t.box.root / "Work" / group
+        (top / "Plan" / "Raw").mkdir(parents=True)
+        (top / engine.CATEGORY_MARKER).write_text(json.dumps({"name": group, "trail": [group], "auto": True}))
+        (top / "Plan" / "README.md").write_text(
+            f"---\ntitle: {title}\ntype: work\nstatus: pushing\ndomain: home\ntags: []\n"
+            f"created: 2026-10-01\nupdated: 2026-10-01\n---\n\n# {title}\n\n## Log\n")
+        (top / "Plan" / "Raw" / f"{group[0].lower()}.txt").write_text(f"{group}'s\n")
+
+
+@test
+def test_r26_two_things_of_one_name_never_get_each_others_parts(t: Case) -> None:
+    """Two things called Plan, in Home and Office, put parts away into one
+    holder; back --part brought Home's into Office, and a whole close pulled
+    the other's part in (twentieth review, round 25)."""
+    t.any_exit()
+    _r26_two_plans(t)
+    t.box.run("close", "Home/Plan", "--part", "Raw")
+    t.box.run("close", "Office/Plan", "--part", "Raw")
+    t.box.run("back", "Office/Plan", "--part", "Raw")
+    office = t.box.root / "Work" / "Office" / "Plan" / "Raw"
+    t.ok((office / "o.txt").is_file() and not (office / "h.txt").exists(),
+         f"Office gets its own part back: {sorted(p.name for p in office.iterdir()) if office.is_dir() else None}")
+    t.box.run("close", "Office/Plan", "--part", "Raw")
+    t.box.run("close", "Home/Plan")
+    home = [p for p in (t.box.root / "Archive").rglob("README.md") if "Plan Alpha" in p.read_text()]
+    t.ok(home and not any(p.name == "o.txt" for p in home[0].parent.rglob("*")),
+         f"closing Home's whole Plan takes none of Office's with it: {home}")
+    t.box.run("back", "Office/Plan", "--part", "Raw")
+    t.ok((office / "o.txt").is_file(), "and Office's part still comes back")
+
+
+@test
+def test_r26_a_part_its_log_doesnt_name_is_refused_plainly(t: Case) -> None:
+    """A part put away before its Log said where, or with that line taken
+    out: back --part can't tell whose it is, so it says so, and moves
+    nothing (round 26)."""
+    t.any_exit()
+    _r26_two_plans(t)
+    t.box.run("close", "Home/Plan", "--part", "Raw")
+    readme = t.box.root / "Work" / "Home" / "Plan" / "README.md"
+    readme.write_text("\n".join(l for l in readme.read_text().splitlines() if "Put away" not in l) + "\n")
+    said = t.box.run("back", "Home/Plan", "--part", "Raw", expect=None)
+    t.ok(said.returncode != 0 and "can't" in (said.stdout + said.stderr), said.stdout + said.stderr)
+
+
+@test
+def test_r26_a_rename_never_rewrites_a_longer_name_beside_it(t: Case) -> None:
+    """Renaming Kitchen rewrote "Work/Kitchen Tiles/README.md" in a note to
+    "Work/Bathroom Tiles/README.md", a folder that never was (twentieth
+    review, round 25)."""
+    t.any_exit()
+    t.box.run("new", "work", "Kitchen")
+    t.box.run("new", "work", "Kitchen Tiles", "--anyway", expect=None)
+    t.box.run("new", "work", "C++ (draft)", expect=None)
+    t.ok((t.box.root / "Work" / "Kitchen Tiles").is_dir() and (t.box.root / "Work" / "C++ (draft)").is_dir(),
+         sorted(p.name for p in (t.box.root / "Work").iterdir()))
+    spaced = t.box.root / "Work" / "Kitchen "          # a name ending in a space, made by hand
+    spaced.mkdir()
+    (spaced / "plan.md").write_text("# Plan\n")
+    t.box.run("new", "note", "Reno links")
+    note = next((t.box.root / "Notes").rglob("reno-links*.md"))
+    note.write_text(note.read_text() + "\nSpaced: Work/Kitchen /plan.md\nTiles: Work/Kitchen Tiles/README.md\n"
+                    "Kitchen: Work/Kitchen/README.md\nDraft: Work/C++ (draft)/README.md\n")
+    t.box.run("rename", "Kitchen", "Bathroom")
+    t.box.run("rename", "C++ (draft)", "Cpp Draft", expect=None)
+    text = note.read_text()
+    t.ok("Work/Kitchen Tiles/README.md" in text, f"the longer name beside it is left as it was\n{text}")
+    t.ok("Work/Bathroom/README.md" in text, f"the renamed one is changed\n{text}")
+    t.ok("Work/Cpp Draft/README.md" in text, f"a name with ( ) and + in it is changed too\n{text}")
+    t.ok("Work/Kitchen /plan.md" in text, f"and one ending in a space is left as it was\n{text}")
+
+
+@test
+def test_r26_a_part_brought_back_never_claims_the_next_things_part(t: Case) -> None:
+    """Home's Log still named the place its part had been after it came
+    back; Office's part put in that same place was then brought back into
+    Home, and a whole close of Home took it along (pre-merge review of
+    round 26)."""
+    t.any_exit()
+    _r26_two_plans(t)
+    t.box.run("close", "Home/Plan", "--part", "Raw")
+    t.box.run("back", "Home/Plan", "--part", "Raw")
+    t.box.run("close", "Office/Plan", "--part", "Raw")
+    t.box.run("back", "Home/Plan", "--part", "Raw", expect=None)
+    home = t.box.root / "Work" / "Home" / "Plan"
+    t.ok(not any(p.name == "o.txt" for p in home.rglob("*")), "Home never gets Office's part")
+    t.box.run("close", "Home/Plan")
+    archived = [p for p in (t.box.root / "Archive").rglob("README.md") if "Plan Alpha" in p.read_text()]
+    t.ok(archived and not any(p.name == "o.txt" for p in archived[0].parent.rglob("*")),
+         "nor takes it along when it is closed whole")
+    t.box.run("back", "Office/Plan", "--part", "Raw")
+    t.ok((t.box.root / "Work" / "Office" / "Plan" / "Raw" / "o.txt").is_file(), "Office's comes back to Office")
+
+
+@test
+def test_r26_a_part_put_away_twice_comes_back_twice(t: Case) -> None:
+    """Put away twice and brought back once, the older copy was forgotten:
+    the next back said nothing was put away, with it still there (pre-merge
+    review of round 26)."""
+    t.any_exit()
+    _r26_two_plans(t)
+    raw = t.box.root / "Work" / "Home" / "Plan" / "Raw"
+    t.box.run("close", "Home/Plan", "--part", "Raw")
+    raw.mkdir()
+    (raw / "second.txt").write_text("second\n")
+    t.box.run("close", "Home/Plan", "--part", "Raw")
+    t.box.run("back", "Home/Plan", "--part", "Raw")
+    t.box.run("back", "Home/Plan", "--part", "Raw")
+    names = {p.name for p in (t.box.root / "Work" / "Home" / "Plan").rglob("*.txt")}
+    t.ok({"h.txt", "second.txt"} <= names, f"both come back: {names}")
+
+
+@test
+def test_r26_a_closed_and_reopened_thing_never_claims_the_next_things_part(t: Case) -> None:
+    """Closed whole, its part taken back in with no word in its Log, then
+    brought back out: its old line claimed the next same-named thing's part
+    put in that place (second pre-merge review of round 26)."""
+    t.any_exit()
+    _r26_two_plans(t)
+    t.box.run("close", "Home/Plan", "--part", "Raw")
+    t.box.run("close", "Home/Plan")
+    t.box.run("back", "Plan Alpha")
+    t.box.run("close", "Office/Plan", "--part", "Raw")
+    alpha = next(p.parent for p in (t.box.root / "Work").rglob("README.md") if "Plan Alpha" in p.read_text())
+    t.box.run("back", t.box.root.joinpath(alpha).relative_to(t.box.root).as_posix(), "--part", "Raw", expect=None)
+    t.ok(not any(p.name == "o.txt" for p in alpha.rglob("*")), "it never gets the other's part")
+
+
+@test
+def test_r26_a_log_line_pointing_anywhere_never_brings_a_live_folder_in(t: Case) -> None:
+    """A Put away line written by hand, naming another thing's live folder,
+    brought that folder into this one (second pre-merge review of round
+    26)."""
+    t.any_exit()
+    _r26_two_plans(t)
+    readme = t.box.root / "Work" / "Home" / "Plan" / "README.md"
+    readme.write_text(readme.read_text() + "- 2026-10-29 · Put away Raw: it is in Work/Office/Plan/Raw\n"
+                      f"- 2026-10-29 · Put away Raw: it is in {t.box.root / 'Work' / 'Office' / 'Plan' / 'Raw'}\n")
+    shutil.rmtree(t.box.root / "Work" / "Home" / "Plan" / "Raw")
+    t.box.run("back", "Home/Plan", "--part", "Raw", expect=None)
+    t.ok((t.box.root / "Work" / "Office" / "Plan" / "Raw" / "o.txt").is_file(), "the other's folder stays put")
+
+
+@test
+def test_r26_a_close_stopped_merging_parts_can_be_run_again(t: Case) -> None:
+    """A whole close wrote its page, parts off its Log, before taking them
+    in; one that couldn't be moved was then out of reach, and running it
+    again left it behind for good (third pre-merge review of round 26)."""
+    t.any_exit()
+    t.box.run("new", "work", "Drum")
+    drum = t.box.root / "Work" / "Drum"
+    for part in ("Raw", "Big"):
+        (drum / part).mkdir()
+        (drum / part / f"{part.lower()}.txt").write_text(part + "\n")
+        t.box.run("close", "Drum", "--part", part)
+    (drum / "Big").mkdir()
+    (drum / "Big" / "new.txt").write_text("new\n")
+    (drum / "Big").chmod(0o555)
+    try:
+        t.box.run("close", "Drum", expect=None)
+    finally:
+        (drum / "Big").chmod(0o755)
+    t.box.run("close", "Drum", expect=None)
+    archived = [p.parent for p in (t.box.root / "Archive").rglob("README.md") if "Drum" in p.read_text()]
+    names = {p.name for p in archived[0].rglob("*.txt")} if archived else set()
+    t.ok(archived and {"raw.txt", "big.txt", "new.txt"} <= names,
+         f"run again, it is put away whole, every part in it: {archived} {names}")
+    page = (archived[0] / "README.md").read_text() if archived else ""
+    for part in ("Raw", "Big"):
+        t.ok(page.count(f"Put away {part}:") <= page.count(f"Brought {part} back"),
+             f"and its Log says {part} is back, not still away\n{page}")
+
+
+@test
+def test_r26_a_renamed_thing_still_gets_its_parts_back(t: Case) -> None:
+    """Renamed after a part was put away, back --part said its Log didn't
+    say so: the part was under its old name (third pre-merge review of
+    round 26)."""
+    t.box.run("new", "work", "Plan")
+    raw = t.box.root / "Work" / "Plan" / "Raw"
+    raw.mkdir()
+    (raw / "r.txt").write_text("r\n")
+    t.box.run("close", "Plan", "--part", "Raw")
+    t.box.run("rename", "Plan", "Big Plan")
+    t.box.run("back", "Big Plan", "--part", "Raw")
+    t.ok((t.box.root / "Work" / "Big Plan" / "Raw" / "r.txt").is_file(), "it comes back")
+
+
+@test
+def test_r26_a_log_line_never_reaches_a_thing_put_away_whole(t: Case) -> None:
+    """One line written on another page pulled a folder out of a thing put
+    away whole (fourth pre-merge review of round 26)."""
+    t.any_exit()
+    for name in ("Alpha", "Beta"):
+        t.box.run("new", "work", name)
+    sketches = t.box.root / "Work" / "Alpha" / "Sketches"
+    sketches.mkdir()
+    (sketches / "s.txt").write_text("alpha's\n")
+    t.box.run("close", "Alpha")
+    alpha = next(p.parent for p in (t.box.root / "Archive").rglob("README.md") if "Alpha" in p.read_text())
+    beta = t.box.root / "Work" / "Beta" / "README.md"
+    beta.write_text(beta.read_text() + f"- 2026-10-29 · Put away Sketches: it is in "
+                    f"{(alpha / 'Sketches').relative_to(t.box.root).as_posix()}\n")
+    t.box.run("back", "Beta", "--part", "Sketches", expect=None)
+    t.ok((alpha / "Sketches" / "s.txt").is_file(), "Alpha's folder stays in Alpha")
+
+
+@test
+def test_r27_the_index_never_writes_over_a_file_of_theirs_in_other_capitals(t: Case) -> None:
+    """A person's own index.md at the top, the same file as INDEX.md on a
+    Mac, was written over by the list with no copy kept, and sort then
+    filed the list as work (twenty-first review, round 26)."""
+    t.any_exit()
+    root = t.box.root
+    (root / "INDEX.md").unlink(missing_ok=True)
+    mine = root / "index.md"
+    mine.write_text("# Start here\n\nMy own way into this folder.\n")
+    t.box.run("index", "--notify", expect=None)
+    t.box.run("sort", expect=None)
+    found = [p for p in root.rglob("*.md") if "My own way into this folder." in p.read_text(errors="replace")]
+    t.ok(found, "their words are still there, somewhere it can be found")
+    t.ok(not any("written by ./os" in p.read_text(errors="replace")
+                 for p in root.rglob("*.md") if p.name.casefold() != "index.md" and ".claude" not in p.parts),
+         "and the list is never filed anywhere as a thing of theirs")
+    theirs = root / "INDEX.md"
+    for p in root.iterdir():
+        if p.name.casefold() == "index.md":
+            p.unlink()
+    theirs.write_text("# My index\n\nby hand\n")
+    t.box.run("index", expect=None)
+    t.ok("by hand" in theirs.read_text(), "an INDEX.md of theirs, without ./os's own first line, is left too")
+    said = t.box.run("check", expect=None).stdout
+    t.ok("INDEX.md" in said and "leaves it alone" in said, f"and check says why there's no list\n{said}")
+
+
+@test
+def test_r27_a_note_about_someone_is_never_made_a_helper(t: Case) -> None:
+    """A note with name: and description: in its header (a dentist) was
+    taken for a helper, moved into .claude/agents/, and was gone from Notes
+    and from find (twenty-first review, round 26)."""
+    root = t.box.root
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Notes" / "dentist.md").write_text(
+        "---\nname: Sarah Jones\ndescription: my dentist, on the high street\n---\n\nCall before 5.\n")
+    (root / "doctor.md").write_text(
+        "---\nname: Dr Patel\ndescription: my GP\n---\n\nSurgery on Mondays.\n")
+    t.box.run("sort")
+    agents = root / ".claude" / "agents"
+    t.ok(not any(n in p.name for p in agents.glob("*.md") for n in ("sarah", "patel")),
+         f"neither is made a helper: {sorted(p.name for p in agents.glob('*.md'))}")
+    t.ok("dentist" in t.box.run("find", "dentist", expect=None).stdout.lower(), "and find still finds it")
+    real = root / "kiln-watcher.md"
+    real.write_text("---\nname: kiln-watcher\ndescription: Watch a firing. Use when the kiln is on.\n"
+                    "tools: Read, Bash\n---\n\nYou watch the kiln.\n")
+    t.box.run("sort")
+    t.ok((agents / "kiln-watcher.md").is_file(), "a real helper dropped in still goes where helpers go")
+    t.box.run("new", "helper", "Glaze checker")
+    t.ok(any("glaze" in p.name for p in agents.glob("*.md")), "and one made with ./os new lands there too")
+
+
+@test
+def test_r27_an_exported_snag_page_is_never_filed_into_their_notes(t: Case) -> None:
+    """The second snag --export wrote template-feedback-<date>.md at the top,
+    and sort filed it into Notes, among their own (twenty-first review,
+    round 26)."""
+    root = t.box.root
+    t.box.run("snag", "a command surprised me, once")
+    t.box.run("snag", "--export", "--clear")
+    t.box.run("snag", "a command surprised me again")
+    t.box.run("snag", "--export")
+    tops = sorted(p.name for p in root.glob("template-feedback*.md"))
+    t.ok(len(tops) >= 2, f"each export is at the top: {tops}")
+    t.box.run("sort")
+    t.ok(sorted(p.name for p in root.glob("template-feedback*.md")) == tops
+         and not any("template-feedback" in p.name for p in root.rglob("*") if p.parent != root),
+         "and none of them is filed anywhere")
+
+
+@test
+def test_r27_lists_written_by_an_older_version_are_still_kept(t: Case) -> None:
+    """Lists written before 2026-10-28 start "written by Zenith": taken for
+    the person's own, they were never written again, and the catalog lost
+    every new skill (pre-merge review of round 27)."""
+    root = t.box.root
+    t.box.run("index")
+    for f in (root / "INDEX.md", root / ".claude" / "CATALOG.md"):
+        f.write_text(f.read_text().replace(
+            engine.GENERATED, "<!-- written by Zenith. Don't edit by hand — it gets overwritten. -->", 1))
+    t.box.run("new", "skill", "Glaze mixing")
+    t.box.run("index")
+    t.ok("glaze" in (root / ".claude" / "CATALOG.md").read_text().lower(), "the catalog takes the new skill")
+    t.ok(engine.GENERATED in (root / "INDEX.md").read_text(), "and the list is written again")
+    t.ok("list-name-taken" not in t.box.run("check", "--json", expect=None).stdout, "with nothing said about it")
+
+
+@test
+def test_r27_a_helper_with_a_typed_name_and_no_tools_is_still_a_helper(t: Case) -> None:
+    """A Claude Code helper with only name: and description: (it takes every
+    tool) was filed as a note (pre-merge review of round 27)."""
+    t.any_exit()
+    outside = t.box.tmp / "code-reviewer.md"
+    outside.write_text("---\nname: code-reviewer\ndescription: Reviews code. Use this agent after a change.\n"
+                       "---\n\nReview it.\n")
+    t.box.run("save", str(outside), expect=None)
+    t.ok((t.box.root / ".claude" / "agents" / "code-reviewer.md").is_file(), "it goes where helpers go")
+
+
+@test
+def test_r27_a_note_with_a_one_word_name_stays_a_note(t: Case) -> None:
+    """name: dentist, dropped at the top or saved from outside, was moved
+    into .claude/agents/ and gone from find (second pre-merge review of
+    round 27)."""
+    t.any_exit()
+    root = t.box.root
+    (root / "dentist.md").write_text("---\nname: dentist\ndescription: on the high street\n---\n\nCall before 5.\n")
+    (root / "roast.md").write_text("---\nname: roast\ndescription: a recipe I use for Sunday lunch\n---\n\nRosemary.\n")
+    (root / "plumber.md").write_text("---\nname: plumber\ndescription: number I use when the boiler breaks\n---\n\n0123.\n")
+    (root / "kettle.md").write_text("---\nname: kettle\ndescription: Use for descaling. Vinegar.\n---\n\nVinegar.\n")
+    (root / "corolla.md").write_text("---\nname: Corolla\ndescription: my car\nmodel: 2015 hybrid\n---\n\nOil.\n")
+    (root / "shed.md").write_text("---\nname: shed\ndescription: what's in the workshop\n"
+                                  "tools: chisel, saw, drill\n---\n\nSaw.\n")
+    (root / "kitchen.md").write_text("---\nname: Kitchen\ndescription: renovation ideas\ncolor: blue\n---\n\nTiles.\n")
+    outside = t.box.tmp / "mum.md"
+    outside.write_text("---\nname: mum\ndescription: birthday in May, likes tulips\n---\n\nTulips.\n")
+    t.box.run("sort")
+    t.box.run("save", str(outside), expect=None)
+    agents = sorted(p.name for p in (root / ".claude" / "agents").glob("*.md"))
+    t.ok(not {"dentist.md", "mum.md", "roast.md", "plumber.md", "kettle.md", "kitchen.md", "corolla.md", "shed.md"}
+         & set(agents),
+         f"none is made a helper: {agents}")
+    for name, extra in (("test-writer", "description: Writes tests.\ncolor: green\n"),
+                        ("doc-writer", "description: Writes docs. Use this agent when a page changes.\n")):
+        helper = t.box.tmp / f"{name}.md"
+        helper.write_text(f"---\nname: {name}\n{extra}---\n\nDo it.\n")
+        t.box.run("save", str(helper), expect=None)
+        t.ok((root / ".claude" / "agents" / f"{name}.md").is_file(), f"{name}, as Claude Code writes one, is a helper")
+    t.ok("tulips" in t.box.run("find", "tulips", expect=None).stdout.lower(), "and find finds it")
+
+
+@test
+def test_r27_a_note_in_notes_with_tools_or_a_model_stays_put(t: Case) -> None:
+    """A note in Notes with tools: Figma, Sketch, or model: Opus, was moved
+    out into .claude/agents/ as a helper (seventh pre-merge review of
+    round 27)."""
+    root = t.box.root
+    (root / "Notes").mkdir(exist_ok=True)
+    (root / "Work").mkdir(exist_ok=True)
+    (root / "Notes" / "sarah.md").write_text("---\nname: Sarah\ndescription: designer I work with\n"
+                                             "tools: Figma, Sketch\n---\n\nFigma files.\n")
+    (root / "Notes" / "car.md").write_text("---\nname: Car\ndescription: the old one\nmodel: Opus\n---\n\nOil.\n")
+    (root / "Work" / "shelf.md").write_text("---\nname: Shelf\ndescription: for the hall\n"
+                                            "tools: [Hammer, Drill]\n---\n\nSand it.\n")
+    t.box.run("sort")
+    agents = sorted(p.name for p in (root / ".claude" / "agents").glob("*.md"))
+    t.ok(not {"sarah.md", "car.md", "shelf.md"} & set(agents), f"none of them is made a helper: {agents}")
+    t.ok("figma" in t.box.run("find", "Figma", expect=None).stdout.lower(), "and find still finds them")
+
+
+@test
+def test_r28_a_note_folder_with_skill_md_in_other_capitals_stays_a_note(t: Case) -> None:
+    """A note folder holding skill.md (the same file as SKILL.md on a Mac)
+    was moved out of Notes into .claude/skills/, photo and all, and a header
+    written into the note to make it fit (twenty-second review, round 27)."""
+    root = t.box.root
+    wood = root / "Notes" / "Woodwork"
+    wood.mkdir(parents=True)
+    (wood / "skill.md").write_text("Dovetail joints: practise on pine first. Sharpen the chisel.\n")
+    (wood / "tools.md").write_text("Chisels, a saw.\n")
+    (wood / "bench.jpg").write_bytes(b"\xff\xd8\xff")
+    guitar = root / "Notes" / "Guitar"
+    guitar.mkdir(parents=True)
+    (guitar / "SKILL.md").write_text("Chords: G, C, D. Practise slowly.\n")
+    t.box.run("sort")
+    skills = sorted(p.name for p in (root / ".claude" / "skills").iterdir())
+    t.ok("woodwork" not in skills and "guitar" not in skills, f"neither is made a skill: {skills}")
+    t.eq((wood / "skill.md").read_text(), "Dovetail joints: practise on pine first. Sharpen the chisel.\n",
+         "and nothing is written into their note")
+    t.ok("chisel" in t.box.run("find", "chisel", expect=None).stdout.lower(), "find still finds it")
+
+
+@test
+def test_r28_sort_keeps_a_files_windows_line_endings(t: Case) -> None:
+    """A note with Windows line endings came back with every line changed
+    once sort put its header on (twenty-second review, round 27)."""
+    note = t.box.root / "Notes" / "crlf.md"
+    note.parent.mkdir(exist_ok=True)
+    note.write_bytes(b"# Tea\r\n\r\nGreen, then black.\r\nNo sugar.\r\n")
+    t.box.run("sort")
+    found = [p for p in t.box.root.rglob("*.md") if b"Green, then black." in p.read_bytes()]
+    data = found[0].read_bytes() if found else b""
+    t.ok(found and b"\r\n" in data and data.count(b"\r\n") == data.count(b"\n"),
+         f"its line endings are as they were: {data[:120]!r}")
+
+
+@test
+def test_r28_a_skill_whose_description_is_on_the_next_line_is_a_skill(t: Case) -> None:
+    """A real skill whose description was written on the line below its key
+    was filed into Notes (pre-merge review of round 28)."""
+    folder = t.box.root / "pdf-forms"
+    folder.mkdir()
+    (folder / "SKILL.md").write_text("---\nname: pdf-forms\ndescription:\n  Use when filling PDF forms.\n---\n\n# PDF forms\n")
+    (folder / "fill.py").write_text("print('fill')\n")
+    t.box.run("sort")
+    t.ok((t.box.root / ".claude" / "skills" / "pdf-forms" / "SKILL.md").is_file(), "it is filed as a skill")
+    t.box.run("index")
+    t.ok("Use when filling PDF forms" in (t.box.root / ".claude" / "CATALOG.md").read_text(),
+         "the catalog says what it is for")
+    said = t.box.run("check", expect=None).stdout
+    t.ok("no description" not in said, f"and check finds its description\n{said}")
+    t.eq(engine.parse_frontmatter("---\ntitle: x\nextra:\n  nested: 1\ntags:\n  - a\n---\nbody")[0].get("tags"),
+         ["a"], "a list below its key is still a list")
 
 
 def main(argv: list[str]) -> int:

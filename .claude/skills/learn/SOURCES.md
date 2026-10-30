@@ -16,7 +16,8 @@ Fetching caches, so a top-up costs nothing. If yt-dlp
 is missing it prints the one line to install it — pass that on and use `WebFetch`
 meanwhile.
 
-Transcripts land in `.os/transcripts/` with a `[MM:SS]` stamp every half minute.
+Transcripts land in `.os/transcripts/` with a `[MM:SS]` stamp every half minute
+(`[H:MM:SS]` past the first hour).
 **Cite them** — that is what turns a claim into something they can go and check.
 Cite where the claim *starts*: sentences run across a stamp, so the line you
 found it on is often its second half.

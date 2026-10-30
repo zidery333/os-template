@@ -122,7 +122,10 @@ def clean_vtt(path: Path, stamp_every: int = STAMP_EVERY) -> str:
             continue
         last = text
         if seconds >= next_stamp:
-            out.append("\n[%02d:%02d] " % (int(seconds) // 60, int(seconds) % 60))
+            # Past an hour, hours too: [333:00] was a long video's 5h33 mark
+            # (audit, 2026-10-29).
+            h, m, sec = int(seconds) // 3600, int(seconds) % 3600 // 60, int(seconds) % 60
+            out.append("\n[%d:%02d:%02d] " % (h, m, sec) if h else "\n[%02d:%02d] " % (m, sec))
             next_stamp = seconds + stamp_every
         out.append(text + " ")
     return "".join(out).strip() + "\n"
@@ -167,6 +170,12 @@ _WHY = (
     ("private video", "that one is private"),
     ("members-only", "that one is for channel members only"),
     ("removed by the uploader", "that one has been taken down"),
+    ("video is unavailable", "that one isn't available — deleted, private, or "
+                             "blocked where you are"),
+    # Above "unable to download webpage": a channel name typed wrong was
+    # called no connection (audit, 2026-10-29).
+    # The page, not a caption track: a 404 for subtitles is "no captions".
+    ("unable to download webpage: http error 404", "nothing is at that link — check it's typed right"),
     ("video unavailable", "that one isn't available — deleted, private, or "
                           "blocked where you are"),
     ("is not available", "that one isn't available — deleted, private, or "
@@ -213,6 +222,10 @@ def why_empty(done: subprocess.CompletedProcess) -> str:
         line = re.sub(r"\s*\(caused by .*$", "", line)
         line = re.sub(r"^[A-Za-z0-9_-]{11}:\s*", "", line)
         if line and len(line) < 200:
+            # yt-dlp's words for a link that isn't one (audit, 2026-10-29).
+            if "is not a valid url" in line.lower():
+                return ("that isn't a link — paste the whole web address, like "
+                        "https://www.youtube.com/@somechannel")
             return line
     return "no captions on this one"
 
@@ -321,7 +334,16 @@ def transcript(root: Path, url: str, force: bool = False) -> dict:
         lang = _track_lang(best)
         text = clean_vtt(best)
     out = cache_dir(root) / f"{vid}.txt"
-    out.write_text(text, encoding="utf-8")
+    # Whole or not at all: written in place, one cut short by a full disk or
+    # a stop was taken as cached for good, and read as the whole talk
+    # (nineteenth review, round 24).
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp~")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(out)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
     result = {"id": vid, "ok": True, "path": str(out), "language": lang,
               "words": len(text.split()), "cached": False}
     if lang and not lang.startswith("en"):
@@ -343,6 +365,14 @@ def inventory(root: Path) -> List[dict]:
         out.append({"id": path.stem, "path": str(path),
                     "words": len(path.read_text(encoding="utf-8").split())})
     return out
+
+
+def not_kept(root: Path, ids: Iterable[str]) -> List[str]:
+    """The ids asked to forget that aren't in the cache, to be said rather
+    than passed over (audit, 2026-10-29)."""
+    cache = cache_dir(root).resolve()
+    return [v for v in ids if not (cache_dir(root) / f"{v}.txt").is_file()
+            or (cache_dir(root) / f"{v}.txt").resolve().parent != cache]
 
 
 def forget(root: Path, ids: Iterable[str]) -> int:
@@ -414,8 +444,12 @@ def write_words(root: Path, data: dict) -> None:
 
 
 def _spec(blocks: dict, name: str) -> dict:
-    """One subject's block, or an empty one if it was written as something else."""
+    """One subject's block. Written as a plain list of words, those are its
+    keywords: taken as empty, `./os words baking "proofing"` threw them away
+    (check and learn sweep, 2026-10-29). Anything else starts empty."""
     spec = blocks.get(name)
+    if isinstance(spec, list):
+        return {"keywords": [str(w) for w in spec]}
     return spec if isinstance(spec, dict) else {}
 
 
@@ -449,9 +483,12 @@ def teach(root: Path, domain: str, terms: Iterable[str]) -> dict:
     known |= {w.strip().lower() for w in _listed(spec, "learned")}
     added: List[str] = []
     already: List[str] = []
+    skipped: List[str] = []
     for raw in terms:
         term = re.sub(r"\s+", " ", str(raw).strip().lower())
         if not term or len(term) > 40:
+            # Said, not dropped without a word (audit, 2026-10-29).
+            skipped.append(str(raw))
             continue
         if term in known:
             already.append(term)
@@ -463,7 +500,7 @@ def teach(root: Path, domain: str, terms: Iterable[str]) -> dict:
         blocks[domain] = spec
         data["domains"] = blocks
         write_words(root, data)
-    return {"ok": True, "domain": domain, "added": added,
+    return {"ok": True, "domain": domain, "added": added, "skipped": skipped,
             "already_known": already, "learned_now": len(_listed(spec, "learned"))}
 
 
@@ -525,7 +562,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if command == "have":
             return emit({"ok": True, "cached": inventory(root)})
         if command == "forget":
-            return emit({"ok": True, "forgotten": forget(root, rest)})
+            missing = not_kept(root, rest)
+            return emit({"ok": True, "forgotten": forget(root, rest), "not_kept": missing})
         if command == "words":
             if not rest:
                 return emit({"ok": True, "domains": domains(root),

@@ -34,9 +34,9 @@ them in this order:
    gives. On a yes, run `./os checkpoint "Before moving out"`, then the move.
    Tell them how to open it in its new place (step 6), and stop: this chat is
    finished. The next `/setup` there carries on.
-2. **`linked`**: it's still linked to the template's GitHub page, from a
-   `git clone`. Ask: "Your saves would go into the template's history. Shall I
-   cut that link? Everything saved so far stays." On a yes, `./os setup --unlink`.
+2. **`linked`**: still linked to the template's GitHub page, from a `git clone`.
+   Ask: "Shall I cut that link?" — with `fresh` true, "…and start this folder's own
+   history, the template's kept aside?" On a yes, run its `fix` line.
 3. **`no-git`, `no-claude` or `claude-not-found`**: give them the exact line to
    paste, from `fix`, and say what it's for in a few words.
 4. **`downloads`**: leave it for step 6, where the folder gets its name.
@@ -75,8 +75,9 @@ Then preview it, and say in plain words what will come in and where:
 ```
 
 On a yes, do it: `./os setup --bring "<the old folder>"`. Everything is
-copied, so the old folder stays exactly as it was. One `./os undo` takes the
-whole lot back out. After it:
+copied, so the old folder stays exactly as it was. Straight after it, one
+`./os undo` takes the whole lot back out, even if the bring was cut off
+partway. Bringing the same folder in again leaves what's already here. After it:
 
 - **An old rules file** lands in `Archive/<year>/Old Folder/CLAUDE (old folder).md`.
   Read it. Its lines may be an AI's, not theirs: list the ones about how they
@@ -97,24 +98,24 @@ enough. Don't push for a project.
 
 ## 6. Name it on disk, last
 
-Last of all, look at the folder's own name on disk (`folder_name` from the
-check). If it doesn't match the name they picked, or it's in Downloads, offer
-to move it. A plain name renames it where it is. A path moves it there, like
-`~/<Name>` for their home folder:
+Last, look at the folder's name on disk (`folder_name` from the check). If it
+isn't the name they picked, or it's in Downloads, offer to move it. A plain
+name renames it where it is. A path like `~/<Name>` moves it there:
 
 ```
 ./os checkpoint "Set up"
 ./os setup --move-to "<Name>"
 ```
 
-After a move, this chat still looks in the old place, so it's finished. Tell
-them how to open the folder again, using the path the move printed, never a
-guess at it:
+After a move this chat still looks in the old place, so it's finished. Tell
+them how to open the folder again from the path the move printed, never a guess:
 
 - **In the Claude app:** start a new chat and pick the folder, under its new name.
 - **In a terminal:** the `cd … && claude` line the move printed, as it printed it.
 
-If nothing moved, end with `./os checkpoint "Set up"` instead.
+If nothing moved, end with `./os checkpoint "Set up"` instead. If one keeps
+nothing because a bigger folder's history is around this one, run the
+`./os checkpoint --here` line it gives.
 
 ## 7. Say what's next
 

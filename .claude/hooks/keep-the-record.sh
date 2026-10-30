@@ -25,7 +25,7 @@ if [ "$PY" = /usr/bin/python3 ] && [ "$(uname -s)" = Darwin ] \
   exit 0
 fi
 ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-printf '%s' "$IN" | "$PY" -c '
+OUT=$(printf '%s' "$IN" | "$PY" -c '
 import glob, json, os, re, shlex, sys
 
 OPS = "();<>|&"
@@ -37,16 +37,41 @@ def tokens(line):
     """The words and operators of one line. A > or | inside quotes stays
     hidden in its word until the word is used, so it is never taken for a
     redirect: grep ">" only reads."""
-    out, quote, escaped = [], "", False
+    # shlex builds one long word a letter at a time, and a single line of a
+    # megabyte ran past the 10 seconds a hook has (audit, 2026-10-29). A run
+    # that long is text, never a file name, so it is cut to one letter first;
+    # quotes and redirects around it stay where they are.
+    line = re.sub(r"[^\s\x27\"\\<>|&;()]{1000,}", "X", line)
+    # A long quoted string, spaces and all, is text too: one of 800 KB took
+    # seven seconds, and past 1 MB the hook ran out of time (hooks sweep,
+    # 2026-10-29). Only its first thousand letters are kept, cut here where
+    # the quotes are known: a pattern paired one closing quote with the next
+    # opening one and hid a real > between them (twelfth review).
+    out, quote, escaped, run = [], "", False, 0
     for ch in line:
+        inside = bool(quote)
         if escaped:
             escaped, ch = False, ch.translate(HIDE)
+            # Inside double quotes, an escaped quote, backslash, ` or $ is
+            # followed here and given to shlex as plain letters; any other
+            # backslash stays, as bash keeps it: a\b.md is a name (thirteenth
+            # and pre-merge reviews, 2026-10-29).
+            if inside and ch in "\"\\`$" and out and out[-1] == "\\":
+                out[-1], ch = "x", "x"
         elif ch == "\\" and quote != "\x27":
             escaped = True
         elif ch in "\x27\"" and quote in ("", ch):
             quote = "" if quote else ch
         elif quote:
             ch = ch.translate(HIDE)
+        if inside and quote:
+            run += 1
+            if run > 1000:
+                continue
+            if run == 1000 and ch == "\\":
+                ch = "x"      # its partner is cut: never leave it escaping the close
+        else:
+            run = 0
         out.append(ch)
     try:
         lex = shlex.shlex("".join(out), posix=True, punctuation_chars=True)
@@ -65,8 +90,15 @@ def named(cwd, word):
     return [path]
 
 
-def read(path):
+def read(path, limit=None):
+    """The words in a file, or None. Only a plain file, and at most
+    `limit` bytes: a pipe named by a cp hung the call, and a 1.5 GB video
+    took 3 GB of memory (hooks sweep, 2026-10-29)."""
     try:
+        if not os.path.isfile(path):
+            return None
+        if limit is not None and os.path.getsize(path) > limit:
+            return None
         with open(path, encoding="utf-8", errors="replace") as fh:
             return fh.read()
     except OSError:
@@ -138,7 +170,11 @@ def rewrites(cmd, cwd):
                     dest = os.path.join(cwd, os.path.expanduser(args[-1]))
                     if os.path.isdir(dest):
                         dest = os.path.join(dest, os.path.basename(src.rstrip("/")))
-                    found.append((dest, read(os.path.join(cwd, os.path.expanduser(src)))))
+                    # The new words only matter where a note would be
+                    # replaced; past 2 MB they are "not known".
+                    if not os.path.isfile(dest):
+                        continue
+                    found.append((dest, read(os.path.join(cwd, os.path.expanduser(src)), 2_000_000)))
             if name in ("cd", "pushd") and args:
                 cwd = os.path.join(cwd, os.path.expanduser(args[0]))
             words, onto = [], []
@@ -173,7 +209,7 @@ try:
     else:
         sys.exit(0)
     for path, new in calls:
-        old = read(path) if os.path.isfile(path) else None
+        old = read(path, 10_000_000) if os.path.isfile(path) else None
         if old is None:
             continue
         still = {raw.strip() for raw in (new or "").splitlines()}
@@ -223,5 +259,10 @@ print(json.dumps({"hookSpecificOutput": {
     "permissionDecisionReason":
         reason + "Those are only ever added to. Say yes only if you asked for that.",
     "additionalContext": context}}))
-' "$ROOT" 2>/dev/null
+' "$ROOT" 2>/dev/null)
+# Only an answer is passed on: a python3 that printed anything else had it
+# taken as the hook's answer (hooks sweep, 2026-10-29).
+case "$OUT" in
+  "{"*) printf '%s\n' "$OUT" ;;
+esac
 exit 0
