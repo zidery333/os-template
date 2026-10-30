@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-30.2
+
+- A new addon, Prompts: it writes a prompt for any AI (ChatGPT, Claude,
+  Gemini, Midjourney, Veo, Kling), or finds out why one keeps giving bad
+  answers and fixes it. Add it with `./os addon prompts`.
+
 ## 2026-10-30.1
 
 - On Linux, `./os sort` no longer puts `V2.0 Launch` next to an existing

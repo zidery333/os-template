@@ -231,7 +231,8 @@
     ".gitignore": [
       "110cb56982daa3818afbb83c42b9ac5d6a966009",
       "039832c7eadaa3cab6876a2157fad883f702fd38",
-      "00e1071cdd8bc922562a3d478554cb6a92af05b0"
+      "00e1071cdd8bc922562a3d478554cb6a92af05b0",
+      "1430a32aea904e697fc7469e8844d6d60db753d6"
     ],
     ".claude/hooks/keep-the-record.sh": [
       "35ba9345866878510b97c336aee5aa1bdc45048b",
@@ -357,7 +358,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-10-30.1",
+  "release": "2026-10-30.2",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

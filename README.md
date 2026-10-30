@@ -121,7 +121,8 @@ the ones you want, and `./os update` keeps them up to date.
 
 | | Addon | What it adds |
 | :---: | --- | --- |
-| ✍️ | **Tate** | Writes emails, tweets, captions and DMs in Andrew Tate's voice, measured from hundreds of his real emails. |
+| 🎯 | **Prompts** | Writes a prompt for any AI — ChatGPT, Claude, Gemini, Midjourney, Veo, Kling — tests it when it can, and finds out why a prompt keeps giving bad answers and fixes it. Built from the official prompting guides. |
+| ✍️ | **Tate** | Says anything in Andrew Tate's voice — texts, DMs, replies, poems, captions, tweets, speeches, emails — measured from hundreds of his real emails. |
 
 Once Zenith is installed (see Install below), go into your folder and type
 this to see every addon:
@@ -133,7 +134,7 @@ this to see every addon:
 To add one, put its name after it:
 
 ```bash
-./os addon tate
+./os addon prompts
 ```
 
 An addon never changes your own work. If it has a skill with the same name as
