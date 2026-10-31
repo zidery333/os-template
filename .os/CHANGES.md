@@ -3,6 +3,11 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-10-31.1
+
+- The download page now shows the addons near the top, so you can see
+  what you can add before you scroll.
+
 ## 2026-10-30.2
 
 - A new addon, Prompts: it writes a prompt for any AI (ChatGPT, Claude,

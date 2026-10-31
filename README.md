@@ -6,6 +6,8 @@ You talk to Claude in plain words. It writes things down, puts them in the
 right place, and keeps track of what you're working on. Open it tomorrow and
 it knows where you left off.
 
+**Addons you can add:** 🎯 Prompts · ✍️ Tate · [see them all](#addons)
+
 ![Made for Claude Code](https://img.shields.io/badge/made%20for-Claude%20Code-d97757)
 ![Version](https://img.shields.io/github/v/release/zidery333/os-template?label=version&display_name=release&color=2ea44f)
 ![MIT licence](https://img.shields.io/badge/licence-MIT-blue)
@@ -74,6 +76,32 @@ You just talk to Claude, and it does the filing.
 - **Stays up to date.** `./os update` brings the newest version and never
   touches your own work.
 
+## Addons
+
+Extra skills and helpers for one kind of work. Zenith comes with none. Add only
+the ones you want, and `./os update` keeps them up to date.
+
+| | Addon | What it adds |
+| :---: | --- | --- |
+| 🎯 | **Prompts** | Writes a prompt for any AI — ChatGPT, Claude, Gemini, Midjourney, Veo, Kling — tests it when it can, and finds out why a prompt keeps giving bad answers and fixes it. Built from the official prompting guides. |
+| ✍️ | **Tate** | Says anything in Andrew Tate's voice — texts, DMs, replies, poems, captions, tweets, speeches, emails — measured from hundreds of his real emails. |
+
+Once Zenith is installed (see Install below), go into your folder and type
+this to see every addon:
+
+```bash
+./os addon
+```
+
+To add one, put its name after it:
+
+```bash
+./os addon prompts
+```
+
+An addon never changes your own work. If it has a skill with the same name as
+one you already have, it stops and tells you instead of replacing yours.
+
 ## Your three folders
 
 | Folder | What goes in it |
@@ -113,32 +141,6 @@ Say something like this, and Claude does it the same careful way every time.
 | "Make this a skill" | Turns something you keep asking for into a new skill |
 | "Done for today" | Writes down what happened and saves a checkpoint |
 | "What can you do?" | The full menu |
-
-## Addons
-
-Extra skills and helpers for one kind of work. Zenith comes with none. Add only
-the ones you want, and `./os update` keeps them up to date.
-
-| | Addon | What it adds |
-| :---: | --- | --- |
-| 🎯 | **Prompts** | Writes a prompt for any AI — ChatGPT, Claude, Gemini, Midjourney, Veo, Kling — tests it when it can, and finds out why a prompt keeps giving bad answers and fixes it. Built from the official prompting guides. |
-| ✍️ | **Tate** | Says anything in Andrew Tate's voice — texts, DMs, replies, poems, captions, tweets, speeches, emails — measured from hundreds of his real emails. |
-
-Once Zenith is installed (see Install below), go into your folder and type
-this to see every addon:
-
-```bash
-./os addon
-```
-
-To add one, put its name after it:
-
-```bash
-./os addon prompts
-```
-
-An addon never changes your own work. If it has a skill with the same name as
-one you already have, it stops and tells you instead of replacing yours.
 
 ## What you need
 
