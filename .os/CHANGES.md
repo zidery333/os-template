@@ -3,6 +3,26 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-04.2
+
+- Subchat chain now warns about worktrees (separate copies of a project).
+  Steps that share a folder start without one, so each step sees the work
+  the step before it did.
+- Screenshot grid no longer says it made a picture when the browser
+  failed and an older one was still there. A browser that hangs now gets
+  a plain message instead of an error dump, and so does `--cols` or
+  `--title` with nothing after it.
+- Screenshot grid stops with a plain message instead of saying "Made"
+  when a phone shot would come out blank (the page refuses to show in a
+  frame), or when a shot is empty, isn't a picture, or has no size. A `#`
+  or `?` in a file or folder name no longer breaks the picture.
+- Screenshot grid now names commands that save an app screenshot to a
+  file: `xcrun simctl io booted screenshot` and `screencapture -x`.
+- Subchat chain only starts when you ask for it or the job is too big for
+  one chat, not for every job with a few steps. It says up front that it
+  needs the Claude desktop app, starts steps without a card to click per
+  step, and keeps flag files out of scratchpads, which other chats can't see.
+
 ## 2026-11-04.1
 
 - Two new addons. Screenshot grid: when a job changes something you can
