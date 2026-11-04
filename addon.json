@@ -1,0 +1,9 @@
+{
+  "name": "Subchat chain",
+  "icon": "🔗",
+  "about": "Runs a big job as one main chat that hands each step to its own subchat, one after another, checks each one's work, then sends you one clean summary. For Claude Code in the Claude desktop app.",
+  "files": [
+    ".claude/skills/subchat-chain/SKILL.md"
+  ],
+  "release": "2026-11-04.1"
+}
