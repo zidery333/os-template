@@ -31,7 +31,11 @@ One clear picture beats a paragraph saying "it looks good now".
    python3 .claude/skills/screenshot-grid/make-grid.py --shoot http://localhost:3000 screenshots/2026-11-04-theme-picker/1.png
    ```
 
-   For an app, use the simulator's or the computer's screenshot tool, then save the file there.
+   For an app, use a command that writes the file itself. The screenshot tools
+   that only show you the picture (the simulator, computer-use and browser-pane
+   ones) leave no file behind to save.
+   - iOS Simulator: `xcrun simctl io booted screenshot <folder>/1.png`
+   - The whole Mac screen: `screencapture -x <folder>/1.png`
 3. **Put them into one picture** with labels, whenever there is more than one shot:
 
    ```bash
