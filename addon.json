@@ -1,0 +1,10 @@
+{
+  "name": "Screenshot grid",
+  "icon": "📸",
+  "about": "Ends every job that changed something you can see with 1–3 screenshots, put together into one labelled picture: every theme in one grid, desktop and phone side by side.",
+  "files": [
+    ".claude/skills/screenshot-grid/SKILL.md",
+    ".claude/skills/screenshot-grid/make-grid.py"
+  ],
+  "release": "2026-11-04.1"
+}
