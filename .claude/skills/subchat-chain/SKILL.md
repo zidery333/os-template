@@ -1,6 +1,6 @@
 ---
 name: subchat-chain
-description: Run a big job as a main chat that hands each step to its own subchat, one after another, then checks the work and reports back. Use when a job has several steps, when the user says split this up, use subchats, run it as a chain, do it step by step in separate chats, or when the work is too big for one chat.
+description: Run a big job as a main chat that hands each step to its own subchat, one after another, then checks the work and reports back. Use when the user says split this up, use subchats, run it as a chain, do it step by step in separate chats, or when the work is too big for one chat.
 argument-hint: [the job]
 ---
 
@@ -10,6 +10,9 @@ A subchat is a separate Claude Code session that the main chat starts and hands
 one job to, like sending a helper into another room with a note. The main chat
 talks with the person: it asks, plans, starts subchats, checks what they did and
 reports back. It doesn't do the big building work itself. Subchats do that.
+
+This needs Claude Code in the Claude desktop app, which can start sessions. In a
+plain terminal or another AI, hand each step to a helper, one at a time.
 
 ## Do this
 
@@ -21,6 +24,8 @@ reports back. It doesn't do the big building work itself. Subchats do that.
    must run one at a time. Steps in different folders may run side by side.
    Show the plan to the person and get a yes before starting anything.
 3. **Start one subchat per step** with `start_session`, using the brief below.
+   Use initiation `"user_asked"`: their yes to the plan is the ask, so there's
+   no card to click per step.
    Never put two steps in one subchat, even small ones. A subchat that does
    one thing is easy to check. One that does five is not.
 4. **Chain them, so the person never clicks "start" on each one.** Pick one way:
@@ -31,8 +36,17 @@ reports back. It doesn't do the big building work itself. Subchats do that.
      brief says: wait in the background until `step-1.done` exists, then begin.
      Each subchat writes its own `step-N.done` as the very last thing, after its
      work is saved. Keep flag files in the shared notes folder the app gives
-     the chain (or the scratchpad), never inside the project, where `./os`
-     would try to file them.
+     the chain, never inside the project, where `./os` would try to file them.
+     Not in a scratchpad: each session has its own, and the others can't see it.
+
+   **Watch out for worktrees.** A worktree is a separate copy of the project
+   on its own branch. A subchat started with its own worktree gets a fresh
+   copy the moment it starts, so it only sees work that existed then. With
+   flag files, step 2's copy is made before step 1 has done anything, so step 2
+   never sees step 1's work. Steps that share a folder share it for real:
+   start them with `use_worktree: false`. If the main chat itself runs in a
+   worktree, don't use flag files. Start each step only after the last step's
+   work is merged into the main chat's branch.
 5. **Check each result before you trust it.** A subchat's report is its own
    story, not proof. Open the files it says it changed. Look at the commit or
    checkpoint (`git show --stat <commit>`). Run the project's own check, like
@@ -53,7 +67,8 @@ A turn the app started on its own (a "subchat finished" note, not the person
 typing) can't start a session in another folder. Plan for it:
 - Start every subchat the chain will need while the person is still talking to you,
   with later steps waiting on flag files.
-- Or reuse an idle subchat that is already there (see below).
+- Or reuse an idle subchat that is already in that folder: clear it, brief it,
+  rename it (see below).
 - Or tell the person "say go and I'll start the next step", and stop.
 
 ## Reusing a subchat for a new job
@@ -97,6 +112,7 @@ Rule 2 uses the screenshot-grid skill. If this folder doesn't have it, type
 
 - One step, one subchat.
 - Two subchats never work in the same folder at the same time.
+- Steps that share a folder start with `use_worktree: false`.
 - The main chat plans, checks and reports. It doesn't build.
 - Look at the files and commits, not just the report.
 - Say who pushes or releases in the brief. If it doesn't say, the subchat doesn't.
