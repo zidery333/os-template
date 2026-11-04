@@ -3,6 +3,17 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-04.1
+
+- Two new addons. Screenshot grid: when a job changes something you can
+  see, it ends with 1–3 screenshots put together into one labelled
+  picture, every theme in one grid, desktop and phone side by side. Add it
+  with `./os addon screenshot-grid`.
+- Subchat chain: a big job runs as one main chat that hands each step to
+  its own subchat, checks each one's work, then sends you one summary. It
+  needs Claude Code in the Claude desktop app. Add it with
+  `./os addon subchat-chain`.
+
 ## 2026-10-31.1
 
 - The download page now shows the addons near the top, so you can see
