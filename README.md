@@ -1,6 +1,6 @@
 # 📈 Mark Builds Brands
 
-Answers branded-dropshipping questions the way YouTuber MarkBuildsBrands teaches them — products, Meta ads, AI ads, hooks, landing pages, mindset — and writes in his voice. Built from 59 of his videos. Unofficial, not made with him. Say 'mark mode' or ask 'what would MarkBuildsBrands do…'.
+Answers branded-dropshipping questions the way YouTuber MarkBuildsBrands teaches them, in his voice. Built from 59 of his videos (May 2025 – Nov 2026). Unofficial. Say 'mark mode'.
 
 An addon for [Zenith](https://github.com/zidery333/os-template/tree/os). Inside your Zenith folder, type:
 

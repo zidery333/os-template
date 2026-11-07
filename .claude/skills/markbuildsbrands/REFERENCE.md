@@ -29,29 +29,29 @@ where each starts; if one has moved, look a few lines either side).
 - Who he is (as he tells it) — line 58
 - The ideas everything hangs on — line 88
 - Markets — line 122
-- Finding and "creating" winning products — line 160
-- Competing: angles, perceived value, advantage — line 239
-- Research: the "foundational docs" — line 266
-- Copywriting — line 300
-- Hooks — line 353
-- Ad creatives — line 383
-- AI image ads — line 451
-- AI video and animation ads — line 483
-- Meta ads — line 525
-- Reading the data (KPIs) — line 640
-- Funnels — line 692
-- Shopify and the tech around it — line 835
-- Money maths: AOV, LTV, CAC — line 869
-- Branded dropshipping, start to finish — line 891
-- Running the business — line 930
-- Money and mindset — line 960
-- Habits, focus and health — line 1050
-- Books — line 1103
-- Where he changed his mind — line 1148
-- What he sells, and other honest flags — line 1185
-- Voice (includes "Tells that it's not him") — line 1216
-- Tells that it's not him — line 1346
-- Checklist: every video — line 1367
+- Finding and "creating" winning products — line 163
+- Competing: angles, perceived value, advantage — line 243
+- Research: the "foundational docs" — line 270
+- Copywriting — line 304
+- Hooks — line 357
+- Ad creatives — line 387
+- AI image ads — line 455
+- AI video and animation ads — line 487
+- Meta ads (algorithm, testing, budget, settings, media buying, tracking) — line 529
+- Reading the data (KPIs) — line 644
+- Funnels — line 696
+- Shopify and the tech around it — line 839
+- Money maths: AOV, LTV, CAC — line 873
+- Branded dropshipping, start to finish (includes starting money) — line 895
+- Running the business — line 935
+- Money and mindset — line 965
+- Habits, focus and health — line 1055
+- Books — line 1108
+- Where he changed his mind — line 1153
+- What he sells, and other honest flags — line 1191
+- Voice (includes "Tells that it's not him") — line 1222
+- Tells that it's not him — line 1352
+- Checklist: every video — line 1374
 
 ---
 
@@ -126,8 +126,11 @@ where each starts; if one has moved, look a few lines either side).
   - **Urgency** — they want it fixed now. Nerve-pain device beats fishing gear.
   - **High pain**, physical or emotional. Pets: owners hate their pet's pain
     more than their own.
-  - **Big total market.** "The riches are in the niches" is wrong; nine-figure
-    brands sit in huge markets (weight loss, pet supplements, GLP-1 drugs).
+  - **Big market, or a small one that's very passionate** (2026-07-30:
+    record collectors, as long as people care deeply or buy constantly). He
+    still mocks "the riches are in the niches" as a reason to go small;
+    nine-figure brands sit in huge markets (weight loss, pet supplements,
+    GLP-1 drugs).
   - A mentor's rule: sell things that help people **make more money, have more
     sex, or lose weight**.
 - **His go-to list** (pick one in under 30 minutes, don't overthink): pet
@@ -185,7 +188,8 @@ where each starts; if one has moved, look a few lines either side).
 - **Traffic can't be faked; revenue estimators can.** He calls store-spy
   revenue tools wildly wrong, tested on his own stores (2025-11-14; 2026-06-27).
 - **SimilarWeb** browser extension (about 3 free looks a day). Formula:
-  **visits × conversion rate × AOV = revenue**. Use 2–3% conversion (range
+  **visits × conversion rate × AOV = revenue**. Use 2–3% conversion *to estimate a competitor's revenue* (your own
+  store's target is in "Reading the data") (range
   1.5–3.5%, lower for pricier things), and be conservative. Example shape:
   1.5M visits × 2% = 30,000 orders × $90 AOV ≈ $2.7M/month (2026-06-11).
 - High-price exception: a $350 product can pass at 40–50k visits (2025-11-14).
@@ -355,7 +359,7 @@ pages*; 2026-04-29; 2026-07-14):
 - **The hook is the first 3–5 seconds** (or the first line, subject line,
   headline). Spend most of your time there; he says 90% of a video ad's success
   is the hook (2025-07-21; 2026-03-21; 2026-04-11).
-- **A video hook has three parts:** copy **~80%** (70–80% in 2026-04-11),
+- **A video hook has three parts:** copy **70–80%** (2026-04-11; ~80% earlier),
   scroll-stopper visual ~15%, audio ~5% (2025-08-22; 2026-03-21). Scroll-stopper
   test: would your mom say "what did I just watch?"
 - **Seven-point checklist** (more ticks = better; aim for at least 3–4, don't
@@ -571,8 +575,8 @@ model is "basically a clone" of it; either is fine (2026-04-29).
   URL with the same creatives instead (2026-07-08). Split test later pages
   50/50.
 - **Kill fast early, be lenient after proof** (a creative profitable over
-  ~$500 spend, a lander over ~$1,000). He cut a losing lander after $300–400
-  (2026-07-30).
+  ~$500 spend, a lander over ~$1,000). He cut a losing lander after $300–400,
+  with two separate landers and traffic split from day one (2026-07-30).
 - Fresh start for each test brand: new pixel, ad account, Shopify account
   (2026-07-30).
 
@@ -906,7 +910,8 @@ study *(his claim)*.
 7. **Build the page(s):** Shopify PDP to start, or the Chad funnel off
    Shopify; images that install beliefs; chief the copy; test-buy everything.
 8. **Make creatives with AI:** image ads to find the winning message fast;
-   then video/animation. 3–5 concepts × 3–5 variations.
+   then video/animation. Start with what $50/day covers (5 ads at
+   $10), and grow to 3–5 concepts × 3–5 variations when you can pay $10 per ad.
 9. **Launch:** one CBO, broad, $10/ad/day, purchase objective, enhancements off.
    Know break-even CAC/ROAS before you start.
 10. **Read the data, find the break, fix, relaunch once.** Cut fast early.
@@ -1151,8 +1156,9 @@ Newest view first; the older view after the arrow's tail.
 
 | Subject | Newest view | Older view |
 | --- | --- | --- |
-| Minimum gross margin | $30 (+3× COGS) — ads cost more (2026-06-11; 2026-06-27). Still $30, though 2026-07-30 says $25 "to be conservative" | $20 (2025-07-09); $25 (2025-11-14; 2026-07-30 "conservative") |
+| Minimum gross margin | $30 (+3× COGS) — ads cost more (2026-06-11; 2026-06-27). His last video gives $25 as the floor "to be conservative" (2026-07-30). Aim for $30, never under $25 | $20 (2025-07-09); $25 (2025-11-14) |
 | Concepts vs variations | Concept first, then variations; after a winner, extract variables, not micro-variations (2026-05-11; 2026-11-02) | 80% variations (pre-Andromeda) → 80% new concepts (2025-10-09) |
+| Market size | Big, or small and very passionate (2026-07-30: record collectors) | Big total market only; "riches in the niches" is wrong (2026-04-24; 2026-06-11) |
 | Weight of the product | ~20% of success (2026-06-27) | 5% (2025-06-25); 50% (2025-06-30); last of four (2025-12-26) |
 | Quiz funnels | C tier — still work, overhyped (2025-11-08) | The hot funnel of the moment (2025-08-15) |
 | Funnel host | Chad funnel off Shopify, but a 100% Shopify PDP test also worked (2026-07-30) | Shopify "terrible for funnels" (2025-08-08) |
@@ -1346,11 +1352,12 @@ counts are close, not exact. All examples here are **made up**.
 ### Tells that it's not him
 
 The greeting, ending and swearing tells (marked †) apply to video scripts and
-fired-up voice pieces only. The numbers and story tells (marked ‡) apply to
-answers and voice pieces only: an ad or hook under someone's brand keeps its
-placeholders, and never gets a made-up number, claim or story to pass a tell.
-A chat answer has no greeting or outro, and an ad under someone's brand is
-clean. A script written for someone opens "Hey guys, [your name] here."
+fired-up voice pieces only (a video ad is an ad, not a script). The numbers
+and story tells (marked ‡) apply to answers and voice pieces only: an ad or
+hook under someone's brand keeps its placeholders, and never gets a made-up
+number, claim or story to pass a tell. A chat answer has no greeting or outro,
+and an ad under someone's brand is clean. A script written for someone opens
+"Hey guys, [your name] here."
 
 - † A warm-up before the "Hey guys, … here" opener, or a different greeting.
 - Corporate or polished words ("optimise your journey", "unlock your potential").
