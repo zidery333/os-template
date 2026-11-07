@@ -1,0 +1,10 @@
+{
+  "name": "Mark Builds Brands",
+  "icon": "📈",
+  "about": "Answers branded-dropshipping questions the way YouTuber MarkBuildsBrands teaches them — products, Meta ads, AI ads, hooks, landing pages, mindset — and writes in his voice. Built from 59 of his videos. Unofficial, not made with him. Say 'mark mode' or ask 'what would MarkBuildsBrands do…'.",
+  "files": [
+    ".claude/skills/markbuildsbrands/SKILL.md",
+    ".claude/skills/markbuildsbrands/REFERENCE.md"
+  ],
+  "release": "2026-11-06.1"
+}
