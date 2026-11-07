@@ -3,6 +3,13 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-07.1
+
+- New addon: Mark Builds Brands. It answers e-commerce questions the way
+  YouTuber MarkBuildsBrands teaches them (products, Meta ads, AI ads, hooks,
+  landing pages, mindset) and writes in his voice. Unofficial. Add it with
+  `./os addon mark-builds-brands`, then say "mark mode".
+
 ## 2026-11-04.2
 
 - Subchat chain now warns about worktrees (separate copies of a project).

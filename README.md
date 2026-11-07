@@ -6,7 +6,7 @@ You talk to Claude in plain words. It writes things down, puts them in the
 right place, and keeps track of what you're working on. Open it tomorrow and
 it knows where you left off.
 
-**Addons you can add:** 🎯 Prompts · 📸 Screenshot grid · 🔗 Subchat chain · ✍️ Tate · [see them all](#addons)
+**Addons you can add:** 📈 Mark Builds Brands · 🎯 Prompts · 📸 Screenshot grid · 🔗 Subchat chain · ✍️ Tate · [see them all](#addons)
 
 ![Made for Claude Code](https://img.shields.io/badge/made%20for-Claude%20Code-d97757)
 ![Version](https://img.shields.io/github/v/release/zidery333/os-template?label=version&display_name=release&color=2ea44f)
@@ -83,6 +83,7 @@ the ones you want, and `./os update` keeps them up to date.
 
 | | Addon | What it adds |
 | :---: | --- | --- |
+| 📈 | **Mark Builds Brands** | Answers branded-dropshipping questions the way YouTuber MarkBuildsBrands teaches them — products, Meta ads, AI ads, hooks, landing pages, mindset — and writes in his voice. Built from 59 of his videos. Unofficial, not made with him. Say 'mark mode' or ask 'what would MarkBuildsBrands do…'. |
 | 🎯 | **Prompts** | Writes a prompt for any AI — ChatGPT, Claude, Gemini, Midjourney, Veo, Kling — tests it when it can, and finds out why a prompt keeps giving bad answers and fixes it. Built from the official prompting guides. |
 | 📸 | **Screenshot grid** | Ends every job that changed something you can see with 1–3 screenshots, put together into one labelled picture: every theme in one grid, desktop and phone side by side. |
 | 🔗 | **Subchat chain** | Runs a big job as one main chat that hands each step to its own subchat, one after another, checks each one's work, then sends you one clean summary. For Claude Code in the Claude desktop app. |
@@ -98,7 +99,7 @@ this to see every addon:
 To add one, put its name after it:
 
 ```bash
-./os addon prompts
+./os addon mark-builds-brands
 ```
 
 An addon never changes your own work. If it has a skill with the same name as
