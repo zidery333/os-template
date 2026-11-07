@@ -3,6 +3,13 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-07.2
+
+- Mark Builds Brands addon, safer and more honest. Copy it writes for your
+  brand never makes up numbers, ratings or claims: it leaves a blank for you
+  to fill. "Is he legit?" gets a plain, fair answer. It won't push you to
+  spend money you can't lose. `./os update` brings it in.
+
 ## 2026-11-07.1
 
 - New addon: Mark Builds Brands. It answers e-commerce questions the way
