@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-11.3
+
+- Nothing changes in how your folder works. Behind the scenes, the program
+  can now also run other versions of this template, like one for making
+  Roblox games, so fixes reach both at once.
+
 ## 2026-11-11.2
 
 - Writing you ask for (a write-up, a plan, a summary) is saved in your

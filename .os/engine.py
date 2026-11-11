@@ -8258,9 +8258,108 @@ class Backup:
 #: The git that History runs. ZENITH_GIT stands in for it, so the checks can
 #: try a computer that has none.
 GIT = os.environ.get("ZENITH_GIT") or "git"
+#: Where the normal template lives on GitHub, and the branch people download.
+BASE_REPO = "zidery333/os-template"
+BASE_BRANCH = "os"
+#: A second template built on this one (one for making games, say) ships
+#: `.os/flavour.json`, which says where it updates from and what extra things
+#: it ships. The program stays the same file in both. The normal template has
+#: none, and then everything below is as it always was.
+FLAVOUR_FILE = "flavour.json"
+_REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
+_BRANCH_NAME = re.compile(r"[A-Za-z0-9._/-]+")
+_PART_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+#: Places a flavour's own files may never go: the person's things, the
+#: program, what the folder keeps about itself, the files an update already
+#: looks after in its own way, and the folders the normal skills, helpers,
+#: hooks and reply style live in (a flavour adds those by name instead).
+_NOT_FLAVOUR = ("Work", "Notes", "Archive", ".git", ".os", "os", ".claude/settings.json",
+                ".claude/settings.local.json", ".claude/skills", ".claude/agents",
+                ".claude/hooks", ".claude/output-styles",
+                "AGENTS.md", "CLAUDE.md", "GEMINI.md", "INDEX.md", ".gitignore")
+
+
+def flavour_path(rel) -> str:
+    """A flavour file's path, made plain, or "" when it may not ship:
+    outside the folder, in one of the places above, or a folder that holds
+    one of them (".claude" would take settings.json and every skill)."""
+    if not isinstance(rel, str) or not rel.strip() or "\\" in rel or ":" in rel:
+        return ""
+    parts = [p for p in rel.strip().strip("/").split("/") if p not in ("", ".")]
+    if not parts or rel.strip().startswith("/") or ".." in parts:
+        return ""
+    clean = "/".join(parts)
+    # In any capitals: on a Mac or Windows "work" is the same folder as "Work".
+    low = clean.lower()
+    for top in (t.lower() for t in _NOT_FLAVOUR):
+        if low == top or low.startswith(top + "/") or top.startswith(low + "/"):
+            return ""
+    return clean
+
+
+#: The longest "about" line a flavour may have: one short line, said on a
+#: first visit, not a paragraph.
+FLAVOUR_ABOUT_MAX = 160
+#: The only settings a flavour may add to .claude/settings.json: which of its
+#: .mcp.json servers to turn on. Anything else (hooks, the status line, env,
+#: permission rules, more folders to reach) could switch the folder's own
+#: checks off or let more through, so it is left out.
+FLAVOUR_SETTINGS = {"enabledMcpjsonServers": list, "enableAllProjectMcpServers": bool}
+
+
+def read_flavour(path: Path) -> dict:
+    """What a flavour.json says, with anything odd left out. Missing, or
+    not readable, it is {}: the normal template. Never a crash."""
+    try:
+        said = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(said, dict):
+        return {}
+    out: dict = {}
+    if isinstance(said.get("name"), str) and said["name"].strip():
+        out["name"] = said["name"].strip()
+    # The branch only counts with the repo it belongs to. A broken repo
+    # with a good branch would fetch the wrong branch of the normal one.
+    repo, branch = said.get("repo"), said.get("branch")
+    if isinstance(repo, str) and _REPO_NAME.fullmatch(repo) and ".." not in repo:
+        out["repo"] = repo
+        if isinstance(branch, str) and _BRANCH_NAME.fullmatch(branch) and ".." not in branch:
+            out["branch"] = branch
+    if isinstance(said.get("addon_repo"), str) and _REPO_NAME.fullmatch(said["addon_repo"]) \
+            and ".." not in said["addon_repo"]:
+        out["addon_repo"] = said["addon_repo"]
+    for key in ("skills", "agents", "hooks"):
+        names = said.get(key)
+        out[key] = [n for n in names if isinstance(n, str) and _PART_NAME.fullmatch(n)] \
+            if isinstance(names, list) else []
+    files = said.get("files")
+    out["files"] = [p for p in (flavour_path(f) for f in files) if p] if isinstance(files, list) else []
+    # Settings to add to .claude/settings.json: only the named ones above,
+    # each in its own shape. A list is of names only.
+    settings = said.get("settings") if isinstance(said.get("settings"), dict) else {}
+    out["settings"] = {}
+    for key, shape in FLAVOUR_SETTINGS.items():
+        value = settings.get(key)
+        if shape is bool and isinstance(value, bool):
+            out["settings"][key] = value
+        elif shape is list and isinstance(value, list) and all(isinstance(v, str) for v in value):
+            out["settings"][key] = list(value)
+    # One short line saying what this template does on top of the normal
+    # one, said on a first visit. Left out when it isn't one plain line.
+    about = said.get("about")
+    if isinstance(about, str) and about.strip() and len(about.strip()) <= FLAVOUR_ABOUT_MAX \
+            and not any(ord(c) < 32 or ord(c) == 127 for c in about):
+        out["about"] = about.strip()
+    return out
+
+
+#: Read once, from this program's own .os/.
+FLAVOUR = read_flavour(Path(__file__).resolve().parent / FLAVOUR_FILE)
 #: Where the published template lives. A folder downloaded with `git clone`
 #: carries its history, and that one is the template's own.
-TEMPLATE_REPO = "zidery333/os-template"
+TEMPLATE_REPO = FLAVOUR.get("repo") or BASE_REPO
+TEMPLATE_BRANCH = FLAVOUR.get("branch") or BASE_BRANCH
 
 
 class History:
@@ -13503,8 +13602,17 @@ def _brief_text(os_: Zenith) -> str:
     # stood was refused (review, 2026-09-30).
     kept = History(os_).standing()
     kept = kept[:1].upper() + kept[1:]
+    # What a template built on this one does on top, in its own one line.
+    # The normal template has none, and its brief is as it always was.
+    about = FLAVOUR.get("about") or ""
+    if about and FLAVOUR.get("name"):
+        about = f"This is {FLAVOUR['name']}. {about}"
     if not theirs:
-        return FIRST_TIME.format(name=name) + (f"\n\n{kept}" if kept else "")
+        first = FIRST_TIME.format(name=name)
+        if about:
+            head, rest = first.split("\n\n", 1)
+            first = f"{head}\n\n{about} Say that in the first lines too.\n\n{rest}"
+        return first + (f"\n\n{kept}" if kept else "")
 
     stale_days = int(os_.thresholds["stale_project_days"])
     active = sorted([i for i in items if i.kind == "project" and i.status == PUSHING],
@@ -13527,7 +13635,10 @@ def _brief_text(os_: Zenith) -> str:
     out = [f"{name} — one folder holding this person's work, notes and files. "
            "Work is in one of two phases: pushing (has a next action) or holding "
            "(has a standard, no next action, and is not late for anything). "
-           "The full list is INDEX.md; the rules are AGENTS.md.", "", "Right now:"]
+           "The full list is INDEX.md; the rules are AGENTS.md."]
+    if about:
+        out.append(about)
+    out += ["", "Right now:"]
     # The name in brackets is what ./os show and the rest take. A title cut
     # to fit is not a name, and show refused it.
     if active:
@@ -13554,9 +13665,9 @@ def _brief_text(os_: Zenith) -> str:
         out.append(f"- {things(len(errors))} broken — ./os check --fix")
     if kept:
         out.append(f"- {kept}")
-    about = _about_them(os_, items)
-    if about:
-        out += [""] + about
+    them = _about_them(os_, items)
+    if them:
+        out += [""] + them
     out += ["",
             'To act for them: ./os save "<text>" writes something down and files it · '
             "./os find <words> searches everything · ./os open <name> · ./os undo reverses "
@@ -14146,12 +14257,13 @@ def cmd_test(os_: Zenith, argv: list[str]) -> int:
     return proc.returncode
 
 
-#: Where `./os update` gets the newest version: the `os` branch of the public
-#: template, as a ZIP. `./os update --from <folder or .zip>` uses another copy.
-UPDATE_URL = "https://github.com/zidery333/os-template/archive/refs/heads/os.zip"
+#: Where `./os update` gets the newest version: the template's branch on
+#: GitHub (`os` for the normal one, or what flavour.json says), as a ZIP.
+#: `./os update --from <folder or .zip>` uses another copy.
+UPDATE_URL = f"https://github.com/{TEMPLATE_REPO}/archive/refs/heads/{TEMPLATE_BRANCH}.zip"
 #: What `./os update --check` reads: just the newest version's list, which
 #: carries its release stamp. One small request, and nothing about the person.
-CHECK_URL = "https://raw.githubusercontent.com/zidery333/os-template/os/.os/shipped.json"
+CHECK_URL = f"https://raw.githubusercontent.com/{TEMPLATE_REPO}/{TEMPLATE_BRANCH}/.os/shipped.json"
 
 #: The program itself. Nobody edits these, so a copy that matches no released
 #: version was changed here and never published — an update would lose that.
@@ -14756,7 +14868,8 @@ def update_done(os_: Zenith, anyway: bool, as_json: bool) -> int:
 #: the normal download carries none and nobody gets one they didn't ask for.
 #: At the top of the branch, addon.json says what it is and lists every file
 #: it puts in a folder, by where the file goes.
-ADDON_REPO = "zidery333/os-template"
+#: A flavour may keep its addons somewhere else; most use the normal ones.
+ADDON_REPO = FLAVOUR.get("addon_repo") or BASE_REPO
 ADDON_ZIP = "https://github.com/" + ADDON_REPO + "/archive/refs/heads/addon-{name}.zip"
 ADDON_INFO = "https://raw.githubusercontent.com/" + ADDON_REPO + "/addon-{name}/addon.json"
 #: Every branch whose name starts `addon-`, in one small request.

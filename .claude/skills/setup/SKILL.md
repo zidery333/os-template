@@ -13,7 +13,7 @@ never ask them something a command can tell you.
 
 ## 1. Say what it's for
 
-Before anything else, say this in your own words, in four short lines at most:
+Before anything else, say this in your own words, in four short lines at most, plus a fifth if `./os brief` says what this copy also does ("It also …"):
 
 - This folder is a place to keep anything you want to remember: plans, notes,
   files, the things you're into.

@@ -14,7 +14,8 @@ Brings the machinery up to date and leaves the person's things alone:
                entries newer than their version are printed at the end)
                · the shipped skills, helpers, hooks and reply style in .claude/
                (the plain-words style, its word list and the check that reads
-               it after each reply) · AGENTS.md
+               it after each reply) · AGENTS.md · and, from a template built on
+               this one, the skills and files its .os/flavour.json adds
                — but a shipped file THEY edited is kept, and the new version set
                aside in .os/upgrades/<stamp>/ for them (or their AI) to merge. One
                they deleted stays deleted. A program file changed there and never
@@ -89,19 +90,31 @@ GUARDED = ["AGENTS.md"]
 TEMPLATES = ".os/templates"
 #: Fingerprinted the same way, but one they changed is merged, not set aside.
 SETTINGS = ".claude/settings.json"
-SHIPPED_SKILLS = ("catchup", "commands", "decide", "find", "handoff", "learn",
-                  "make-skill", "save", "setup", "tidy", "wrapup")
-SHIPPED_AGENTS = ("builder", "researcher", "reviewer", "student")
-SHIPPED_HOOKS = ("keep-the-record.sh", "mark-dirty.sh", "session-start.sh", "settle.sh",
-                 # Asks before anything is written into ~/.claude, which
-                 # reaches every folder on the computer, not just this one.
-                 "only-this-folder.sh",
-                 # The check after each reply, and the list of words it looks
-                 # for. The list is theirs to add to: one they changed is kept.
-                 "plain-words.sh", "plain-words.tsv")
+BASE_SHIPPED_SKILLS = ("catchup", "commands", "decide", "find", "handoff", "learn",
+                       "make-skill", "save", "setup", "tidy", "wrapup")
+BASE_SHIPPED_AGENTS = ("builder", "researcher", "reviewer", "student")
+BASE_SHIPPED_HOOKS = ("keep-the-record.sh", "mark-dirty.sh", "session-start.sh", "settle.sh",
+                      # Asks before anything is written into ~/.claude, which
+                      # reaches every folder on the computer, not just this one.
+                      "only-this-folder.sh",
+                      # The check after each reply, and the list of words it looks
+                      # for. The list is theirs to add to: one they changed is kept.
+                      "plain-words.sh", "plain-words.tsv")
 #: How replies read: Claude Code's output style, picked by "outputStyle" in
 #: .claude/settings.json. It points at the word list above.
-SHIPPED_STYLES = ("plain-words.md",)
+BASE_SHIPPED_STYLES = ("plain-words.md",)
+
+#: A second template built on this one ships .os/flavour.json, beside this
+#: file: the one in the new download, since ./os update runs the new
+#: upgrade.py on their folder. It adds its own skills, helpers and hooks to
+#: the lists above, and its own files, each brought up to date the same way.
+#: The normal template has none, so the lists are just the ones above.
+FLAVOUR = engine.read_flavour(HERE / engine.FLAVOUR_FILE)
+FLAVOUR_JSON = ".os/" + engine.FLAVOUR_FILE
+SHIPPED_SKILLS = BASE_SHIPPED_SKILLS + tuple(n for n in FLAVOUR.get("skills", []) if n not in BASE_SHIPPED_SKILLS)
+SHIPPED_AGENTS = BASE_SHIPPED_AGENTS + tuple(n for n in FLAVOUR.get("agents", []) if n not in BASE_SHIPPED_AGENTS)
+SHIPPED_HOOKS = BASE_SHIPPED_HOOKS + tuple(n for n in FLAVOUR.get("hooks", []) if n not in BASE_SHIPPED_HOOKS)
+SHIPPED_STYLES = BASE_SHIPPED_STYLES
 
 #: The program itself: replaced every time, but recorded too, so `./os update`
 #: can tell a copy changed here and never published from an older release.
@@ -217,6 +230,44 @@ def shipped_hashes(root: Path | None = None, key: str = "files") -> dict:
     return known
 
 
+def flavour_files(where: Path) -> list[str]:
+    """Every file a flavour ships, as it sits in `where`: its flavour.json,
+    then each file it names, with folders walked. [] for the normal template."""
+    found = [FLAVOUR_JSON] if (where / FLAVOUR_JSON).is_file() else []
+    for rel in FLAVOUR.get("files", []):
+        top = where / rel
+        if top.is_symlink():
+            continue
+        if top.is_file():
+            found.append(rel)
+        elif top.is_dir():
+            # Each file in it is checked the same way as the names in
+            # flavour.json, so a folder can't carry in one that may not ship.
+            found += sorted(f.relative_to(where).as_posix() for f in top.rglob("*")
+                            if f.is_file() and not f.is_symlink() and "__pycache__" not in f.parts
+                            and f.name not in (".DS_Store", "Thumbs.db")
+                            and engine.flavour_path(f.relative_to(where).as_posix()))
+    return list(dict.fromkeys(found))
+
+
+def bake_flavour_settings() -> None:
+    """A flavour's settings go into the template's own settings.json before
+    it is recorded, so a fresh download has them, and an update adds each
+    one the way it adds any new setting: one they took out stays out."""
+    want = FLAVOUR.get("settings") or {}
+    data = read_theirs(TEMPLATE / SETTINGS) if want else None
+    if data is None:
+        return
+    was = json.dumps(data, sort_keys=True)
+    # Only the few settings engine.FLAVOUR_SETTINGS names ever reach here:
+    # read_flavour leaves out the rest. Checked again, so nothing else can.
+    for key, value in want.items():
+        if key in engine.FLAVOUR_SETTINGS:
+            data[key] = value
+    if json.dumps(data, sort_keys=True) != was:
+        whole(TEMPLATE / SETTINGS, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
 def record() -> int:
     """Template maintainers: remember the current shipped files as released."""
     path = HERE / "shipped.json"
@@ -226,6 +277,7 @@ def record() -> int:
         data = {"files": {}}
     files = data.setdefault("files", {})
     added = 0
+    bake_flavour_settings()
     # Every file in a shipped skill, not just SKILL.md: one left out was
     # called theirs when the template changed it, and never updated again.
     skill_files = sorted(str(f.relative_to(TEMPLATE)) for s in SHIPPED_SKILLS
@@ -236,7 +288,8 @@ def record() -> int:
     for rel in PROGRAM + GUARDED + [SETTINGS, ".gitignore"] + skill_files + shapes \
             + [f".claude/agents/{a}.md" for a in SHIPPED_AGENTS] \
             + [f".claude/hooks/{h}" for h in SHIPPED_HOOKS] \
-            + [f".claude/output-styles/{s}" for s in SHIPPED_STYLES]:
+            + [f".claude/output-styles/{s}" for s in SHIPPED_STYLES] \
+            + flavour_files(TEMPLATE):
         src = TEMPLATE / rel
         if src.is_file():
             digest = sha1_unnamed(src)
@@ -826,6 +879,9 @@ def main(argv: list[str]) -> int:
                                      ".claude/output-styles",
                                      SETTINGS, ".os/config.json", ".os/words.json", "CLAUDE.md", "GEMINI.md",
                                      ".gitignore"]
+    # A flavour's own files too, so --undo can put them back.
+    to_back += [rel for rel in [FLAVOUR_JSON] + FLAVOUR.get("files", []) if rel not in to_back] \
+        if FLAVOUR else []
     if not dry and not unfinished:
         try:
             for rel in to_back:
@@ -920,7 +976,8 @@ def main(argv: list[str]) -> int:
             if not dst.exists() and not own:
                 # Deleted stays deleted — but not AGENTS.md, without which
                 # nothing here works, and no one takes it out on purpose.
-                if rel in given and rel not in GUARDED:
+                # Nor flavour.json, which says where updates come from.
+                if rel in given and rel not in GUARDED and rel != FLAVOUR_JSON:
                     left_out.append(rel)
                     return
             elif own or changed(dst, rel):
@@ -967,10 +1024,22 @@ def main(argv: list[str]) -> int:
         guarded(f".claude/hooks/{name}")
     for name in SHIPPED_STYLES:
         guarded(f".claude/output-styles/{name}")
+    # A flavour's own files, the same way: never changed by them, replaced;
+    # changed, kept, and the new one set aside.
+    # A folder of theirs they deleted whole is one line, like a skill.
+    gone = [rel for rel in FLAVOUR.get("files", []) if (TEMPLATE / rel).is_dir()
+            and not (root / rel).exists() and not (root / rel).is_symlink()
+            and any(f.startswith(rel + "/") for f in given)]
+    for rel in gone:
+        left_out.append(rel + "/")
+    for rel in flavour_files(TEMPLATE):
+        if not any(rel.startswith(g + "/") for g in gone):
+            guarded(rel)
     say(f"  {'would replace' if dry else 'replaced'}  {len(fresh)} shipped file(s) still as released "
         # Which kinds, not how many of each: "the 11 skills" under a count of
         # 14 read as all 11 replaced, with some kept as theirs (audit, 2026-10-29).
-        "(skills, helpers, hooks, the reply style, AGENTS.md); "
+        "(skills, helpers, hooks, the reply style, AGENTS.md"
+        + (f", what {FLAVOUR.get('name') or 'this template'} adds" if FLAVOUR else "") + "); "
         "anything of your own is untouched")
     # A hook script is taken out by taking it out of settings.json. One still
     # run from there was deleted by accident, and is put back after step 3.

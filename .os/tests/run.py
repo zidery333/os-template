@@ -489,7 +489,9 @@ def test_shipped_extras_are_valid(t: Case) -> None:
     # ships, not the folder: a skill someone made for themselves is not the
     # template growing.
     import upgrade
-    t.lte(len([s for s in upgrade.SHIPPED_SKILLS if s != "setup"]), 10,
+    # The normal template's own list only: a template built on this one
+    # (with .os/flavour.json) adds skills of its own on top.
+    t.lte(len([s for s in upgrade.BASE_SHIPPED_SKILLS if s != "setup"]), 10,
           "shipped skills stay few enough to remember")
     if as_downloaded():
         here = {Path(s["path"]).name for s in skills}
@@ -855,7 +857,7 @@ def test_replacing_a_record_whole_asks_first(t: Case) -> None:
     t.eq([g.get("matcher") for g in groups], ["Write|Bash"], "it is wired to Write and shell commands, not Edit")
 
     # It ships, and an updated folder gets it too.
-    lists = [re.search(r"^SHIPPED_HOOKS = \((.*?)\)\n",
+    lists = [re.search(r"^BASE_SHIPPED_HOOKS = \((.*?)\)\n",
                        (root / ".os" / "upgrade.py").read_text(), re.M | re.S).group(1)]
     # release-os.sh reads upgrade.py's list; one of its own would have to agree.
     # Found without its folder's name, which the release's own scan stops on.
@@ -9072,7 +9074,7 @@ def _cloned(root: Path) -> None:
     _git_in(root, "init", "-q")
     _git_in(root, "add", "-A")
     _git_in(root, *who, "commit", "-q", "-m", "the template")
-    _git_in(root, "remote", "add", "origin", "https://github.com/zidery333/os-template.git")
+    _git_in(root, "remote", "add", "origin", f"https://github.com/{engine.TEMPLATE_REPO}.git")
     _git_in(root, "update-ref", "refs/remotes/origin/main", "HEAD")
 
 
@@ -20351,6 +20353,271 @@ def test_r28_a_skill_whose_description_is_on_the_next_line_is_a_skill(t: Case) -
     t.ok("no description" not in said, f"and check finds its description\n{said}")
     t.eq(engine.parse_frontmatter("---\ntitle: x\nextra:\n  nested: 1\ntags:\n  - a\n---\nbody")[0].get("tags"),
          ["a"], "a list below its key is still a list")
+
+
+# ---------------------------------------------------------------------------
+# flavours: a second template built on this one, from .os/flavour.json
+# ---------------------------------------------------------------------------
+
+def _flavour_values(root: Path) -> dict:
+    """What the program in `root` makes of its .os/flavour.json: where it
+    updates from, and what it ships. Asked in a fresh python, as ./os would."""
+    ask = ("import json, sys; sys.path.insert(0, sys.argv[1]); import engine, upgrade; "
+           "print(json.dumps({k: getattr(engine, k) for k in "
+           "('TEMPLATE_REPO', 'TEMPLATE_BRANCH', 'UPDATE_URL', 'CHECK_URL', 'ADDON_REPO', 'ADDON_ZIP', "
+           "'ADDON_INFO', 'ADDON_BRANCHES', 'FLAVOUR')} | {k: list(getattr(upgrade, k)) for k in "
+           "('SHIPPED_SKILLS', 'SHIPPED_AGENTS', 'SHIPPED_HOOKS', 'SHIPPED_STYLES', "
+           "'BASE_SHIPPED_SKILLS', 'BASE_SHIPPED_AGENTS', 'BASE_SHIPPED_HOOKS', 'BASE_SHIPPED_STYLES')}))")
+    proc = subprocess.run([sys.executable, "-B", "-c", ask, str(root / ".os")],
+                          capture_output=True, text=True, cwd=str(root))
+    if proc.returncode:
+        raise Failure(f"the program wouldn't start\n{proc.stderr[-2000:]}")
+    return json.loads(proc.stdout)
+
+
+@test
+def test_flavour_none_is_the_normal_template(t: Case) -> None:
+    """With no .os/flavour.json the program is the normal template, with
+    the same addresses and lists it always had."""
+    (t.box.root / ".os" / "flavour.json").unlink(missing_ok=True)
+    got = _flavour_values(t.box.root)
+    t.eq(got["FLAVOUR"], {}, "no flavour")
+    t.eq(got["TEMPLATE_REPO"], "zidery333/os-template", "the template's page")
+    t.eq(got["UPDATE_URL"], "https://github.com/zidery333/os-template/archive/refs/heads/os.zip",
+         "./os update fetches the os branch")
+    t.eq(got["CHECK_URL"], "https://raw.githubusercontent.com/zidery333/os-template/os/.os/shipped.json",
+         "./os update --check reads its list")
+    t.eq(got["ADDON_REPO"], "zidery333/os-template", "addons come from the same place")
+    t.eq(got["ADDON_ZIP"], "https://github.com/zidery333/os-template/archive/refs/heads/addon-{name}.zip",
+         "an addon's ZIP")
+    t.eq(got["ADDON_BRANCHES"],
+         "https://api.github.com/repos/zidery333/os-template/git/matching-refs/heads/addon-",
+         "the list of addons")
+    for kind in ("SKILLS", "AGENTS", "HOOKS", "STYLES"):
+        t.eq(got[f"SHIPPED_{kind}"], got[f"BASE_SHIPPED_{kind}"], f"the shipped {kind.lower()} are the normal ones")
+    t.ok("find" in got["SHIPPED_SKILLS"] and "plain-words.sh" in got["SHIPPED_HOOKS"], "and they are not empty")
+
+
+@test
+def test_flavour_changes_where_updates_come_from_and_adds_skills(t: Case) -> None:
+    """A template built on this one says in .os/flavour.json where it
+    updates from and what it ships on top. Paths that would reach the
+    person's things, the program, or outside the folder are left out."""
+    root = t.box.root
+    (root / ".os" / "flavour.json").write_text(json.dumps({
+        "name": "Other Template", "repo": "someone/other-template", "branch": "main",
+        "addon_repo": "someone/other-addons",
+        "skills": ["kit-skill", "find", "../away", 7], "agents": ["artist"], "hooks": ["kit-check.sh"],
+        "files": [".claude/kit", ".mcp.json", "../outside", "/etc", "Work/x", "work/y", ".os/engine.py",
+                  "os", "AGENTS.md", ".claude/settings.json", "C:\\\\x", 5,
+                  # Folders that hold a place that may not ship, and the places
+                  # the normal skills and the person's own settings live.
+                  ".claude", ".Claude/", ".", "INDEX.md", "index.md", ".claude/settings.local.json",
+                  ".claude/skills", ".claude/skills/find", ".claude/hooks/x.sh", ".claude/agents"],
+        "settings": {"enabledMcpjsonServers": ["Studio"], "hooks": {"Stop": []}, "permissions": "all"},
+    }))
+    got = _flavour_values(root)
+    t.eq(got["TEMPLATE_REPO"], "someone/other-template", "its own page")
+    t.eq(got["TEMPLATE_BRANCH"], "main", "and branch")
+    t.eq(got["UPDATE_URL"], "https://github.com/someone/other-template/archive/refs/heads/main.zip",
+         "./os update fetches it from there")
+    t.eq(got["CHECK_URL"], "https://raw.githubusercontent.com/someone/other-template/main/.os/shipped.json",
+         "and --check reads its list there")
+    t.eq(got["ADDON_REPO"], "someone/other-addons", "addons from where it says")
+    t.ok(got["ADDON_INFO"].startswith("https://raw.githubusercontent.com/someone/other-addons/"),
+         "every addon address follows")
+    t.eq(got["SHIPPED_SKILLS"], got["BASE_SHIPPED_SKILLS"] + ["kit-skill"],
+         "its skill ships on top of the normal ones, once each, and nothing odd")
+    t.eq(got["SHIPPED_AGENTS"], got["BASE_SHIPPED_AGENTS"] + ["artist"], "and its helper")
+    t.eq(got["SHIPPED_HOOKS"], got["BASE_SHIPPED_HOOKS"] + ["kit-check.sh"], "and its hook")
+    t.eq(got["FLAVOUR"]["files"], [".claude/kit", ".mcp.json"],
+         "only files outside their things and the program ship")
+    t.eq(got["FLAVOUR"]["settings"], {"enabledMcpjsonServers": ["Studio"]},
+         "a setting ships; hooks and a broken permissions block don't")
+    # Only the named settings ship: nothing that turns the folder's own
+    # checks off, runs a command, or lets more through.
+    _edit_json(root / ".os" / "flavour.json", lambda d: d.update(settings={
+        "disableAllHooks": True, "hooks": {}, "statusLine": {"type": "command", "command": "x"},
+        "apiKeyHelper": "x", "env": {"OS_PLAIN_CHECK": "off"}, "permissions": {"allow": ["Bash(*)"]},
+        "additionalDirectories": ["/"], "outputStyle": "x", "enableAllProjectMcpServers": True,
+        "enabledMcpjsonServers": ["Studio", 5]}))
+    t.eq(_flavour_values(root)["FLAVOUR"]["settings"], {"enableAllProjectMcpServers": True},
+         "everything else is left out, and a list with a non-name in it too")
+    t.box.run()
+    said = t.box.run("check", expect=None).stdout
+    t.ok("flavour" not in said.lower(), f"./os and ./os check don't mind it\n{said}")
+    # Without a repo the branch isn't used: it would be the wrong branch of
+    # the normal template.
+    (root / ".os" / "flavour.json").write_text(json.dumps({"branch": "main", "skills": ["kit-skill"]}))
+    got = _flavour_values(root)
+    t.eq(got["UPDATE_URL"], "https://github.com/zidery333/os-template/archive/refs/heads/os.zip",
+         "a branch without its repo is passed over")
+    t.eq(got["SHIPPED_SKILLS"][-1], "kit-skill", "and the rest still counts")
+
+
+@test
+def test_flavour_broken_falls_back_to_the_normal_template(t: Case) -> None:
+    """A flavour.json that won't read is the normal template, never a crash."""
+    root = t.box.root
+    for words in (b"{not json", b"[]", b"null", b"\xff\xfe\x00", b'{"repo": "no slash", "branch": "main"}',
+                  b'{"repo": 5, "addon_repo": "a/../b", "skills": "find", "files": ".claude", "settings": []}',
+                  b'{"repo": "x/..", "files": [null, {}], "agents": {"a": 1}}'):
+        (root / ".os" / "flavour.json").write_bytes(words)
+        got = _flavour_values(root)
+        t.eq((got["TEMPLATE_REPO"], got["TEMPLATE_BRANCH"], got["ADDON_REPO"]),
+             ("zidery333/os-template", "os", "zidery333/os-template"), f"normal addresses for {words!r}")
+        for kind in ("SKILLS", "AGENTS", "HOOKS"):
+            t.eq(got[f"SHIPPED_{kind}"], got[f"BASE_SHIPPED_{kind}"], f"normal {kind.lower()} for {words!r}")
+    (root / ".os" / "flavour.json").write_text("{not json")
+    t.box.run()
+    (root / ".os" / "flavour.json").unlink()
+    (root / ".os" / "flavour.json").mkdir()
+    t.eq(_flavour_values(root)["FLAVOUR"], {}, "nor a folder by that name")
+
+
+@test
+def test_update_brings_a_flavours_files_and_keeps_ones_they_changed(t: Case) -> None:
+    """An update into a folder from a template built on this one brings that
+    template's own files the way it brings skills: one never changed is
+    replaced, one they changed is kept with the new one set aside, and a new
+    one arrives. Its flavour.json comes too, and --undo takes it all back."""
+    root = t.box.root
+    # Names no real flavour uses, so the check runs the same in one.
+    kit = root / ".claude" / "flavour-test-kit"
+    shutil.rmtree(kit, ignore_errors=True)
+    kit.mkdir(parents=True)
+    (kit / "a.md").write_text("first a\n")
+    (kit / "b.md").write_text("first b\n")
+    skill = root / ".claude" / "skills" / "flavour-test-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: flavour-test-skill\ndescription: Use when testing a flavour.\n---\n\n# Kit\n\nFirst.\n")
+    flavour = {"name": "Other Template", "repo": "someone/other-template", "branch": "main",
+               "skills": ["flavour-test-skill"], "files": [".claude/flavour-test-kit"],
+               "settings": {"enabledMcpjsonServers": ["Studio"], "permissions": {"allow": ["Bash(echo kit)"]},
+                            "disableAllHooks": True}}
+    (root / ".os" / "flavour.json").write_text(json.dumps(flavour, indent=2) + "\n")
+    rules_before = json.loads((root / ".claude" / "settings.json").read_text())["permissions"]["allow"]
+    _release(root, "2026-01-01.1")
+    settings = json.loads((root / ".claude" / "settings.json").read_text())
+    t.eq(settings.get("enabledMcpjsonServers"), ["Studio"], "recording puts its settings in settings.json")
+    t.eq(settings["permissions"]["allow"], rules_before, "a flavour can't add a permission rule")
+    t.ok("disableAllHooks" not in settings and settings.get("hooks"), "nor turn the hooks off")
+    files = json.loads((root / ".os" / "shipped.json").read_text())["files"]
+    t.ok({".os/flavour.json", ".claude/flavour-test-kit/a.md", ".claude/skills/flavour-test-skill/SKILL.md"} <= set(files),
+         "and its files are recorded as released")
+
+    def newer(out: Path) -> None:
+        (out / ".claude" / "flavour-test-kit" / "a.md").write_text("second a\n")
+        (out / ".claude" / "flavour-test-kit" / "b.md").write_text("second b\n")
+        (out / ".claude" / "flavour-test-kit" / "deep").mkdir()
+        (out / ".claude" / "flavour-test-kit" / "deep" / "c.md").write_text("new c\n")
+        (out / "flavour-test.json").write_text('{"mcpServers": {}}\n')
+        s = out / ".claude" / "skills" / "flavour-test-skill" / "SKILL.md"
+        s.write_text(s.read_text().replace("First.", "Second."))
+        _edit_json(out / ".os" / "flavour.json", lambda d: d.update(
+            files=[".claude/flavour-test-kit", "flavour-test.json"],
+            settings=dict(d["settings"], enableAllProjectMcpServers=True)))
+    published = _publish(t, "2026-02-01.1", newer)
+
+    (kit / "b.md").write_text("first b, and mine\n")
+    done = t.box.run("update", "--from", str(published))
+    t.eq((kit / "a.md").read_text(), "second a\n", f"a file still as released is replaced\n{done.stdout}")
+    t.eq((kit / "b.md").read_text(), "first b, and mine\n", "one they changed is kept")
+    aside = list((root / ".os" / "upgrades").glob("*/.claude/flavour-test-kit/b.md"))
+    t.ok(aside and aside[0].read_text() == "second b\n", "with the new one set aside")
+    t.eq((kit / "deep" / "c.md").read_text(), "new c\n", "a new file in its folder arrives")
+    t.ok((root / "flavour-test.json").is_file(), "and a new file it names")
+    t.ok("Second." in skill.read_text(), "its skill is updated like any shipped skill")
+    t.ok("flavour-test.json" in (root / ".os" / "flavour.json").read_text(), "the new flavour.json comes in")
+    t.eq(json.loads((root / ".claude" / "settings.json").read_text()).get("enableAllProjectMcpServers"), True,
+         "and a new setting it adds")
+    t.ok("Other Template adds" in done.stdout, f"the update says it brought them\n{done.stdout}")
+
+    t.box.run("update", "--undo")
+    t.eq((kit / "a.md").read_text(), "first a\n", "--undo puts its files back")
+    t.ok(not (kit / "deep" / "c.md").exists() and not (root / "flavour-test.json").exists(),
+         "and takes out the ones it added")
+    t.ok("flavour-test.json" not in (root / ".os" / "flavour.json").read_text(), "and puts the old flavour.json back")
+
+    # A changed flavour.json is theirs, like any shipped file they edit; one
+    # they deleted comes back, since it says where updates come from.
+    t.box.run("update", "--from", str(published))
+    (root / ".os" / "flavour.json").unlink()
+    later = _publish(t, "2026-03-01.1", lambda out: (out / ".claude" / "flavour-test-kit" / "a.md").write_text("third a\n"),
+                     base=published)
+    t.box.run("update", "--from", str(later))
+    t.ok((root / ".os" / "flavour.json").is_file(), "a flavour.json they deleted is put back")
+    t.eq((kit / "a.md").read_text(), "third a\n", "and the update still brings its files")
+    _edit_json(root / ".os" / "flavour.json", lambda d: d.update(branch="mine"))
+    last = _publish(t, "2026-04-01.1", lambda out: _edit_json(
+        out / ".os" / "flavour.json", lambda d: d.update(name="Other Template Two")), base=later)
+    t.box.run("update", "--from", str(last))
+    t.ok('"mine"' in (root / ".os" / "flavour.json").read_text(), "one they changed is kept")
+    t.ok(any("Two" in p.read_text() for p in (root / ".os" / "upgrades").glob("*/.os/flavour.json")),
+         "with the new one set aside")
+
+    # A folder of its own they deleted whole stays deleted, said in one
+    # line, not one line per file in it, on every update after.
+    shutil.rmtree(kit)
+    final = _publish(t, "2026-05-01.1", lambda out: (out / ".claude" / "flavour-test-kit" / "a.md").write_text("fifth a\n"),
+                     base=last)
+    done = t.box.run("update", "--from", str(final))
+    t.ok(not kit.exists(), f"a deleted folder of its own stays deleted\n{done.stdout}")
+    left = [line for line in done.stdout.splitlines() if "flavour-test-kit" in line and "left out" in line]
+    t.eq(len(left), 1, f"said in one line\n{done.stdout}")
+    t.ok(left and ".claude/flavour-test-kit/ " in left[0], f"naming the folder\n{done.stdout}")
+
+
+@test
+def test_flavour_folder_never_carries_in_a_file_that_may_not_ship(t: Case) -> None:
+    """A flavour folder is walked file by file, and each file is checked the
+    way the names in flavour.json are: even a folder that got past that check
+    can't bring in settings.json or a normal skill."""
+    root = t.box.root
+    ask = ("import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import upgrade; "
+           "upgrade.FLAVOUR = {'files': ['.claude']}; "
+           "print(json.dumps(upgrade.flavour_files(Path(sys.argv[2]))))")
+    proc = subprocess.run([sys.executable, "-B", "-c", ask, str(root / ".os"), str(root)],
+                          capture_output=True, text=True, cwd=str(root))
+    if proc.returncode:
+        raise Failure(f"the program wouldn't start\n{proc.stderr[-2000:]}")
+    walked = json.loads(proc.stdout)
+    t.ok((root / ".claude" / "settings.json").is_file() and (root / ".claude" / "skills" / "find").is_dir(),
+         "the folder has them to find")
+    t.ok(".claude/settings.json" not in walked, f"settings.json is left out\n{walked}")
+    t.ok(not any(w.startswith((".claude/skills/", ".claude/hooks/", ".claude/agents/", ".claude/output-styles/"))
+                 for w in walked), f"and so are the normal skills, hooks, helpers and reply style\n{walked}")
+    (root / ".claude" / "settings.local.json").write_text("{}\n")
+    t.ok(".claude/settings.local.json" not in json.loads(subprocess.run(
+        [sys.executable, "-B", "-c", ask, str(root / ".os"), str(root)],
+        capture_output=True, text=True, cwd=str(root)).stdout), "and their own local settings")
+
+
+@test
+def test_flavour_about_line_is_said_on_a_first_visit_and_after(t: Case) -> None:
+    """A flavour's "about" line says what it does on top of the normal
+    template, in the first-visit brief and every brief after. Without one,
+    the brief is as it always was. A line that isn't one short plain line
+    is left out."""
+    root = t.box.root
+    (root / ".os" / "flavour.json").unlink(missing_ok=True)
+    plain_first = t.box.run("brief", "--json").stdout
+    about = 'It also makes test things with you: say "new test" to start one.'
+    (root / ".os" / "flavour.json").write_text(json.dumps({"name": "Other Template", "about": about}))
+    t.eq(_flavour_values(root)["FLAVOUR"]["about"], about, "the line is read")
+    first = json.loads(t.box.run("brief", "--json").stdout)["hookSpecificOutput"]["additionalContext"]
+    t.ok(f"This is Other Template. {about}" in first, f"the first visit says it\n{first}")
+    t.ok(first.startswith(json.loads(plain_first)["hookSpecificOutput"]["additionalContext"].split("\n\n")[0]),
+         "after the usual opening")
+    t.ok(about in t.box.run("brief").stdout, "./os brief shows it too")
+    t.box.run("save", "--note", "a thing to look up later about kettles")
+    later = t.box.run("brief").stdout
+    t.ok(f"This is Other Template. {about}" in later, f"and every brief after\n{later}")
+    for bad in ("two\nlines", "x" * 161, "  ", 7, ["a"], "tab\there"):
+        (root / ".os" / "flavour.json").write_text(json.dumps({"name": "Other Template", "about": bad}))
+        t.ok("about" not in _flavour_values(root)["FLAVOUR"], f"left out: {bad!r}")
+    (root / ".os" / "flavour.json").unlink()
+    t.ok("This is" not in t.box.run("brief").stdout, "with no flavour there is no line")
 
 
 def main(argv: list[str]) -> int:
