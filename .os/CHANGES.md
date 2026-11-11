@@ -3,6 +3,17 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-11.1
+
+- Skills and settings made in your folder now stay in your folder. If Claude
+  tries to put something in its own folder for the whole computer, where it
+  would show up in every folder you open, you're asked first.
+- Making a skill now uses Anthropic's own skill maker when you have it, so
+  new skills come out better written and tested. They're still saved in
+  your folder, never uploaded to your account. Without it, it works as before.
+- Big research questions use Anthropic's deep research when you have it, and
+  the report is saved in your notes. Code gets checked with `/code-review`.
+
 ## 2026-11-07.2
 
 - Mark Builds Brands addon, safer and more honest. Copy it writes for your

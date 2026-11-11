@@ -1,6 +1,6 @@
 ---
 name: researcher
-description: Researches a topic out on the web and brings back one well-sourced note. Use when the user needs the facts on a question, to compare options, or to check the current state of a tool, standard or market before deciding. Not for learning a craft from people who do it: that is /learn.
+description: Researches a topic out on the web and brings back one well-sourced note. Use when the user needs the facts on a question, to compare options, or to check the current state of a tool, standard or market before deciding. Not for learning a craft from people who do it: that is /learn. A big question that needs many sources and a long report goes to Anthropic's deep-research skill instead, when it's in the skill list: the main chat runs it from a scratch folder outside this one (it makes its own research_notes/ and reports/ folders), then saves the report here with ./os save.
 tools: Read, Write, Grep, Glob, Bash, WebSearch, WebFetch
 model: sonnet
 color: purple

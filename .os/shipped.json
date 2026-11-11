@@ -15,7 +15,8 @@
       "aa303f16191ad00561676f4bd2a9a2881552aed6",
       "134a3134e590c0d19e0f29eff9e9f235cd6b5b3d",
       "95296f9fb4df8a0c4e66f6b5c2b925f32f02e7bd",
-      "1b1c19e4748c3373bf5c1b8da6d240feea75adec"
+      "1b1c19e4748c3373bf5c1b8da6d240feea75adec",
+      "83cb79799eb13b2ccc30148b5f14832d74e33aaf"
     ],
     ".claude/agents/reviewer.md": [
       "85c25f7e6c33e624c5819aa88aa312561809e92a",
@@ -23,7 +24,8 @@
       "f9d81dc1b30485526c61e167c9b158a420d11228",
       "3e3b781179dd9b4e6f1392e936a91cfa4d919a25",
       "7ee619201441059db146722dadd02d1de556c60a",
-      "4f7160a794894e35c425efcebb9561d9ee700f87"
+      "4f7160a794894e35c425efcebb9561d9ee700f87",
+      "eac9762bfddeeb4f0bf2eb5fc63de4cbe4895c58"
     ],
     ".claude/agents/student.md": [
       "427c4e5c4f75470237e976cc810d53c3c6584915",
@@ -97,7 +99,8 @@
       "472a923fecf5064b84b10d56e075fd668742652f",
       "7a8c30c3e98de7300b52c4af0c6c5e2097db13d1",
       "c7ae7ec567c920ba21c708142bed8a2b80ce1a38",
-      "5228e0f4902bbb89aeb72509c0a435980ada83ea"
+      "5228e0f4902bbb89aeb72509c0a435980ada83ea",
+      "0a9fdd8dca52cb0d058304953824b55dac6db7b8"
     ],
     ".claude/skills/save/SKILL.md": [
       "533966aafee3a4d1f648c0380c3f0c8c65c5914c",
@@ -157,7 +160,8 @@
       "3b1d58abe10a140315a1680c96090ce11c5cff89",
       "a33b912e098a37ddd0fd01fc1ee0aafc164cbd01",
       "d76ece52fcbe08a2245d15588dc9d0bb0121442e",
-      "f2dcd034c56f88f218bba9ad5314b24d5eafbf5a"
+      "f2dcd034c56f88f218bba9ad5314b24d5eafbf5a",
+      "9ca4a2e323a1ce2006a4721235e530e43316080f"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e",
@@ -219,14 +223,16 @@
       "cbd4df57089d21dfc8b6320c0020cf23cae0013d",
       "c27fe51a4ee320f0f72d929ca3260738de90526d",
       "c2cbfac9ad15be49963a986c84781527b0ba37b7",
-      "c3a52911fba4e766516244cb1092b8c302cf2707"
+      "c3a52911fba4e766516244cb1092b8c302cf2707",
+      "4cf310b7e095b83499847df06e40bbdc083dc38f"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
       "48ef7c6634aaae040d1a31968e3e5db58fab14c6",
       "d46fe385abc12e6970368116f0ee02a4e341b392",
       "4a8904daea864eba82dbdb4680c0774de295901e",
-      "b1cfbb36960f8420e49cb95d32d74954a4d9bebf"
+      "b1cfbb36960f8420e49cb95d32d74954a4d9bebf",
+      "cf9b9a70bd210da3ec5875c1fb21edf59f330638"
     ],
     ".gitignore": [
       "110cb56982daa3818afbb83c42b9ac5d6a966009",
@@ -293,6 +299,9 @@
       "142a08fa85d4d5f7843f3ea929568bd91888b23f",
       "30a5d550702c8bdda1f4729f43d628bee8f6437b",
       "a1935a798a61b9f8cd7072843b429c9f2a3a2992"
+    ],
+    ".claude/hooks/only-this-folder.sh": [
+      "b234fc86bc9761cda142c7dc7d277515dd7109b0"
     ]
   },
   "keywords": {
@@ -358,7 +367,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-11-07.2",
+  "release": "2026-11-11.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
@@ -456,7 +465,8 @@
     ],
     "PreToolUse": [
       "9058ec606d6fef3ad00c15475a7b66acc4c49f15",
-      "8f20f2ed2b92493dc3f1d16c5ac47da0469eaddb"
+      "8f20f2ed2b92493dc3f1d16c5ac47da0469eaddb",
+      "610ae8510d8242d22c38a359f8a180142cc03a2a"
     ],
     "PostToolUse": [
       "cf03b5ded385e0550ca83f1d05defda0f6a74fac",

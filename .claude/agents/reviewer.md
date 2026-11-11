@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviews work against the standard it claims to meet — a draft, a plan, a skill, a project README, a decision — and reports what's wrong, ranked, with the fix. Use before shipping anything, or when the user asks is this good, review this, or what am I missing.
+description: Reviews work against the standard it claims to meet — a draft, a plan, a skill, a project README, a decision — and reports what's wrong, ranked, with the fix. Use before shipping anything, or when the user asks is this good, review this, or what am I missing. For a code change, Anthropic's /code-review finds bugs better: use that for the code, and this for everything else.
 tools: Read, Grep, Glob, Bash
 color: orange
 ---

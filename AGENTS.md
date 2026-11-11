@@ -121,13 +121,13 @@ folder around one file. Big media copied in — footage, exports, anything too l
 
 ## When they ask for something new
 
-Anything they'll want done the same way again is a skill (`./os new skill "..."`); a
-big job deserving its own clean context is a helper (`./os new helper "..."`); a craft
-they want to be good at is `./os learn` for the sources, `./os new learning "..."` for
-the note it becomes, then `./os words` to teach the folder its vocabulary. Anything else:
-`./os save` and let the filing decide. Each skill is `.claude/skills/<name>/SKILL.md`, listed
-in `.claude/CATALOG.md`, and any AI can use one: when a request fits it, read it and follow it.
-`./os addon` lists ready-made ones someone already wrote; adding one downloads it, so ask first.
+Anything they'll want done the same way again is a skill (`./os new skill "..."`); a big job
+deserving its own clean context is a helper (`./os new helper "..."`); a craft to get good at is
+`./os learn` for the sources, `./os new learning "..."` for the note, then `./os words` for its
+vocabulary. Anything else: `./os save`. Each skill is `.claude/skills/<name>/SKILL.md`, listed in
+`.claude/CATALOG.md`; any AI can use one, so when a request fits it, read it and follow it. **Skills
+and settings stay in this folder:** never `~/.claude` or a claude.ai account skill, which reach every
+folder, unless they say they want it everywhere. `./os addon` lists ready-made ones; ask first.
 
 Before answering a how-to, `./os find "<subject>"` — a subject they have learned
 beats your general knowledge, because it is what *they* chose to trust.

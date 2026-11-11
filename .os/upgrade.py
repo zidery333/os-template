@@ -93,6 +93,9 @@ SHIPPED_SKILLS = ("catchup", "commands", "decide", "find", "handoff", "learn",
                   "make-skill", "save", "setup", "tidy", "wrapup")
 SHIPPED_AGENTS = ("builder", "researcher", "reviewer", "student")
 SHIPPED_HOOKS = ("keep-the-record.sh", "mark-dirty.sh", "session-start.sh", "settle.sh",
+                 # Asks before anything is written into ~/.claude, which
+                 # reaches every folder on the computer, not just this one.
+                 "only-this-folder.sh",
                  # The check after each reply, and the list of words it looks
                  # for. The list is theirs to add to: one they changed is kept.
                  "plain-words.sh", "plain-words.tsv")
