@@ -37,13 +37,13 @@ They did not sign up to learn a filing system.
 | `Archive/` | No longer live, still searchable | They stopped carrying it |
 | `Notes/` About me | A line per fact about them or how they want answers (none yet? `./os new note "About me" --domain personal`) | Every session should know it |
 
-The person never picks one — `./os save` decides and files it immediately.
-**There is no inbox**: if you saved it, it is filed. A PDF or an image lands in `Notes/` with a
-`<file>.card.md`, and search reads the card, not the file: after `./os save <file>`, write one
-sentence of what it is and 3–5 tags into the card, and `./os rename` it if a camera or scanner named
-it. **Never bring a file in from elsewhere without asking.** A video, or anything over 100 MB, stays
-put: `./os save <it>` writes a note in Notes saying where it lives, to fill in the same way; a copy
-in here takes `--copy`. Files dropped in by hand aren't filed until `./os sort` adopts them.
+The person never picks one — `./os save` decides and files it immediately. **There is no inbox**:
+if you saved it, it is filed. **Writing they ask for is saved here too**, never as a claude.ai doc
+unless they want one to share. A PDF or an image lands in `Notes/` with a `<file>.card.md`, and
+search reads the card, not the file: after `./os save <file>`, write one sentence of what it is and
+3–5 tags into the card, and `./os rename` it if a camera named it. `./os sort` files hand-dropped ones.
+**Never bring a file in from elsewhere without asking.** A video, or anything over 100 MB, stays put:
+`./os save` writes a note saying where it lives, to fill in the same way (`--copy` copies it in).
 
 Everything is known by its plain name — the folder or file name, like `Q3 OKR Review`. A name
 follows its thing everywhere: a closed item keeps its name in `Archive/`. **Use the names.**

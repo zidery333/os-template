@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-11.2
+
+- Writing you ask for (a write-up, a plan, a summary) is saved in your
+  folder, where you can find it later. Claude only makes a doc on claude.ai
+  when you say you want one to share.
+
 ## 2026-11-11.1
 
 - Skills and settings made in your folder now stay in your folder. If Claude

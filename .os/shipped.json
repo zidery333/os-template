@@ -161,7 +161,8 @@
       "a33b912e098a37ddd0fd01fc1ee0aafc164cbd01",
       "d76ece52fcbe08a2245d15588dc9d0bb0121442e",
       "f2dcd034c56f88f218bba9ad5314b24d5eafbf5a",
-      "9ca4a2e323a1ce2006a4721235e530e43316080f"
+      "9ca4a2e323a1ce2006a4721235e530e43316080f",
+      "0ecd62f10ce39e2eeb52e32ae80648c5c2b1b112"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e",
@@ -367,7 +368,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-11-11.1",
+  "release": "2026-11-11.2",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"
