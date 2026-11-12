@@ -30,6 +30,9 @@ Anything decided that belongs to no one item, and any loose end raised and not
 resolved, goes to `./os save --note "<the decision>"`, with what it rules out only when
 they said it (see Rules). It gets filed as a note under its own name.
 
+A skill that went wrong today, or that they corrected, has its line in its own
+`LEARNED.md` (the way AGENTS.md says). Missed at the time? Add it now.
+
 If this folder keeps its own end-of-session steps in `wrapup-extra.md`,
 inside `.claude/`, do what it says.
 

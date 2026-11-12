@@ -3,6 +3,12 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-12.1
+
+- Skills learn from their mistakes. When one goes wrong, or you correct
+  it, your AI writes the lesson down beside that skill, and reads it the
+  next time. Updates never touch what a skill has learned.
+
 ## 2026-11-11.3
 
 - Nothing changes in how your folder works. Behind the scenes, the program

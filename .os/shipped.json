@@ -122,7 +122,8 @@
       "82a64f941225436155c2274351f6d58ad03029a2",
       "248b367b84387111e19087326e67dc944ebc8842",
       "23674999fc7af1813daedcdcb62ee4be127b9e3b",
-      "4ad15dcfbb1530c82242e2ec848e3440546745df"
+      "4ad15dcfbb1530c82242e2ec848e3440546745df",
+      "d3c556f3519f96811e5eeadff39773905aa27c8a"
     ],
     ".claude/skills/wrapup/SKILL.md": [
       "3cdf8c093eb1a9f185b8a45f978bcdc9bb04d420",
@@ -134,7 +135,8 @@
       "1315c4527ad5d602d06c6d98d6ae383968352974",
       "247a32bbaf19410bd0f59bff5090ac22e3d9446c",
       "cc1236d899620949afb9a6bcc40d9616c36a3a0b",
-      "0cc44e5dce2487579f95027bfd1f078c4a238288"
+      "0cc44e5dce2487579f95027bfd1f078c4a238288",
+      "64488e1e921d34c5b7c42f4c4cace8b307f476de"
     ],
     "AGENTS.md": [
       "1465c7fd260a28aeb5b61b3a7fa1c45011fb4422",
@@ -162,7 +164,8 @@
       "d76ece52fcbe08a2245d15588dc9d0bb0121442e",
       "f2dcd034c56f88f218bba9ad5314b24d5eafbf5a",
       "9ca4a2e323a1ce2006a4721235e530e43316080f",
-      "0ecd62f10ce39e2eeb52e32ae80648c5c2b1b112"
+      "0ecd62f10ce39e2eeb52e32ae80648c5c2b1b112",
+      "95e830a8bd326da43cd81aa9dc3a1b359ff959a6"
     ],
     ".claude/skills/decide/SKILL.md": [
       "3cca9ea27ea1c94e0d40795cd8f2f45655b8b83e",
@@ -371,7 +374,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-11-11.3",
+  "release": "2026-11-12.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

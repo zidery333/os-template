@@ -62,6 +62,10 @@ once they agree. Describing the problem back to them is not the job.
   `./os snag --export` once so they have a page to hand over, and tell them to
   read it before they send it. Don't read the list out.
 
+`./os tidy` doesn't list what skills have learned, so read each skill's
+`LEARNED.md` too. Merge repeats, drop a line that no longer holds, and keep
+each under 40 lines.
+
 Finish with `./os check --fix`, then read every pushing item's `## Next action`
 and name the three to start on this week, in order, with a clause each on why.
 Fewer than three with a next action? Name those, and ask about the rest.

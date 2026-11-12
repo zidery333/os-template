@@ -8507,6 +8507,35 @@ def test_the_download_ships_no_subject_of_this_folders_own(t: Case) -> None:
 
 
 @test
+def test_what_a_skill_learned_survives_an_update(t: Case) -> None:
+    """Skills learn: each time one goes wrong, a line goes into the
+    LEARNED.md beside it (AGENTS.md). No release ships one, so an update
+    that changes the skill leaves it as it was, with nothing to merge, and
+    ./os check finds nothing wrong (2026-11-11). Not LESSONS.md: OS Roblox
+    ships one of those, and an update would ask to merge it."""
+    root = t.box.root
+    skill = root / ".claude" / "skills" / "save"
+    _release(root, "2026-01-01.1")
+    lessons = skill / "LEARNED.md"
+    said = "- Ask before filing a receipt as work. Why: two went into Work/.\n"
+    lessons.write_text(said, encoding="utf-8")
+
+    def newer_skill(out: Path) -> None:
+        (out / ".claude" / "skills" / "save" / "LEARNED.md").unlink(missing_ok=True)
+        page = out / ".claude" / "skills" / "save" / "SKILL.md"
+        page.write_text(page.read_text(encoding="utf-8") + "\nA newer line.\n", encoding="utf-8")
+    published = _publish(t, "2026-02-01.1", newer_skill)
+    done = t.box.run("update", "--from", str(published))
+    t.ok("A newer line." in (skill / "SKILL.md").read_text(encoding="utf-8"),
+         f"the newer skill arrives\n{done.stdout}")
+    t.eq(lessons.read_text(encoding="utf-8") if lessons.is_file() else "", said,
+         "and what it learned is still there, as it was")
+    t.eq(list((root / ".os" / "upgrades").rglob("*.*")) if (root / ".os" / "upgrades").exists() else [], [],
+         "nothing is left to merge by hand")
+    t.ok("LEARNED" not in t.box.run("check").stdout, "./os check has nothing to say about it")
+
+
+@test
 def test_an_update_renews_the_line_under_the_name_still_as_released(t: Case) -> None:
     """The first release put "Any AI can use it." under the folder's name in
     `./os help`, and an update kept theirs whatever it said, so no release

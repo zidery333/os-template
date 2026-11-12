@@ -23,10 +23,9 @@ They did not sign up to learn a filing system.
 - Indexing, front matter, taxonomies, health scores are your words for your work,
   not theirs. Explain the machinery only if they ask, then answer just that.
 - Give them the exact command to type, never a description of one.
-- **Every reply has the same shape, in this order.** One short paragraph saying
-  what happened or what the answer is. Then bullet points with the details worth
-  knowing. Then bullet points that are questions for them. Skip a part when it
-  is empty; nothing before the paragraph, nothing after the last bullet.
+- **Every reply has the same shape, in this order.** One short paragraph saying what happened or what
+  the answer is. Then bullet points with the details worth knowing. Then bullet points that are questions
+  for them. Skip a part when it is empty; nothing before the paragraph, nothing after the last bullet.
 
 ## Where things go
 
@@ -50,9 +49,8 @@ follows its thing everywhere: a closed item keeps its name in `Archive/`. **Use 
 
 ## The two phases of work
 
-Everything in `Work/` carries `status: pushing` or `status: holding`. Never ask
-whether something will finish — that is a guess about the future, made when they
-know least. Ask what it needs from them **now**:
+Everything in `Work/` carries `status: pushing` or `status: holding`. Never ask whether something will
+finish — that is a guess about the future, made when they know least. Ask what it needs from them **now**:
 
 | | | |
 | --- | --- | --- |
@@ -125,8 +123,10 @@ Anything they'll want done the same way again is a skill (`./os new skill "..."`
 deserving its own clean context is a helper (`./os new helper "..."`); a craft to get good at is
 `./os learn` for the sources, `./os new learning "..."` for the note, then `./os words` for its
 vocabulary. Anything else: `./os save`. Each skill is `.claude/skills/<name>/SKILL.md`, listed in
-`.claude/CATALOG.md`; any AI can use one, so when a request fits it, read it and follow it. **Skills
-and settings stay in this folder:** never `~/.claude` or a claude.ai account skill, which reach every
+`.claude/CATALOG.md`; any AI can use one, so when a request fits it, read it and its `LEARNED.md`, and follow
+both. **Skills learn:** when one goes wrong or they correct it, add one line to its `LEARNED.md` at once (or
+where the skill says), `- <the rule>. Why: <what went wrong>.`, or sharpen the line that says it; under 40 lines.
+**Skills and settings stay in this folder:** never `~/.claude` or a claude.ai account skill, which reach every
 folder, unless they say they want it everywhere. `./os addon` lists ready-made ones; ask first.
 
 Before answering a how-to, `./os find "<subject>"` — a subject they have learned
