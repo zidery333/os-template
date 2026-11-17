@@ -2,7 +2,7 @@
 
 Ends every job that changed something you can see with 1–3 screenshots, put together into one labelled picture: every theme in one grid, desktop and phone side by side.
 
-An addon for [Zenith](https://github.com/zidery333/os-template/tree/os). Inside your Zenith folder, type:
+An addon for [OS template](https://github.com/zidery333/os-template/tree/os). Inside your OS template folder, type:
 
 ```bash
 ./os addon screenshot-grid
