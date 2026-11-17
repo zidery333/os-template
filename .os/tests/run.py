@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Zenith — test suite
+OS template — test suite
 ========================
 Builds a throwaway copy of the real folder in a temp directory, throws a
 realistic mess at it, and checks that every promise the product makes holds.
@@ -5243,7 +5243,7 @@ def test_shipped_words_say_what_is_there(t: Case) -> None:
     form read "You are Plan the week's meals."; the student's example was
     trading; and AGENTS.md's line for when nobody is there said no action."""
     shown = t.box.run("help").stdout
-    t.ok("THE FIVE" not in shown and "Zenith did" not in shown, "help counts nothing wrong, and says ./os")
+    t.ok("THE FIVE" not in shown and "Zenith did" not in shown and "OS template did" not in shown, "help counts nothing wrong, and says ./os")
     for word in ("learning", "./os learn", "./os snag"):
         t.ok(word in shown, f"help lists {word}")
     read = lambda *p: "" if any_in_their_words(t.box, "/".join(p)) else (SOURCE.joinpath(*p)).read_text()
@@ -10599,7 +10599,7 @@ def test_a_python_that_only_offers_to_install_itself_is_never_run(t: Case) -> No
 
     proc = run(str(t.box.root / "os"), "--version")
     t.eq(proc.returncode, 1, "./os stops")
-    t.ok("Zenith" not in proc.stdout, "without running the stand-in")
+    t.ok("OS template" not in proc.stdout, "without running the stand-in")
     t.ok("xcode-select --install" in proc.stderr, f"and says what to install\n{proc.stderr}")
     hook = run("bash", str(t.box.root / ".claude" / "hooks" / "session-start.sh"))
     t.eq(hook.returncode, 0, "the session still starts")
@@ -10607,7 +10607,7 @@ def test_a_python_that_only_offers_to_install_itself_is_never_run(t: Case) -> No
 
     (fake / "xcode-select").write_text("#!/bin/sh\necho /Library/Developer/CommandLineTools\n")
     proc = run(str(t.box.root / "os"), "--version")
-    t.ok(proc.returncode == 0 and "Zenith" in proc.stdout,
+    t.ok(proc.returncode == 0 and "OS template" in proc.stdout,
          f"with the developer tools, that same python3 is used\n{proc.stderr}")
 
 
@@ -20668,7 +20668,7 @@ def main(argv: list[str]) -> int:
             jobs = 1
     selected = [t for t in TESTS if not only or only in t.__name__]
     print()
-    print(f"  {B}Zenith — test suite{X}")
+    print(f"  {B}OS template — test suite{X}")
     print(f"  {D}engine {engine.ENGINE_VERSION} · python {sys.version.split()[0]} · "
           f"{len(selected)} tests{X}")
     print(f"  {D}{'─' * 64}{X}")

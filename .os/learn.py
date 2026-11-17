@@ -6,7 +6,7 @@ worth reading, what the method is, and whether somebody is selling you a
 course are all questions for whatever AI is driving. Those cannot be hardcoded
 and this file does not try.
 
-The one part of Zenith that goes out to the internet, and the one part that
+The one part of OS template that goes out to the internet, and the one part that
 wants something installed (yt-dlp). Everything else works with neither.
 """
 
@@ -512,7 +512,7 @@ def teach(root: Path, domain: str, terms: Iterable[str]) -> dict:
 # act on — a missing yt-dlp says the one line to type on *this* machine.
 
 def find_root(start: Optional[Path] = None) -> Path:
-    """The Zenith folder this is running inside. Same rule the engine uses."""
+    """The OS template folder this is running inside. Same rule the engine uses."""
     here = (start or Path.cwd()).resolve()
     for candidate in [here, *here.parents]:
         if (candidate / ".os" / "config.json").exists():

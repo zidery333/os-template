@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Zenith — the one command.
+# OS template — the one command.
 #   ./os              where everything stands
 #   ./os help         everything you can type
 #
@@ -74,12 +74,12 @@ if [ -z "$PY" ]; then
 fi
 if [ -z "$PY" ] && [ -n "${old:-}" ]; then
   printf '\033[38;5;167m  ✖ This Python is too old: %s\033[0m\n' "$("$old" --version 2>&1)" >&2
-  printf '   Zenith needs Python 3.9 or newer — get it from python.org\n' >&2
+  printf '   OS template needs Python 3.9 or newer — get it from python.org\n' >&2
   exit 1
 fi
 if [ -z "$PY" ]; then
   printf '\033[38;5;167m  ✖ Python is not installed\033[0m\n' >&2
-  printf '   Zenith needs Python 3.9 or newer.\n' >&2
+  printf '   OS template needs Python 3.9 or newer.\n' >&2
   printf '   On a Mac, run:  xcode-select --install\n' >&2
   printf '   Otherwise, get it from python.org\n' >&2
   exit 1

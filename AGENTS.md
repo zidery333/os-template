@@ -1,6 +1,6 @@
 # How to work in this folder
 
-This folder is called Zenith. It holds whatever the person you're helping
+This folder is called OS template. It holds whatever the person you're helping
 wants kept — plans, notes, files, the things they're into — and it keeps itself
 organised. You are the one running it for them. Works with any AI: if you can
 read this file and run `./os`, you can run this system. What follows is what the

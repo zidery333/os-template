@@ -1,7 +1,7 @@
 {
   "$schema": "zenith/words/2",
   "how to use this file": [
-    "This is how Zenith guesses where things go. Add the words YOU actually use.",
+    "This is how OS template guesses where things go. Add the words YOU actually use.",
     "Example: if you keep chickens, find the \"garden\" block below and add",
     "\"chickens\" to its keywords list, in quotes, with a comma.",
     "Same for names, places, nicknames — anything you type a lot.",

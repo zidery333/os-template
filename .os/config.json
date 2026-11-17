@@ -1,6 +1,6 @@
 {
   "$schema": "zenith/config/2",
-  "name": "Zenith",
+  "name": "OS template",
   "tagline": "One folder for your notes, plans and files.",
   "version": "3.0.0",
   "owner": "",

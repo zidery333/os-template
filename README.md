@@ -1,4 +1,4 @@
-# Zenith
+# OS template
 
 **One folder for your notes, plans and files, kept in order by Claude Code.**
 
@@ -18,7 +18,7 @@ Claude is an AI: you type to it in plain words, and it answers. Claude Code is
 the kind of Claude that can also open, write and move files on your computer,
 inside one folder you pick.
 
-Zenith is that folder. It's a place to keep anything you want to remember:
+OS template is that folder. It's a place to keep anything you want to remember:
 plans, notes, files, the things you're into. You tell Claude, and it writes it
 down and puts it in the right place. Next week you ask "what did I decide about
 the boiler?" and it finds it. You never learn a filing system. Claude does the
@@ -32,7 +32,7 @@ it, and after that you just talk.
 Don't ask the old folder's Claude to fetch this one. It puts the new one inside
 the old one, still linked to this page, and the two get mixed up. Instead:
 
-1. Install Zenith fresh, with the steps under [Install](#install).
+1. Install OS template fresh, with the steps under [Install](#install).
 2. In the new folder, type `/setup`. When it asks about an old folder, tell it
    where yours is.
 
@@ -42,8 +42,8 @@ at all, and straight after it, one `./os undo` takes the whole lot back out.
 ## What it looks like
 
 ```text
-  Z E N I T H
-  ───────────
+  O S   T E M P L A T E
+  ─────────────────────
   ~/os
 
   ▍Work     3     Everything you're carrying — pushing on, or keeping level.
@@ -78,7 +78,7 @@ You just talk to Claude, and it does the filing.
 
 ## Addons
 
-Extra skills and helpers for one kind of work. Zenith comes with none. Add only
+Extra skills and helpers for one kind of work. OS template comes with none. Add only
 the ones you want, and `./os update` keeps them up to date.
 
 | | Addon | What it adds |
@@ -89,7 +89,7 @@ the ones you want, and `./os update` keeps them up to date.
 | 🔗 | **Subchat chain** | Runs a big job as one main chat that hands each step to its own subchat, one after another, checks each one's work, then sends you one clean summary. For Claude Code in the Claude desktop app. |
 | ✍️ | **Tate** | Says anything in Andrew Tate's voice — texts, DMs, replies, poems, captions, tweets, speeches, emails — measured from hundreds of his real emails. |
 
-Once Zenith is installed (see Install below), go into your folder and type
+Once OS template is installed (see Install below), go into your folder and type
 this to see every addon:
 
 ```bash
@@ -172,7 +172,7 @@ If a box pops up, click Install and wait. If it says Python is missing, run
 
 **🪟 Windows**
 
-Zenith runs on Windows through WSL, a small copy of Linux that Windows can
+OS template runs on Windows through WSL, a small copy of Linux that Windows can
 run. Right-click the Start button and open **Terminal (Admin)**, or
 **PowerShell (Admin)** on Windows 10. Then:
 
@@ -210,7 +210,7 @@ If it says `~/.local/bin` isn't in your PATH, paste the line it gives you.
 Then close the terminal and open it again. Stuck? See
 [Claude Code's setup page](https://code.claude.com/docs/en/setup).
 
-### 3. Download Zenith
+### 3. Download OS template
 
 This puts it in a folder called `os` in your home folder.
 Already have a `~/os`? Then use another name, like `~/os2`, in place of `~/os`
@@ -278,7 +278,7 @@ to merge. Settings you changed keep your changes, with any new ones added.
 
 ## Other AIs
 
-Zenith is built for Claude Code. Other AIs that can run commands on your
+OS template is built for Claude Code. Other AIs that can run commands on your
 computer, like Codex or Gemini CLI, should work too, but nobody has tried them
 yet. A chat-only app like ChatGPT can't.
 

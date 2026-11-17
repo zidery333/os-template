@@ -3,6 +3,11 @@
 Newest first. Each release says, in plain words, what you'll notice.
 `./os update` shows you the ones that are new to you.
 
+## 2026-11-17.1
+
+- The template is now called OS template. It used to be Zenith. Your own
+  folder keeps whatever name it has.
+
 ## 2026-11-12.1
 
 - Skills learn from their mistakes. When one goes wrong, or you correct

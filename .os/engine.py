@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Zenith — engine
+OS template — engine
 =================
 A folder that keeps itself organised, in one file. Works with any AI, or none.
 
@@ -1716,7 +1716,7 @@ def find_root(start: Path | None = None) -> Path:
                 env = str(candidate)
                 break
         else:
-            die(f"{start} is not a Zenith folder, and neither is anything above it.\n"
+            die(f"{start} is not an OS template folder, and neither is anything above it.\n"
                 "     --root wants the folder that holds AGENTS.md and .os/")
 
     # Not one a move set aside, config.json back or not yet hidden: run
@@ -4014,7 +4014,7 @@ class Scanner:
 
         Never through a symlink. A link in Notes/ pointing at a folder that
         happens to hold a `.category` marker used to make the walker step
-        straight out of the Zenith folder and treat somebody's real directory as
+        straight out of the OS template folder and treat somebody's real directory as
         its own — and then `os sort` *moved their files out of it*. A shortcut is
         one item, always: the thing it points at belongs to whoever put it there."""
         return path.is_dir() and not path.is_symlink() and (path / CATEGORY_MARKER).exists()
@@ -5323,7 +5323,7 @@ class Indexer:
         self.os.save_state()
         registry = {
             "engine": ENGINE_VERSION,
-            "name": self.os.config.get("name", "Zenith"),
+            "name": self.os.config.get("name", "OS template"),
             "root": str(self.os.root),
             "generated": now_iso(),
             "counts": self._counts(items),
@@ -5360,7 +5360,7 @@ class Indexer:
         yours = len([i for i in items if i.bucket != TOOLKIT])
         lines = [
             GENERATED,
-            f"# {cfg.get('name', 'Zenith')}",
+            f"# {cfg.get('name', 'OS template')}",
             "",
             "Everything in this folder, in one list. Rebuilt automatically.",
             "",
@@ -8220,7 +8220,7 @@ class Backup:
         # second-resolution, and silently overwriting a backup is the exact
         # opposite of what somebody asking for a backup wants. Named after the
         # folder, so a backup moved somewhere else still says whose it is.
-        name = slugify(self.os.config.get("name") or "Zenith")
+        name = slugify(self.os.config.get("name") or "OS template")
         out = self.os.dot / "backups" / f"{name}-{stamp}.zip"
         out.parent.mkdir(parents=True, exist_ok=True)
         out = unique_path(out)
@@ -9529,7 +9529,7 @@ class Creator:
             "{{DATE}}": today(), "{{DOMAIN}}": domain or catch_all(self.os.taxonomy),
             "{{TAGS}}": ", ".join(tags), "{{YEAR}}": today()[:4],
             "{{OWNER}}": str(self.os.config.get("owner") or ""),
-            "{{OS_NAME}}": str(self.os.config.get("name", "Zenith")),
+            "{{OS_NAME}}": str(self.os.config.get("name", "OS template")),
         }
         # A header line that is one value with a name in it goes through
         # `_emit`, which quotes it when it has to be. `description: My
@@ -9755,7 +9755,7 @@ class Creator:
 # the command line
 # ---------------------------------------------------------------------------
 
-def wordmark(name: str = "Zenith") -> str:
+def wordmark(name: str = "OS template") -> str:
     """The name, letter-spaced, with a rule exactly as wide as it is."""
     spaced = " ".join(name.upper())
     return "\n  " + spaced + "\n  " + "─" * len(spaced)
@@ -10004,7 +10004,7 @@ def cmd_status(os_: Zenith, argv: list[str]) -> int:
     items = scanner.scan()
     health = Doctor(os_).run(items=items)
 
-    mark = wordmark(os_.config.get("name", "Zenith"))
+    mark = wordmark(os_.config.get("name", "OS template"))
     Out.raw(paint(mark, S.GOLD) if S.enabled else mark)
     Out.raw("  " + paint(str(os_.root), S.FAINT))
     Out.raw()
@@ -13594,7 +13594,7 @@ def _brief_text(os_: Zenith) -> str:
     loose = [i.path for i in items if Sorter.unmanaged(i)] + loose_at_top(os_.root, os_.buckets())
     # Whatever the folder is called now: a brief that opened "ZENITH" after
     # `./os name --name Atlas` had the AI calling it the old name.
-    name = str(os_.config.get("name") or "Zenith").upper()
+    name = str(os_.config.get("name") or "OS template").upper()
     # Why hand edits can't be taken back yet, while that's so. Said here
     # because in Claude Code this is the first run, and what it prints is
     # never seen (see History.standing).
@@ -13719,7 +13719,7 @@ def cmd_learn(os_: Zenith, argv: list[str]) -> int:
             print(json.dumps(L.missing_ytdlp()))
             return 1
         Out.title("learn", "needs one thing first")
-        Out.warn("This is the one part of Zenith that goes out to the internet,")
+        Out.warn("This is the one part of OS template that goes out to the internet,")
         Out.raw("    and the one part that wants something installed.")
         Out.raw()
         Out.raw("    " + paint(line, S.B))
@@ -13926,7 +13926,7 @@ def cmd_snag(os_: Zenith, argv: list[str]) -> int:
 
     if export:
         made = f"release {release} (engine {ENGINE_VERSION})" if release else f"engine {ENGINE_VERSION}"
-        lines = [f"# What using {os_.config.get('name', 'Zenith')} turned up",
+        lines = [f"# What using {os_.config.get('name', 'OS template')} turned up",
                  "",
                  f"{len(ranked)} thing{'' if len(ranked) == 1 else 's'}, "
                  f"most-repeated first, "
@@ -15356,7 +15356,7 @@ def setup_report(os_: Zenith) -> dict:
                       "fix": "./os setup --move-to " + shell_word(str(Path.home() / root.name))})
     return {"system": system, "python": sys.version.split()[0], "git": git, "claude": claude,
             "folder": str(root), "folder_name": root.name,
-            "name": str(os_.config.get("name") or "Zenith"),
+            "name": str(os_.config.get("name") or "OS template"),
             "owner": str(os_.config.get("owner") or ""),
             "linked": bool(linked), "inside": str(around) if around else "", "needs": needs}
 
@@ -16420,7 +16420,7 @@ def cmd_setup(os_: Zenith, argv: list[str]) -> int:
         Indexer(os_).build()
     if quiet:
         return 0
-    label = result["name"] or "Zenith"
+    label = result["name"] or "OS template"
     Out.raw(paint(f"\n  {' '.join(label.upper())}", S.B, S.GOLD))
     Out.raw("  " + paint("─" * max(10, len(label) * 2 - 1), S.FAINT))
     Out.raw()
@@ -16635,7 +16635,7 @@ COMMAND_LIST = [
 def _completion(shell: str) -> str:
     names = " ".join(n for n, _ in COMMAND_LIST)
     if "bash" in shell:
-        return """# Zenith tab-completion for bash.  Install with:
+        return """# OS template tab-completion for bash.  Install with:
 #   ./os completion bash >> ~/.bashrc
 _os_complete() {
   local cur prev
@@ -16655,7 +16655,7 @@ complete -F _os_complete os
 """ % (names, names)
     listed = "\n".join(f"    '{n}:{d}'" for n, d in COMMAND_LIST)
     return """#compdef os
-# Zenith tab-completion for zsh.  Install with:
+# OS template tab-completion for zsh.  Install with:
 #   ./os completion zsh > ~/.zsh/completions/_os     (then run: compinit)
 _os() {
   local -a cmds
@@ -16718,7 +16718,7 @@ def cmd_name(os_: Zenith, argv: list[str]) -> int:
     owner = one_line(" ".join(_theirs(argv))).strip().strip('"')
     if not owner and not label:
         Out.title("name")
-        Out.kv("this folder", os_.config.get("name", "Zenith"), 14)
+        Out.kv("this folder", os_.config.get("name", "OS template"), 14)
         Out.kv("belongs to", os_.config.get("owner") or "nobody yet", 14)
         Out.raw()
         Out.note('./os name "Your Name"          put your name on it')
@@ -16730,7 +16730,7 @@ def cmd_name(os_: Zenith, argv: list[str]) -> int:
         # No step for no change: undo then said there was nothing left to
         # reverse, as if removed by hand (review, 2026-10-29).
         Out.title("name")
-        Out.ok(f"{os_.config.get('name', 'Zenith')} · {os_.config.get('owner') or 'no owner set'} — already so")
+        Out.ok(f"{os_.config.get('name', 'OS template')} · {os_.config.get('owner') or 'no owner set'} — already so")
         Out.raw()
         return 0
     # One undo step, About me line and all: without one, ./os undo straight
@@ -16756,7 +16756,7 @@ def cmd_name(os_: Zenith, argv: list[str]) -> int:
         os_.commit("name")
     Indexer(os_).build()
     Out.title("name")
-    Out.ok(f"{os_.config.get('name', 'Zenith')} · "
+    Out.ok(f"{os_.config.get('name', 'OS template')} · "
            f"{os_.config.get('owner') or 'no owner set'}")
     Out.raw()
     return 0
@@ -16974,7 +16974,7 @@ DETAIL = {
                ['os decide fix-the-boiler "a new one, not another repair"'],
                "./os save does this by itself when the words name the item, and "
                "refuses when it cannot tell which one you meant."),
-    "undo": ("os undo [--anyway] [--other-chat]", "Reverse the last thing Zenith itself did — a save, a "
+    "undo": ("os undo [--anyway] [--other-chat]", "Reverse the last thing ./os itself did — a save, a "
              "filing, a close, a new — and say what it took back. When the last thing was "
              "done in another chat, it stops and says what that was; --other-chat takes "
              "it back all the same.",
@@ -17133,7 +17133,7 @@ def cmd_help(os_: Zenith | None, argv: list[str]) -> int:
         Out.note("./os help   lists everything you can type")
         Out.raw()
         return 1
-    name = os_.config.get("name", "Zenith") if os_ else "Zenith"
+    name = os_.config.get("name", "OS template") if os_ else "Zenith"
     tagline = os_.config.get("tagline", "") if os_ else ""
     mark = wordmark(name)
     print(paint(mark, S.GOLD) if S.enabled else mark)
@@ -17285,7 +17285,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if _flag(argv, "--version", "-V"):
         release = release_of(Path(__file__).resolve().parent.parent)   # its own folder
-        print(f"Zenith {ENGINE_VERSION}" + (f" (release {release})" if release else ""))
+        print(f"OS template {ENGINE_VERSION}" + (f" (release {release})" if release else ""))
         return 0
     no_color = _flag(argv, "--no-color", "--plain")
     Out.quiet = _flag(argv, "--quiet", "-q")

@@ -188,7 +188,8 @@
     "os": [
       "bb7de1bb647842ec1f518e495677380a4dffabe9",
       "d78f7b0c82b00c6d2616003cf240bddc7b78b256",
-      "4ef74dab6617e677a1b8fe960b9ce111f1cfcb57"
+      "4ef74dab6617e677a1b8fe960b9ce111f1cfcb57",
+      "5f3fe557a6b9f10bb5d1073e18d07df2110b7d92"
     ],
     ".os/engine.py": [
       "bac237136e89196303b5a92c4b5a36792a42fd8c",
@@ -209,14 +210,16 @@
       "1ee66b8c56d110efdb32387c53fa574e671e5760",
       "3cdc4b2c0bc42de336bbf58b383e9ffa5cc3bc07",
       "14ee8ea8c336bdd22934ee818e3877b58ef0a2c2",
-      "75908f90e08f9cb0bef4d2f16acebe0cad95bb10"
+      "75908f90e08f9cb0bef4d2f16acebe0cad95bb10",
+      "9e1fc525c88390ac1837b3c15b984319588432cf"
     ],
     ".os/learn.py": [
       "1b3f236a4556a3114e445c7288f8dd82805cc540",
       "e565af6fb716a0c3c54bafd82cdd196306b61ca8",
       "76c2d7e467045de0514fd1ab85afa17fbb511a13",
       "1959dc8f72cac95f58691114593463772ad6f4df",
-      "bb8093de2e2bde878f7ba0ce9933d650c7e8b93c"
+      "bb8093de2e2bde878f7ba0ce9933d650c7e8b93c",
+      "2bf3a60ad6afd75d6da03024878930257805097d"
     ],
     ".os/upgrade.py": [
       "b02cb5841cb06fe71994843ae60e0f459e197d38",
@@ -230,7 +233,8 @@
       "c2cbfac9ad15be49963a986c84781527b0ba37b7",
       "c3a52911fba4e766516244cb1092b8c302cf2707",
       "4cf310b7e095b83499847df06e40bbdc083dc38f",
-      "a5da5ba63823d0897031da2693dc00a2a4dc8e99"
+      "a5da5ba63823d0897031da2693dc00a2a4dc8e99",
+      "e3bcac752fe9dd92e1fe92bd8dd00964ec0fb5bc"
     ],
     ".claude/settings.json": [
       "549c7cdfc1efeb7e3a7af4e220add26b636197cc",
@@ -374,7 +378,7 @@
     "allow:Bash(bash os:*)",
     "deny:Read(/.os/backups/**)"
   ],
-  "release": "2026-11-12.1",
+  "release": "2026-11-17.1",
   "extensions": {
     "engineering": [
       "6c94c6112e87cd1c969a0c6eee562f9726093b5b"

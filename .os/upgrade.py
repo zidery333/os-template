@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Zenith — upgrade an older folder to this template
+OS template — upgrade an older folder to this template
 =================================================
 
     python3 <this template>/.os/upgrade.py <the folder to upgrade>
@@ -794,7 +794,7 @@ def main(argv: list[str]) -> int:
     if root == TEMPLATE:
         die("that is the template itself — point this at the folder you work in")
     if not (root / ".os" / "config.json").exists():
-        die(f"{root} is not a Zenith folder (no .os/config.json)")
+        die(f"{root} is not an OS template folder (no .os/config.json)")
     try:
         old_cfg = json.loads((root / ".os" / "config.json").read_text(encoding="utf-8"))
         new_cfg = json.loads((TEMPLATE / ".os" / "config.json").read_text(encoding="utf-8"))
